@@ -6,12 +6,15 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
+import zipfile
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -151,6 +154,14 @@ def find_source(config: dict[str, Any], source_id: str) -> dict[str, Any] | None
         if s["id"] == source_id:
             return s
     return None
+
+
+class RawExportError(Exception):
+    """Controlled error while preparing an unchanged raw telemetry export."""
+
+    def __init__(self, message: str, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 # ── Archive state ──
@@ -786,29 +797,285 @@ def _get_live_rollout_summaries(codex_dir: Path, *, allow_build: bool = True) ->
         return summaries
 
 
-def _read_rollout_jsonl(codex_dir: Path, thread_id: str) -> list[dict[str, Any]]:
-    """Read rollout JSONL files for a given thread via cached file lookup."""
-    events: list[dict[str, Any]] = []
-    summary = _get_live_rollout_summaries(codex_dir).get(thread_id, {})
-    paths = summary.get("paths", [])
-    if not isinstance(paths, list):
-        return events
-
-    for raw_path in sorted(str(p) for p in paths):
-        rollout_path = Path(raw_path)
+def _validated_rollout_paths(codex_dir: Path, paths: list[Any]) -> list[Path]:
+    """Resolve rollout paths and reject anything outside the configured Codex directory."""
+    root = codex_dir.resolve()
+    validated: list[Path] = []
+    for raw_path in sorted(str(path) for path in paths):
         try:
-            with rollout_path.open("r", encoding="utf-8") as handle:
-                for raw_line in handle:
-                    line = raw_line.strip()
-                    if not line:
+            path = Path(raw_path).resolve()
+        except OSError as exc:
+            raise RawExportError(f"Cannot resolve rollout path: {exc}", 409) from exc
+        if not path.is_relative_to(root) or not path.is_file():
+            raise RawExportError("Raw rollout path is unavailable or outside codex_dir", 409)
+        validated.append(path)
+    return validated
+
+
+def _iter_rollout_jsonl_records(codex_dir: Path, paths: list[Any]):
+    """Yield parsed JSONL events with exact source line and byte coordinates."""
+    global_event_index = 0
+    for file_index, rollout_path in enumerate(_validated_rollout_paths(codex_dir, paths)):
+        try:
+            with rollout_path.open("rb") as handle:
+                line_number = 0
+                while True:
+                    byte_start = handle.tell()
+                    raw_line = handle.readline()
+                    if not raw_line:
+                        break
+                    byte_end = handle.tell()
+                    line_number += 1
+                    stripped = raw_line.strip()
+                    if not stripped:
                         continue
                     try:
-                        events.append(json.loads(line))
-                    except json.JSONDecodeError:
+                        parsed = json.loads(stripped.decode("utf-8-sig"))
+                    except (UnicodeDecodeError, json.JSONDecodeError):
                         continue
+                    if not isinstance(parsed, dict):
+                        continue
+                    global_event_index += 1
+                    yield {
+                        "event": parsed,
+                        "source_path": rollout_path,
+                        "file_index": file_index,
+                        "line_number": line_number,
+                        "byte_start": byte_start,
+                        "byte_end": byte_end,
+                        "global_event_index": global_event_index,
+                    }
         except OSError:
-                continue
-    return events
+            continue
+
+
+def _read_rollout_jsonl(codex_dir: Path, thread_id: str) -> list[dict[str, Any]]:
+    """Read rollout JSONL files for a given thread via cached file lookup."""
+    summary = _get_live_rollout_summaries(codex_dir).get(thread_id, {})
+    paths = summary.get("paths", [])
+    if not isinstance(paths, list) or not paths:
+        return []
+    try:
+        return [
+            record["event"]
+            for record in _iter_rollout_jsonl_records(codex_dir, paths)
+        ]
+    except RawExportError:
+        return []
+
+
+def _raw_rollout_paths(source: dict[str, Any], session_id: str) -> list[Path]:
+    codex_dir = Path(source.get("codex_dir", ""))
+    if source.get("kind") != "live" or not codex_dir.exists():
+        return []
+    summary = _get_live_rollout_summaries(codex_dir).get(session_id, {})
+    paths = summary.get("paths", [])
+    if not isinstance(paths, list) or not paths:
+        return []
+    return _validated_rollout_paths(codex_dir, paths)
+
+
+def _raw_export_status(source: dict[str, Any], session_id: str) -> tuple[bool, str]:
+    if source.get("kind") != "live":
+        return False, "Исходная телеметрия доступна только для live-сессий."
+    try:
+        paths = _raw_rollout_paths(source, session_id)
+    except RawExportError as exc:
+        return False, str(exc)
+    if not paths:
+        return False, "Для этой сессии не найдены исходные rollout JSONL."
+    return True, ""
+
+
+def _parse_raw_step_indices(
+    raw_values: list[str] | None,
+    steps: list[dict[str, Any]],
+) -> list[int] | None:
+    if raw_values is None:
+        return None
+    parts: list[str] = []
+    for raw_value in raw_values:
+        parts.extend(raw_value.split(","))
+    if not parts or any(not part.strip() for part in parts):
+        raise RawExportError("step_indices must contain one or more step numbers", 400)
+    try:
+        indices = [int(part.strip()) for part in parts]
+    except ValueError as exc:
+        raise RawExportError("step_indices must contain integers", 400) from exc
+    if any(index <= 0 for index in indices):
+        raise RawExportError("step_indices must be positive integers", 400)
+    if len(indices) != len(set(indices)):
+        raise RawExportError("step_indices must not contain duplicates", 400)
+    available = {to_int(step.get("step_index"), 0) for step in steps}
+    missing = sorted(set(indices) - available)
+    if missing:
+        raise RawExportError(
+            "Unknown step_indices: " + ", ".join(str(index) for index in missing),
+            400,
+        )
+    return sorted(indices)
+
+
+def _raw_archive_name(file_index: int, path: Path) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", path.name) or "rollout.jsonl"
+    return f"raw/{file_index:03d}-{safe_name}"
+
+
+def _build_raw_segments(
+    records_by_index: dict[int, dict[str, Any]],
+    start_index: int,
+    end_index: int,
+    archive_names: dict[int, str],
+) -> list[dict[str, Any]]:
+    if start_index <= 0 or end_index < start_index:
+        raise RawExportError("Step has an invalid event_range", 409)
+    records: list[dict[str, Any]] = []
+    for event_index in range(start_index, end_index + 1):
+        record = records_by_index.get(event_index)
+        if record is None:
+            raise RawExportError(
+                f"Cannot map raw event index {event_index} to source bytes",
+                409,
+            )
+        records.append(record)
+
+    segments: list[dict[str, Any]] = []
+    for record in records:
+        previous = records_by_index.get(record["global_event_index"] - 1)
+        contiguous = bool(
+            segments
+            and previous
+            and previous["file_index"] == record["file_index"]
+            and previous["line_number"] + 1 == record["line_number"]
+            and previous["byte_end"] == record["byte_start"]
+            and segments[-1]["event_end"] == previous["global_event_index"]
+        )
+        if contiguous:
+            segment = segments[-1]
+            segment["event_end"] = record["global_event_index"]
+            segment["line_end"] = record["line_number"]
+            segment["byte_end"] = record["byte_end"]
+        else:
+            file_index = record["file_index"]
+            segments.append({
+                "file_index": file_index,
+                "archive_name": archive_names[file_index],
+                "event_start": record["global_event_index"],
+                "event_end": record["global_event_index"],
+                "line_start": record["line_number"],
+                "line_end": record["line_number"],
+                "byte_start": record["byte_start"],
+                "byte_end": record["byte_end"],
+            })
+    return segments
+
+
+def _build_raw_export_manifest(
+    codex_dir: Path,
+    source_id: str,
+    session_id: str,
+    paths: list[Path],
+    steps: list[dict[str, Any]],
+    selected_step_indices: list[int] | None,
+) -> dict[str, Any]:
+    validated_paths = _validated_rollout_paths(codex_dir, list(paths))
+    archive_names = {
+        file_index: _raw_archive_name(file_index, path)
+        for file_index, path in enumerate(validated_paths)
+    }
+    records = list(_iter_rollout_jsonl_records(codex_dir, list(validated_paths)))
+    records_by_index = {
+        record["global_event_index"]: record
+        for record in records
+    }
+    included_steps = steps
+    if selected_step_indices is not None:
+        selected_set = set(selected_step_indices)
+        included_steps = [
+            step for step in steps
+            if to_int(step.get("step_index"), 0) in selected_set
+        ]
+
+    manifest_steps: list[dict[str, Any]] = []
+    for step in included_steps:
+        event_range = step.get("event_range", {})
+        if not isinstance(event_range, dict):
+            raise RawExportError("Step has no raw event_range", 409)
+        start_index = to_int(event_range.get("start_event_index"), 0)
+        end_index = to_int(event_range.get("end_event_index"), 0)
+        manifest_steps.append({
+            "step_index": to_int(step.get("step_index"), 0),
+            "event_range": {
+                "start_event_index": start_index,
+                "end_event_index": end_index,
+                "raw_events_count": to_int(event_range.get("raw_events_count"), 0),
+            },
+            "segments": _build_raw_segments(
+                records_by_index,
+                start_index,
+                end_index,
+                archive_names,
+            ),
+        })
+
+    root = codex_dir.resolve()
+    return {
+        "version": "codex-raw-telemetry-export.v1",
+        "source_id": source_id,
+        "session_id": session_id,
+        "mode": "selected" if selected_step_indices is not None else "session",
+        "requested_step_indices": selected_step_indices or [],
+        "files": [
+            {
+                "file_index": file_index,
+                "source_relative_path": path.relative_to(root).as_posix(),
+                "archive_name": archive_names[file_index],
+                "size_bytes": path.stat().st_size,
+            }
+            for file_index, path in enumerate(validated_paths)
+        ],
+        "steps": manifest_steps,
+    }
+
+
+def _create_raw_export_zip(
+    codex_dir: Path,
+    session_id: str,
+    paths: list[Path],
+    steps: list[dict[str, Any]],
+    selected_step_indices: list[int] | None,
+    *,
+    source_id: str = "",
+) -> Path:
+    validated_paths = _validated_rollout_paths(codex_dir, list(paths))
+    manifest = _build_raw_export_manifest(
+        codex_dir,
+        source_id,
+        session_id,
+        validated_paths,
+        steps,
+        selected_step_indices,
+    )
+    temp_handle = tempfile.NamedTemporaryFile(
+        prefix="codex-raw-telemetry-",
+        suffix=".zip",
+        delete=False,
+    )
+    temp_path = Path(temp_handle.name)
+    temp_handle.close()
+    try:
+        with zipfile.ZipFile(temp_path, "w", compression=zipfile.ZIP_STORED) as archive:
+            for file_info, path in zip(manifest["files"], validated_paths):
+                archive.write(path, arcname=file_info["archive_name"])
+            archive.writestr(
+                "manifest.json",
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                compress_type=zipfile.ZIP_STORED,
+            )
+        return temp_path
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
 
 
 _LOG_TURN_ID_RE = re.compile(r'turn(?:\.id|_id)=([0-9a-f-]{36})', re.IGNORECASE)
@@ -1151,6 +1418,12 @@ def build_live_session_detail(source: dict[str, Any], session_id: str) -> dict[s
         "reasoning": reasoning,
         "workdir": cwd,
         "source_kind": "live",
+        "raw_export_available": not used_logs_fallback and bool(events),
+        "raw_export_unavailable_reason": (
+            ""
+            if not used_logs_fallback and events
+            else "Для этой сессии не найдены исходные rollout JSONL."
+        ),
         "summary": {
             "turn_count": len(steps),
             "session_count": 1,
@@ -3813,6 +4086,31 @@ class MonitorHandler(SimpleHTTPRequestHandler):
     def _send_error_json(self, message: str, status: int = 400) -> None:
         self._send_json({"error": message}, status)
 
+    def _send_zip_file(self, path: Path, filename: str) -> None:
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            path.unlink(missing_ok=True)
+            self._send_error_json(f"Cannot open raw telemetry ZIP: {exc}", 500)
+            return
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Length", str(size))
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="{filename}"',
+            )
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            with path.open("rb") as handle:
+                shutil.copyfileobj(handle, self.wfile, length=1024 * 1024)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            path.unlink(missing_ok=True)
+
     def _parse_query(self) -> dict[str, list[str]]:
         parsed = urlparse(self.path)
         return parse_qs(parsed.query)
@@ -3871,8 +4169,78 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                 self._send_error_json(f"Session '{session_id}' not found", 404)
                 return
 
+            available, unavailable_reason = _raw_export_status(source, session_id)
+            detail["raw_export_available"] = available
+            detail["raw_export_unavailable_reason"] = unavailable_reason
             detail["archived"] = is_archived(source_id, session_id)
             self._send_json(detail)
+
+        elif path == "/api/raw-export":
+            qs = parse_qs(parsed.query, keep_blank_values=True)
+            source_id = qs.get("source_id", [""])[0]
+            session_id = qs.get("session_id", [""])[0]
+            config = self._load_own_config()
+            source = find_source(config, source_id)
+            if not source:
+                self._send_error_json(f"Source '{source_id}' not found", 404)
+                return
+            if source.get("kind") != "live":
+                self._send_error_json(
+                    "Raw telemetry export is unavailable for archive sources",
+                    409,
+                )
+                return
+
+            known_sessions = {
+                str(session.get("id", ""))
+                for session in discover_live_sessions(source)
+            }
+            if session_id not in known_sessions:
+                self._send_error_json(f"Session '{session_id}' not found", 404)
+                return
+
+            try:
+                rollout_paths = _raw_rollout_paths(source, session_id)
+                if not rollout_paths:
+                    raise RawExportError(
+                        "Raw rollout JSONL is unavailable for this session",
+                        409,
+                    )
+                detail = build_live_session_detail(source, session_id)
+                if detail is None:
+                    raise RawExportError(f"Session '{session_id}' not found", 404)
+                steps = detail.get("steps", [])
+                if not isinstance(steps, list):
+                    raise RawExportError("Session steps are unavailable", 409)
+                selected_indices = _parse_raw_step_indices(
+                    qs.get("step_indices"),
+                    steps,
+                )
+                codex_dir = Path(source.get("codex_dir", ""))
+                archive_path = _create_raw_export_zip(
+                    codex_dir,
+                    session_id,
+                    rollout_paths,
+                    steps,
+                    selected_indices,
+                    source_id=source_id,
+                )
+            except RawExportError as exc:
+                self._send_error_json(str(exc), exc.status)
+                return
+            except Exception as exc:
+                self._send_error_json(f"Cannot create raw telemetry ZIP: {exc}", 500)
+                return
+
+            safe_session_id = re.sub(
+                r"[^A-Za-z0-9._-]+",
+                "_",
+                session_id,
+            ).strip("._") or "session"
+            self._send_zip_file(
+                archive_path,
+                f"{safe_session_id}-raw-telemetry.zip",
+            )
 
         elif path == "/api/status":
             self._send_json({

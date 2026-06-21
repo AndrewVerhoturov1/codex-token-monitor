@@ -99,6 +99,7 @@
           <button onclick="auditSession()">Аудит</button>
           <button onclick="copySessionSummary()">Session</button>
           <button onclick="copySessionJson()">Session JSON</button>
+          <button id="rawSessionDownloadButton" onclick="downloadRawTelemetry(false)" disabled>Raw session ZIP</button>
           <button class="primary" onclick="copySessionTable()">Session MD</button>
           <button class="danger" onclick="openShutdown()">Остановить монитор</button>
         </div>
@@ -118,6 +119,7 @@
       <div class="actions">
         <button onclick="copySelectedSummary()">Selected</button>
         <button onclick="copySelectedJson()">Selected JSON</button>
+        <button id="rawSelectedDownloadButton" onclick="downloadRawTelemetry(true)" disabled>Raw selected ZIP</button>
         <button onclick="copySelectedTable()">Selected MD</button>
       </div>
     </div>

@@ -664,6 +664,7 @@ function renderSelection() {
   document.getElementById("selCost").textContent = money(z.cost);
   document.getElementById("selNon").textContent = `Non-cached: ${nf.format(z.non)}`;
   document.getElementById("selCache").textContent = `Cache: ${pct(ratio)}`;
+  updateRawDownloadButtons();
 }
 
 function renderStatus() {
@@ -2344,6 +2345,57 @@ function copySelectedTable() {
   const s = sessionDetailCache;
   if (!s || !s.steps) return;
   copyText(buildSessionExportMarkdown(s, selectedSteps(), "Selected steps export"));
+}
+
+function updateRawDownloadButtons() {
+  const sessionButton = document.getElementById("rawSessionDownloadButton");
+  const selectedButton = document.getElementById("rawSelectedDownloadButton");
+  if (!sessionButton || !selectedButton) return;
+
+  const available = sessionDetailCache?.raw_export_available === true;
+  const unavailableReason = sessionDetailCache?.raw_export_unavailable_reason ||
+    "Исходная телеметрия для этой сессии недоступна";
+  sessionButton.disabled = !available;
+  sessionButton.title = available ? "Скачать исходные rollout JSONL и manifest" : unavailableReason;
+
+  const hasSelection = selected.size > 0;
+  selectedButton.disabled = !available || !hasSelection;
+  selectedButton.title = !available
+    ? unavailableReason
+    : (hasSelection
+      ? "Скачать исходные rollout JSONL и manifest выбранных шагов"
+      : "Сначала выделите шаги");
+}
+
+function downloadRawTelemetry(selectedOnly) {
+  if (!currentSourceId || !currentSessionId || !sessionDetailCache) {
+    showToast("Сначала выберите сессию");
+    return;
+  }
+  if (sessionDetailCache.raw_export_available !== true) {
+    showToast(sessionDetailCache.raw_export_unavailable_reason ||
+      "Исходная телеметрия недоступна");
+    return;
+  }
+
+  const params = new URLSearchParams();
+  params.set("source_id", currentSourceId);
+  params.set("session_id", currentSessionId);
+  if (selectedOnly) {
+    const stepIndices = [...selected].sort((a, b) => a - b);
+    if (stepIndices.length === 0) {
+      showToast("Сначала выделите шаги");
+      return;
+    }
+    params.set("step_indices", stepIndices.join(","));
+  }
+
+  const link = document.createElement("a");
+  link.href = "/api/raw-export?" + params.toString();
+  link.download = "";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 // ── Audit ──
