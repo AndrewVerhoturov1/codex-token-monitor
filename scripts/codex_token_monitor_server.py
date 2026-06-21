@@ -780,7 +780,7 @@ def _get_live_rollout_summaries(codex_dir: Path, *, allow_build: bool = True) ->
         sessions_dir = codex_dir / "sessions"
         summaries: dict[str, dict[str, Any]] = {}
         if not sessions_dir.exists():
-            _live_rollout_summary_cache[cache_key] = (now, summaries)
+            _live_rollout_summary_cache[cache_key] = (time.time(), summaries)
             return summaries
 
         for rollout_path in sorted(sessions_dir.glob("**/rollout-*.jsonl")):
@@ -793,7 +793,7 @@ def _get_live_rollout_summaries(codex_dir: Path, *, allow_build: bool = True) ->
             if file_summary.get("last_token_usage"):
                 existing["last_token_usage"] = file_summary["last_token_usage"]
 
-        _live_rollout_summary_cache[cache_key] = (now, summaries)
+        _live_rollout_summary_cache[cache_key] = (time.time(), summaries)
         return summaries
 
 

@@ -77,6 +77,34 @@ class RawJsonlIteratorTests(unittest.TestCase):
                 self.assertEqual(server._read_rollout_jsonl(root, "thread"), expected)
 
 
+class LiveRolloutCacheTests(unittest.TestCase):
+    def test_cache_ttl_starts_after_slow_index_build_finishes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rollout = root / "sessions" / "rollout-a.jsonl"
+            write_bytes(rollout, b"{}\n")
+            clock = [100.0]
+            scan_count = 0
+
+            def fake_scan(path):
+                nonlocal scan_count
+                scan_count += 1
+                clock[0] += 20.0
+                return "thread", {"paths": [str(path)], "step_count": 1}
+
+            cache_key = str(root.resolve())
+            server._live_rollout_summary_cache.pop(cache_key, None)
+            with (
+                mock.patch.object(server.time, "time", side_effect=lambda: clock[0]),
+                mock.patch.object(server, "_scan_rollout_file_summary", side_effect=fake_scan),
+            ):
+                first = server._get_live_rollout_summaries(root)
+                second = server._get_live_rollout_summaries(root)
+
+            self.assertIs(first, second)
+            self.assertEqual(scan_count, 1)
+
+
 class RawExportZipTests(unittest.TestCase):
     def test_selected_zip_preserves_bytes_and_builds_exact_segments(self):
         with tempfile.TemporaryDirectory() as tmp:
