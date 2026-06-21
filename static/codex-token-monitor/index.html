@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Codex Token Monitor v2</title>
+<link rel="stylesheet" href="styles.css?v=0063">
+<style>
+.tl-sel { background: #2a3a2a !important; }
+.tl-click-row:hover { background: #2a2a2a; }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <aside class="left">
+    <div class="top-left">
+      <div class="brand">
+        <div class="brand-main">
+          <div class="logo">CT</div>
+          <div>
+            <h1>Codex Token Monitor</h1>
+            <p class="muted small">prompt → answer → cost</p>
+          </div>
+        </div>
+        <button class="icon ghost" id="collapseBtn" title="Свернуть верхний блок" onclick="toggleControls()">▾</button>
+      </div>
+
+      <div class="controls" id="controlsWrap">
+        <label class="muted xsmall">Источник / рабочая папка</label>
+        <div class="project-row">
+          <select id="sourceSelect"></select>
+          <button class="ghost" onclick="copySourcePath()">Path</button>
+        </div>
+        <div class="project-row">
+          <select id="workdirFilter">
+            <option value="">Все проекты / папки</option>
+          </select>
+        </div>
+
+        <div class="project-info">
+          <div class="muted xsmall">Текущая папка</div>
+          <div id="sourcePath" class="mono xsmall soft"></div>
+        </div>
+
+        <div class="statusbar">
+          <div class="status"><span>Collector</span><b id="collectorStatus"><i class="dot"></i>unknown</b></div>
+          <div class="status"><span>Prompt logging</span><b id="promptLoggingStatus"><i class="dot"></i>ON</b></div>
+          <div class="status"><span>Auto refresh</span><b id="autoStatus"><i class="dot"></i>ON · 3s</b></div>
+          <div class="status"><span>Last update</span><b id="lastUpdate">—</b></div>
+        </div>
+
+        <div class="search-wrap">
+          <span>⌕</span>
+          <input id="q" placeholder="Поиск по названию, модели, папке">
+        </div>
+
+        <div class="filter-row">
+          <select id="sortFilter">
+            <option value="date_desc">Сначала новые</option>
+            <option value="date_asc">Сначала старые</option>
+            <option value="cost_desc">Сначала дорогие</option>
+            <option value="cost_asc">Сначала дешевые</option>
+          </select>
+          <select id="modelFilter">
+            <option value="">Все модели</option>
+          </select>
+          <select id="riskFilter">
+            <option value="">Все статусы</option>
+            <option value="warnings">С warnings</option>
+            <option value="clean">Без warnings</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="left-title">
+      <b class="small">Сессии</b>
+      <div class="session-tools">
+        <button class="ghost icon" id="archivedToggleBtn" onclick="toggleArchivedVisibility()" title="Показать или скрыть архив">🗂</button>
+        <span class="pill blue" id="sessionCount">0</span>
+      </div>
+    </div>
+
+    <div class="session-list" id="sessions"><div class="loading">Загрузка...</div></div>
+  </aside>
+
+  <div class="resizer" id="resizer" title="Перетащи, чтобы изменить ширину"></div>
+
+  <main class="right">
+    <div class="header">
+      <div class="header-line">
+        <div>
+          <h2 id="title">Выберите сессию</h2>
+          <p id="meta" class="muted small mono"></p>
+        </div>
+        <div class="actions">
+          <button onclick="refreshData()">Обновить</button>
+          <button id="autoBtn" onclick="toggleAutoRefresh()">Auto: ON</button>
+          <button onclick="auditSession()">Аудит</button>
+          <button onclick="copySessionSummary()">Session</button>
+          <button onclick="copySessionJson()">Session JSON</button>
+          <button class="primary" onclick="copySessionTable()">Session MD</button>
+          <button class="danger" onclick="openShutdown()">Остановить монитор</button>
+        </div>
+      </div>
+      <div class="summary" id="stats"></div>
+    </div>
+
+    <div class="toolbar">
+      <div class="selection">
+        <button class="ghost" onclick="selectAll()">Select all</button>
+        <button class="ghost" onclick="clearSel()">Clear</button>
+        <span id="selCount" class="pill">Selected: 0</span>
+        <span id="selCost" class="pill green">$0.00000</span>
+        <span id="selNon" class="pill blue">Non-cached: 0</span>
+        <span id="selCache" class="pill">Cache: 0%</span>
+      </div>
+      <div class="actions">
+        <button onclick="copySelectedSummary()">Selected</button>
+        <button onclick="copySelectedJson()">Selected JSON</button>
+        <button onclick="copySelectedTable()">Selected MD</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="audit-panel" id="auditPanel"></div>
+      <div id="steps" class="steps"><div class="loading">Выберите сессию слева</div></div>
+    </div>
+  </main>
+</div>
+
+<div class="shutdown-modal" id="shutdownModal">
+  <div class="shutdown-card">
+    <h3>Остановить монитор?</h3>
+    <p>Эта кнопка вызовет <span class="mono">POST /api/shutdown</span>: остановит локальный dashboard server.</p>
+    <div class="actions">
+      <button class="danger" onclick="confirmShutdown()">Да, остановить</button>
+      <button onclick="closeShutdown()">Отмена</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast">Скопировано</div>
+
+  <script src="app.js?v=0076"></script>
+</body>
+</html>

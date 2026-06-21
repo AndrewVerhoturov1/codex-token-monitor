@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "default_source_id": "codex_live_threads",
+  "sources": [
+    {
+      "id": "codex_live_threads",
+      "name": "Реальные чаты Codex",
+      "kind": "live",
+      "codex_dir": "C:/Users/andre/.codex"
+    }
+  ]
+}
