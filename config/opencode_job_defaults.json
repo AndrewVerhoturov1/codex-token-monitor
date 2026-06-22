@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "jobs_dir": "_local/codex-token-monitor/opencode-jobs",
+  "timeout_seconds": 600,
+  "poll_interval_ms": 1000,
+  "provider_id": "deepseek",
+  "model_id": "deepseek-v4-flash",
+  "summary_tail_lines": 80,
+  "summary_max_chars": 4000,
+  "result_max_chars": 0,
+  "command_template": [
+    "opencode",
+    "--model",
+    "{model_id}",
+    "--provider",
+    "{provider_id}",
+    "--task-file",
+    "{task_file}",
+    "--job-dir",
+    "{job_dir}"
+  ]
+}
