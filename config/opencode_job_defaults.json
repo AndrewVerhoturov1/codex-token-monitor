@@ -9,14 +9,11 @@
   "summary_max_chars": 4000,
   "result_max_chars": 0,
   "command_template": [
-    "opencode",
-    "--model",
-    "{model_id}",
-    "--provider",
-    "{provider_id}",
-    "--task-file",
-    "{task_file}",
-    "--job-dir",
-    "{job_dir}"
+    "python",
+    "scripts/codex_token_monitor_opencode_adapter.py",
+    "--task-file", "{task_file}",
+    "--job-dir", "{job_dir}",
+    "--provider-id", "{provider_id}",
+    "--model-id", "{model_id}"
   ]
 }

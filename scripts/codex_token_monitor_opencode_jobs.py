@@ -37,8 +37,12 @@ class JobConfig:
     summary_max_chars: int = 4000
     result_max_chars: int = 0
     command_template: list[str] = field(default_factory=lambda: [
-        "opencode", "--model", "{model_id}", "--provider", "{provider_id}",
-        "--task-file", "{task_file}", "--job-dir", "{job_dir}",
+        "python",
+        "scripts/codex_token_monitor_opencode_adapter.py",
+        "--task-file", "{task_file}",
+        "--job-dir", "{job_dir}",
+        "--provider-id", "{provider_id}",
+        "--model-id", "{model_id}",
     ])
 
 
@@ -158,9 +162,9 @@ def _resolve_jobs_dir(config: JobConfig, config_root: Path | None = None) -> Pat
     return jobs_dir
 
 
-def _extract_summary(stdout_path: Path, config: JobConfig) -> str:
+def _read_with_tail_max(path: Path, config: JobConfig) -> str:
     try:
-        text = stdout_path.read_text(encoding="utf-8", errors="replace")
+        text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
     lines = text.splitlines()
@@ -171,6 +175,28 @@ def _extract_summary(stdout_path: Path, config: JobConfig) -> str:
     return summary
 
 
+def _extract_summary(stdout_path: Path, config: JobConfig) -> str:
+    return _read_with_tail_max(stdout_path, config)
+
+
+def _derive_summary(status: str, result_path: Path, stderr_path: Path, stdout_path: Path, config: JobConfig) -> str:
+    success_like = frozenset({STATUS_COMPLETED, STATUS_PARTIAL})
+    if status in success_like:
+        primary = result_path
+        fallbacks = [stderr_path, stdout_path]
+    else:
+        primary = stderr_path
+        fallbacks = [stdout_path, result_path]
+    text = _read_with_tail_max(primary, config)
+    if text.strip():
+        return text
+    for fb in fallbacks:
+        text = _read_with_tail_max(fb, config)
+        if text.strip():
+            return text
+    return ""
+
+
 def run_opencode_job(task_text: str, *, config: JobConfig, config_root: Path | None = None) -> JobResult:
     job_id = str(uuid.uuid4())
     provider_id = config.provider_id
@@ -179,6 +205,9 @@ def run_opencode_job(task_text: str, *, config: JobConfig, config_root: Path | N
     jobs_dir = _resolve_jobs_dir(config, config_root=config_root)
     job_dir = jobs_dir / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+
+    status_path = job_dir / "status.json"
+    _atomic_write_json(status_path, {"status": "queued"})
 
     started_at = _utcnow()
 
@@ -203,7 +232,7 @@ def run_opencode_job(task_text: str, *, config: JobConfig, config_root: Path | N
             job_id=job_id,
             status=STATUS_FAILED,
             reason=f"config_error: {e}",
-            summary="",
+            summary=_derive_summary(STATUS_FAILED, result_path, stderr_path, stdout_path, config),
             started_at=started_at,
             finished_at=finished_at,
             duration_ms=duration_ms,
@@ -246,7 +275,7 @@ def run_opencode_job(task_text: str, *, config: JobConfig, config_root: Path | N
             job_id=job_id,
             status=STATUS_FAILED,
             reason=f"Failed to launch process: {e}",
-            summary="",
+            summary=_derive_summary(STATUS_FAILED, result_path, stderr_path, stdout_path, config),
             started_at=started_at,
             finished_at=finished_at,
             duration_ms=duration_ms,
@@ -261,6 +290,8 @@ def run_opencode_job(task_text: str, *, config: JobConfig, config_root: Path | N
         _atomic_write_text(result_path, f"# Job Failed\n\n**Reason:** Failed to launch process: {e}\n")
         _atomic_write_json(done_path, asdict(result))
         return result
+
+    _atomic_write_json(status_path, {"status": "running"})
 
     timed_out = False
     protocol_violation = False
@@ -288,6 +319,9 @@ def run_opencode_job(task_text: str, *, config: JobConfig, config_root: Path | N
         except Exception:
             pass
 
+    if not protocol_violation and done_path.exists() and not result_path.exists():
+        protocol_violation = True
+
     exit_code = process.returncode
 
     finished_at = _utcnow()
@@ -301,27 +335,27 @@ def run_opencode_job(task_text: str, *, config: JobConfig, config_root: Path | N
     if protocol_violation:
         status = STATUS_FAILED
         reason = "protocol_violation_done_before_result"
-        summary = _extract_summary(stdout_path, config)
+        summary = _derive_summary(status, result_path, stderr_path, stdout_path, config)
         _atomic_write_text(result_path, f"# Protocol Violation\n\ndone.json was written before result.md\n")
     elif timed_out:
         status = STATUS_BLOCKED
         reason = "timed_out"
-        summary = _extract_summary(stdout_path, config)
+        summary = _derive_summary(status, result_path, stderr_path, stdout_path, config)
         _atomic_write_text(result_path, f"# Job Blocked\n\n**Reason:** timed_out\n")
     elif done_path.exists():
         done_data = _read_json_safe(done_path) or {}
         status = done_data.get("status", STATUS_FAILED)
         reason = done_data.get("reason", "")
-        summary = done_data.get("summary", "")
+        summary = _derive_summary(status, result_path, stderr_path, stdout_path, config)
     elif exit_code is not None:
         status = STATUS_FAILED
         reason = "process_exited_without_done"
-        summary = _extract_summary(stdout_path, config)
+        summary = _derive_summary(status, result_path, stderr_path, stdout_path, config)
         _atomic_write_text(result_path, f"# Job Failed\n\n**Reason:** process_exited_without_done\n")
     else:
         status = STATUS_FAILED
         reason = "process_exited_without_done"
-        summary = ""
+        summary = _derive_summary(status, result_path, stderr_path, stdout_path, config)
         _atomic_write_text(result_path, f"# Job Failed\n\n**Reason:** process_exited_without_done\n")
 
     result = JobResult(
@@ -372,6 +406,8 @@ def main() -> None:
     print(f"job_id: {result.job_id}")
     print(f"status: {result.status}")
     print(f"reason: {result.reason}")
+    summary = result.summary.replace("\n", "\\n")
+    print(f"summary: {summary}")
     print(f"duration_ms: {result.duration_ms}")
     print(f"timed_out: {result.timed_out}")
     print(f"result: {result.result_path}")

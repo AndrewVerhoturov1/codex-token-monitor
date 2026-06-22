@@ -80,6 +80,9 @@ def main() -> None:
         time.sleep(sleep_sec)
         _write_result(job_dir)
         print("should-not-reach")
+    elif mode == "fast_protocol_violation":
+        _write_done(job_dir)
+        sys.stdout.flush()
     elif mode == "exit_without_done":
         time.sleep(sleep_sec)
         print("done-no-done")
@@ -205,7 +208,7 @@ class OpenCodeJobsCoreTests(unittest.TestCase):
             self.assertTrue(done_path.exists())
 
     def test_result_exists_for_all_terminal_statuses(self) -> None:
-        modes = ["success", "exit_without_done", "protocol_violation"]
+        modes = ["success", "exit_without_done", "protocol_violation", "fast_protocol_violation"]
         for mode in modes:
             with self.subTest(mode=mode):
                 with tempfile.TemporaryDirectory() as tmp:
@@ -347,6 +350,88 @@ class OpenCodeJobsCoreTests(unittest.TestCase):
             done_mtime = done_path.stat().st_mtime_ns
             self.assertLessEqual(result_mtime, done_mtime)
 
+    def test_fast_protocol_violation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            worker = _make_fake_worker(tmpdir)
+            result = _run_job(tmpdir, worker, "fast_protocol_violation")
+            self.assertEqual(result.status, jobs.STATUS_FAILED)
+            self.assertEqual(result.reason, "protocol_violation_done_before_result")
+            result_path = Path(result.result_path)
+            done_path = result_path.with_name("done.json")
+            self.assertTrue(result_path.exists())
+            self.assertTrue(done_path.exists())
+            content = result_path.read_text(encoding="utf-8")
+            self.assertIn("Protocol Violation", content)
+
+    def test_status_json_created_with_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            worker = _make_fake_worker(tmpdir)
+            result = _run_job(tmpdir, worker, "success")
+            job_dir = Path(result.result_path).parent
+            status_path = job_dir / "status.json"
+            self.assertTrue(status_path.exists())
+            status_data = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertEqual(status_data["status"], "running")
+
+    def test_status_json_queued_on_config_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            worker = _make_fake_worker(tmpdir)
+            cfg = jobs.JobConfig(
+                jobs_dir=str(tmpdir / "jobs"),
+                timeout_seconds=10,
+                poll_interval_ms=100,
+                provider_id="test",
+                model_id="test-model",
+                command_template=[
+                    sys.executable, str(worker),
+                    "--job-dir", "{job_dir}",
+                    "--unknown", "{bad_placeholder}",
+                ],
+            )
+            result = jobs.run_opencode_job("task", config=cfg)
+            job_dir = Path(result.result_path).parent
+            status_path = job_dir / "status.json"
+            self.assertTrue(status_path.exists())
+            status_data = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertEqual(status_data["status"], "queued")
+
+    def test_summary_source_from_result_md_on_success(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            worker = _make_fake_worker(tmpdir)
+            result = _run_job(tmpdir, worker, "success")
+            self.assertEqual(result.status, jobs.STATUS_COMPLETED)
+            self.assertIn("All good", result.summary)
+
+    def test_summary_source_from_stderr_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            worker = _make_fake_worker(tmpdir)
+            result = _run_job(tmpdir, worker, "exit_without_done")
+            self.assertEqual(result.status, jobs.STATUS_FAILED)
+            self.assertIn("done-no-done", result.summary)
+
+    def test_status_json_not_written_without_job_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            cfg = jobs.JobConfig(
+                jobs_dir=str(tmpdir / "jobs"),
+                timeout_seconds=5,
+                poll_interval_ms=100,
+                provider_id="test",
+                model_id="test-model",
+                command_template=[
+                    sys.executable, "-c", "import sys; sys.exit(0)",
+                    "--job-dir", "{job_dir}",
+                ],
+            )
+            result = jobs.run_opencode_job("task", config=cfg)
+            self.assertEqual(result.status, jobs.STATUS_FAILED)
+            self.assertEqual(result.reason, "process_exited_without_done")
+
 
 class OpenCodeJobsCliTests(unittest.TestCase):
 
@@ -402,9 +487,10 @@ class OpenCodeJobsCliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             for line in result.stdout.splitlines():
                 self.assertTrue(line.startswith("job_id:") or line.startswith("status:") or
-                                line.startswith("reason:") or line.startswith("duration_ms:") or
-                                line.startswith("timed_out:") or line.startswith("result:") or
-                                line.startswith("stdout:") or line.startswith("stderr:"),
+                                line.startswith("reason:") or line.startswith("summary:") or
+                                line.startswith("duration_ms:") or line.startswith("timed_out:") or
+                                line.startswith("result:") or line.startswith("stdout:") or
+                                line.startswith("stderr:"),
                                 f"Unexpected CLI output line: {line}")
 
     def test_cli_exit_codes_mapped(self) -> None:
