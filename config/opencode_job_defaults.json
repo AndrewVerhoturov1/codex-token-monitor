@@ -7,7 +7,6 @@
   "model_id": "deepseek-v4-flash",
   "summary_tail_lines": 80,
   "summary_max_chars": 4000,
-  "result_max_chars": 0,
   "command_template": [
     "python",
     "scripts/codex_token_monitor_opencode_adapter.py",

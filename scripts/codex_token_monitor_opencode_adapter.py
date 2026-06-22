@@ -5,6 +5,22 @@ import sys
 from pathlib import Path
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    _atomic_write_text(path, text)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="OpenCode CLI adapter")
     parser.add_argument("--task-file", required=True)
@@ -19,14 +35,18 @@ def main() -> None:
 
     result_md = job_dir / "result.md"
     done_json = job_dir / "done.json"
+    result_md_display = result_md.as_posix()
+    done_json_display = done_json.as_posix()
 
     original_task = task_file.read_text(encoding="utf-8")
 
     protocol = (
         f"\n\n=== PROTOCOL INSTRUCTIONS ===\n"
-        f"After completing the task, write the final result to {result_md}\n"
-        f"Then write completion metadata to {done_json} "
-        f'with format: {{"status": "completed|partial|blocked|failed", '
+        f"After completing the task, write the final result atomically:\n"
+        f"  1. Write to {result_md_display}.tmp, then rename to {result_md_display}\n"
+        f"  2. Write completion metadata to {done_json_display}.tmp, then rename to {done_json_display}\n"
+        f"{done_json_display} must be written strictly after {result_md_display}.\n"
+        f'{done_json_display} format: {{"status": "completed|partial|blocked|failed", '
         f'"reason": "...", "summary": "..."}}\n'
     )
     augmented_task = original_task + protocol
@@ -41,12 +61,8 @@ def main() -> None:
             text=True,
         )
     except FileNotFoundError:
-        result_md.write_text("Error: opencode CLI not found\n", encoding="utf-8")
-        done_json.write_text(
-            json.dumps({"status": "failed", "reason": "opencode_not_found", "summary": ""},
-                       ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        _atomic_write_text(result_md, "Error: opencode CLI not found\n")
+        _atomic_write_json(done_json, {"status": "failed", "reason": "opencode_not_found", "summary": ""})
         sys.exit(1)
 
     if not done_json.exists():
@@ -59,13 +75,8 @@ def main() -> None:
         else:
             status, reason = "failed", f"opencode_exit_{proc.returncode}"
         if not result_md.exists():
-            result_md.write_text(output or f"OpenCode exit code: {proc.returncode}\n",
-                                 encoding="utf-8")
-        done_json.write_text(
-            json.dumps({"status": status, "reason": reason, "summary": summary},
-                       ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+            _atomic_write_text(result_md, output or f"OpenCode exit code: {proc.returncode}\n")
+        _atomic_write_json(done_json, {"status": status, "reason": reason, "summary": summary})
 
     sys.exit(proc.returncode)
 

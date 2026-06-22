@@ -18,6 +18,8 @@ STATUS_COMPLETED = "completed"
 STATUS_PARTIAL = "partial"
 STATUS_BLOCKED = "blocked"
 STATUS_FAILED = "failed"
+
+GRACE_TERMINATE_SECONDS = 5
 EXIT_COMPLETED = 0
 EXIT_PARTIAL = 10
 EXIT_BLOCKED = 20
@@ -35,7 +37,6 @@ class JobConfig:
     model_id: str = "deepseek-v4-flash"
     summary_tail_lines: int = 80
     summary_max_chars: int = 4000
-    result_max_chars: int = 0
     command_template: list[str] = field(default_factory=lambda: [
         "python",
         "scripts/codex_token_monitor_opencode_adapter.py",
@@ -175,10 +176,6 @@ def _read_with_tail_max(path: Path, config: JobConfig) -> str:
     return summary
 
 
-def _extract_summary(stdout_path: Path, config: JobConfig) -> str:
-    return _read_with_tail_max(stdout_path, config)
-
-
 def _derive_summary(status: str, result_path: Path, stderr_path: Path, stdout_path: Path, config: JobConfig) -> str:
     success_like = frozenset({STATUS_COMPLETED, STATUS_PARTIAL})
     if status in success_like:
@@ -211,7 +208,7 @@ def run_opencode_job(task_text: str, *, config: JobConfig, config_root: Path | N
 
     started_at = _utcnow()
 
-    task_file = job_dir / "task.txt"
+    task_file = job_dir / "task.md"
     task_file.write_text(task_text, encoding="utf-8")
 
     result_path = job_dir / "result.md"
@@ -310,6 +307,8 @@ def run_opencode_job(task_text: str, *, config: JobConfig, config_root: Path | N
             except Exception:
                 pass
             break
+        if done_path.exists() and result_path.exists():
+            break
         time.sleep(poll_interval)
     else:
         timed_out = True
@@ -321,6 +320,18 @@ def run_opencode_job(task_text: str, *, config: JobConfig, config_root: Path | N
 
     if not protocol_violation and done_path.exists() and not result_path.exists():
         protocol_violation = True
+
+    if not timed_out and not protocol_violation and process.returncode is None:
+        try:
+            process.wait(timeout=GRACE_TERMINATE_SECONDS)
+        except Exception:
+            pass
+        if process.returncode is None:
+            _terminate_process_tree(process.pid)
+            try:
+                process.wait(timeout=30)
+            except Exception:
+                pass
 
     exit_code = process.returncode
 

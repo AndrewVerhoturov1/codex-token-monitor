@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -86,6 +87,13 @@ def main() -> None:
     elif mode == "exit_without_done":
         time.sleep(sleep_sec)
         print("done-no-done")
+    elif mode == "done_then_sleep":
+        time.sleep(sleep_sec)
+        _write_result(job_dir)
+        time.sleep(0.05)
+        _write_done(job_dir)
+        time.sleep(9999)
+        print("never-here")
     elif mode == "timeout":
         time.sleep(9999)
         print("never-here")
@@ -112,7 +120,6 @@ def _run_job(tmpdir: Path, worker_path: Path, mode: str, config_overrides: dict 
         model_id="test-model",
         summary_tail_lines=80,
         summary_max_chars=4000,
-        result_max_chars=0,
         command_template=[
             sys.executable, str(worker_path),
             "--job-dir", "{job_dir}",
@@ -192,7 +199,6 @@ class OpenCodeJobsCoreTests(unittest.TestCase):
                 model_id="test-model",
                 summary_tail_lines=80,
                 summary_max_chars=4000,
-                result_max_chars=0,
                 command_template=[
                     sys.executable, str(worker),
                     "--job-dir", "{job_dir}",
@@ -364,6 +370,22 @@ class OpenCodeJobsCoreTests(unittest.TestCase):
             content = result_path.read_text(encoding="utf-8")
             self.assertIn("Protocol Violation", content)
 
+    def test_files_ready_before_child_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            worker = _make_fake_worker(tmpdir)
+            result = _run_job(tmpdir, worker, "done_then_sleep")
+            self.assertEqual(result.status, jobs.STATUS_COMPLETED)
+            self.assertEqual(result.reason, "completed")
+            self.assertFalse(result.timed_out, "Should not be marked as timed out")
+            result_path = Path(result.result_path)
+            done_path = result_path.with_name("done.json")
+            self.assertTrue(result_path.exists())
+            self.assertTrue(done_path.exists())
+            self.assert_file_order(result_path, done_path)
+            self.assertIsNotNone(result.exit_code,
+                                 "Child process must be terminated (exit_code should not be None)")
+
     def test_status_json_created_with_running(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
@@ -449,7 +471,6 @@ class OpenCodeJobsCliTests(unittest.TestCase):
                 "model_id": "test-model",
                 "summary_tail_lines": 80,
                 "summary_max_chars": 4000,
-                "result_max_chars": 0,
                 "command_template": [
                     sys.executable, "-c", "import sys; sys.exit(0)",
                     "--job-dir", "{job_dir}",
@@ -534,6 +555,54 @@ class OpenCodeJobsCliTests(unittest.TestCase):
                 "command_template": ["echo", "{bad}"],
             })
             self.assertEqual(result.returncode, jobs.EXIT_CONFIG_ERROR)
+
+
+class OpenCodeJobsSmokeTests(unittest.TestCase):
+
+    def test_real_opencode_wrapper_smoke(self) -> None:
+        if os.environ.get("OPENCODE_JOB_WRAPPER_SMOKE") != "1":
+            self.skipTest("Set OPENCODE_JOB_WRAPPER_SMOKE=1 to run the real OpenCode smoke test")
+        if shutil.which("opencode") is None:
+            self.skipTest("opencode CLI is not available in PATH")
+
+        provider_id = os.environ.get("OPENCODE_JOB_WRAPPER_PROVIDER_ID", "deepseek")
+        model_id = os.environ.get("OPENCODE_JOB_WRAPPER_MODEL_ID", "deepseek-v4-flash")
+        task_text = (
+            "Return a one-line validation message and follow the provided file protocol exactly. "
+            "Do not modify repository files outside the supplied job directory."
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            cfg = jobs.JobConfig(
+                jobs_dir=str(tmpdir / "jobs"),
+                timeout_seconds=180,
+                poll_interval_ms=500,
+                provider_id=provider_id,
+                model_id=model_id,
+                summary_tail_lines=80,
+                summary_max_chars=4000,
+                command_template=[
+                    sys.executable,
+                    str(ROOT / "scripts" / "codex_token_monitor_opencode_adapter.py"),
+                    "--task-file", "{task_file}",
+                    "--job-dir", "{job_dir}",
+                    "--provider-id", "{provider_id}",
+                    "--model-id", "{model_id}",
+                ],
+            )
+
+            result = jobs.run_opencode_job(task_text, config=cfg)
+
+            self.assertNotEqual(result.reason, "opencode_not_found")
+            self.assertFalse(result.timed_out, f"Smoke test timed out: {result.summary}")
+            self.assertTrue(Path(result.result_path).exists())
+            self.assertTrue(Path(result.result_path).with_name("done.json").exists())
+            self.assertIn(
+                result.status,
+                {jobs.STATUS_COMPLETED, jobs.STATUS_PARTIAL, jobs.STATUS_FAILED},
+                f"Unexpected smoke-test status: {result.status} summary={result.summary}",
+            )
 
 
 if __name__ == "__main__":
