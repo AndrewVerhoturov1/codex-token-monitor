@@ -24,16 +24,21 @@ SCRIPT_REPO_PATTERN = re.compile(
     r"([A-Za-z]:[\\/][^\"\r\n]*?)[\\/]scripts[\\/](?:start_opencode_jobs_mcp\.py|codex_token_monitor_opencode_jobs_mcp\.py)",
     re.IGNORECASE,
 )
-MODULE_ENTRY_PATTERN = re.compile(
+LEGACY_MODULE_ENTRY_PATTERN = re.compile(
     r"(^|\s)-m\s+scripts\.codex_token_monitor_opencode_jobs_mcp(\s|$)",
     re.IGNORECASE,
 )
-SCRIPT_ENTRY_PATTERN = re.compile(
+LEGACY_SCRIPT_ENTRY_PATTERN = re.compile(
+    r"(^|\s)(?:-[A-Za-z][A-Za-z0-9-]*\s+)*"
+    r"(?:\"[^\"]*[\\/]scripts[\\/]codex_token_monitor_opencode_jobs_mcp\.py\"|"
+    r"scripts[\\/]codex_token_monitor_opencode_jobs_mcp\.py)"
+    r"(\s|$)",
+    re.IGNORECASE,
+)
+STARTER_SCRIPT_ENTRY_PATTERN = re.compile(
     r"(^|\s)(?:-[A-Za-z][A-Za-z0-9-]*\s+)*"
     r"(?:\"[^\"]*[\\/]scripts[\\/]start_opencode_jobs_mcp\.py\"|"
-    r"\"[^\"]*[\\/]scripts[\\/]codex_token_monitor_opencode_jobs_mcp\.py\"|"
-    r"scripts[\\/]start_opencode_jobs_mcp\.py|"
-    r"scripts[\\/]codex_token_monitor_opencode_jobs_mcp\.py)"
+    r"scripts[\\/]start_opencode_jobs_mcp\.py)"
     r"(\s|$)",
     re.IGNORECASE,
 )
@@ -97,12 +102,18 @@ def _is_python_entrypoint_process(process_name: str, command_line: str) -> bool:
         return False
     if not _is_managed_command_line(command_line):
         return False
+    return _managed_process_kind(command_line) is not None
+
+
+def _managed_process_kind(command_line: str) -> str | None:
     command_norm = command_line.replace("/", "\\")
-    if MODULE_ENTRY_PATTERN.search(command_norm):
-        return True
-    if SCRIPT_ENTRY_PATTERN.search(command_norm):
-        return True
-    return False
+    if LEGACY_MODULE_ENTRY_PATTERN.search(command_norm):
+        return "legacy_mcp"
+    if LEGACY_SCRIPT_ENTRY_PATTERN.search(command_norm):
+        return "legacy_mcp"
+    if STARTER_SCRIPT_ENTRY_PATTERN.search(command_norm):
+        return "starter"
+    return None
 
 
 def _normalize_process_pid(value: Any) -> int | None:
@@ -139,12 +150,17 @@ def _classify_process_record(
     if not _is_python_entrypoint_process(details["name"], command_line):
         details["reason"] = "not_entrypoint_process"
         return False, details
+    kind = _managed_process_kind(command_line)
+    if kind is None:
+        details["reason"] = "unknown_managed_kind"
+        return False, details
     hinted_repo = _extract_repo_root_from_command_line(command_line)
     if hinted_repo is not None and hinted_repo.resolve(strict=False) != repo_root.resolve(strict=False):
         details["reason"] = "different_repo"
         details["repo_hint"] = str(hinted_repo)
         return False, details
     details["reason"] = "managed_match"
+    details["kind"] = kind
     if hinted_repo is not None:
         details["repo_hint"] = str(hinted_repo)
     return True, details
@@ -264,8 +280,11 @@ def _build_cleanup_plan(
                 current_pid=current_pid,
                 repo_root=repo_root,
             )
-            if managed:
+            if managed and details.get("kind") == "legacy_mcp":
                 kill_map[pid_value] = details
+            elif managed:
+                details["reason"] = "sibling_starter_best_effort"
+                skipped.append(details)
             else:
                 skipped.append(details)
 
@@ -276,8 +295,11 @@ def _build_cleanup_plan(
             repo_root=repo_root,
         )
         pid = details.get("pid")
-        if managed and isinstance(pid, int):
+        if managed and details.get("kind") == "legacy_mcp" and isinstance(pid, int):
             kill_map[pid] = details
+        elif managed:
+            details["reason"] = "sibling_starter_best_effort"
+            skipped.append(details)
         else:
             skipped.append(details)
 
@@ -307,18 +329,25 @@ def _cleanup_pid_record() -> None:
 def main() -> None:
     started_at = _utcnow()
     current_pid = os.getpid()
-    errors: list[str] = []
+    cleanup_warnings: list[str] = []
     os.environ[STARTER_ENV] = "1"
 
     try:
-        pid_record = _load_pid_record()
-        scanned_records = _list_candidate_process_records()
-        kill_list, skipped_records, stale_pid_file = _build_cleanup_plan(
-            current_pid=current_pid,
-            repo_root=REPO_ROOT,
-            pid_record=pid_record,
-            scanned_records=scanned_records,
-        )
+        pid_record: dict[str, Any] = {}
+        kill_list: list[dict[str, Any]] = []
+        skipped_records: list[dict[str, Any]] = []
+        stale_pid_file = False
+        try:
+            pid_record = _load_pid_record()
+            scanned_records = _list_candidate_process_records()
+            kill_list, skipped_records, stale_pid_file = _build_cleanup_plan(
+                current_pid=current_pid,
+                repo_root=REPO_ROOT,
+                pid_record=pid_record,
+                scanned_records=scanned_records,
+            )
+        except Exception as exc:
+            cleanup_warnings.append(f"Cleanup scan failed: {type(exc).__name__}: {exc}")
 
         killed_pids: list[int] = []
         for record in kill_list:
@@ -327,10 +356,13 @@ def main() -> None:
             if stopped:
                 killed_pids.append(pid)
             else:
-                errors.append(f"Failed to stop pid {pid}: {detail}")
+                cleanup_warnings.append(f"Failed to stop legacy pid {pid}: {detail}")
 
         if stale_pid_file and PID_PATH.exists():
-            PID_PATH.unlink(missing_ok=True)
+            try:
+                PID_PATH.unlink(missing_ok=True)
+            except OSError as exc:
+                cleanup_warnings.append(f"Failed to remove stale pid file: {exc}")
 
         audit = {
             "started_at": started_at,
@@ -339,12 +371,9 @@ def main() -> None:
             "found_pids": [int(item["pid"]) for item in kill_list],
             "killed_pids": killed_pids,
             "skipped_pids": skipped_records,
-            "errors": errors,
+            "errors": cleanup_warnings,
         }
         _append_startup_log(audit)
-
-        if errors:
-            raise RuntimeError("; ".join(errors))
 
         _write_pid_record(current_pid=current_pid, killed_pids=killed_pids)
         atexit.register(_cleanup_pid_record)

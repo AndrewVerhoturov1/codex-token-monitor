@@ -1,6 +1,8 @@
 import importlib.util
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -42,6 +44,20 @@ class StartOpenCodeJobsMcpTests(unittest.TestCase):
                 "python.exe",
                 r'python -u "D:\repo\scripts\start_opencode_jobs_mcp.py"',
             )
+        )
+
+    def test_managed_process_kind_distinguishes_legacy_and_starter(self) -> None:
+        self.assertEqual(
+            starter._managed_process_kind(
+                "python -m scripts.codex_token_monitor_opencode_jobs_mcp"
+            ),
+            "legacy_mcp",
+        )
+        self.assertEqual(
+            starter._managed_process_kind(
+                r'python -u "D:\repo\scripts\start_opencode_jobs_mcp.py"'
+            ),
+            "starter",
         )
 
     def test_python_entrypoint_process_rejects_powershell_wrapper(self) -> None:
@@ -170,6 +186,26 @@ class StartOpenCodeJobsMcpTests(unittest.TestCase):
         self.assertEqual(skipped[0]["reason"], "current_process")
         self.assertEqual(skipped[1]["reason"], "not_entrypoint_process")
 
+    def test_build_cleanup_plan_skips_sibling_starter_process(self) -> None:
+        with mock.patch.object(starter, "_is_pid_alive", return_value=True):
+            kill_list, skipped, stale_pid_file = starter._build_cleanup_plan(
+                current_pid=200,
+                repo_root=starter.REPO_ROOT,
+                pid_record={},
+                scanned_records=[
+                    {
+                        "pid": 333,
+                        "name": "python.exe",
+                        "command_line": f'python "{starter.REPO_ROOT}\\scripts\\start_opencode_jobs_mcp.py"',
+                        "source": "process_scan",
+                    }
+                ],
+            )
+        self.assertFalse(stale_pid_file)
+        self.assertEqual(kill_list, [])
+        self.assertEqual(skipped[0]["pid"], 333)
+        self.assertEqual(skipped[0]["reason"], "sibling_starter_best_effort")
+
     def test_parse_process_query_output_supports_single_object(self) -> None:
         parsed = starter._parse_process_query_output(
             json.dumps(
@@ -215,6 +251,61 @@ class StartOpenCodeJobsMcpTests(unittest.TestCase):
             payload = json.loads(pid_path.read_text(encoding="utf-8"))
             self.assertEqual(payload["pid"], 555)
             self.assertEqual(payload["cleanup_killed_pids"], [111, 222])
+
+    def test_main_continues_when_legacy_cleanup_fails(self) -> None:
+        fake_jobs_mcp = types.SimpleNamespace(main=mock.Mock())
+        log_entries: list[dict[str, object]] = []
+
+        with mock.patch.dict(sys.modules, {"codex_token_monitor_opencode_jobs_mcp": fake_jobs_mcp}):
+            with mock.patch.object(starter, "_load_pid_record", return_value={}):
+                with mock.patch.object(
+                    starter,
+                    "_list_candidate_process_records",
+                    return_value=[
+                        {
+                            "pid": 444,
+                            "name": "python.exe",
+                            "command_line": "python -m scripts.codex_token_monitor_opencode_jobs_mcp",
+                            "source": "process_scan",
+                        }
+                    ],
+                ):
+                    with mock.patch.object(starter, "_is_pid_alive", return_value=True):
+                        with mock.patch.object(
+                            starter,
+                            "_stop_process",
+                            return_value=(False, "Access is denied."),
+                        ) as stop_process:
+                            with mock.patch.object(
+                                starter, "_append_startup_log", side_effect=log_entries.append
+                            ):
+                                with mock.patch.object(starter, "_write_pid_record"):
+                                    with mock.patch.object(starter.atexit, "register"):
+                                        starter.main()
+
+        stop_process.assert_called_once_with(444)
+        fake_jobs_mcp.main.assert_called_once_with()
+        self.assertTrue(log_entries)
+        self.assertIn("Failed to stop legacy pid 444", log_entries[0]["errors"][0])
+
+    def test_main_continues_when_cleanup_scan_raises(self) -> None:
+        fake_jobs_mcp = types.SimpleNamespace(main=mock.Mock())
+        log_entries: list[dict[str, object]] = []
+
+        with mock.patch.dict(sys.modules, {"codex_token_monitor_opencode_jobs_mcp": fake_jobs_mcp}):
+            with mock.patch.object(
+                starter,
+                "_list_candidate_process_records",
+                side_effect=RuntimeError("process query failed"),
+            ):
+                with mock.patch.object(starter, "_append_startup_log", side_effect=log_entries.append):
+                    with mock.patch.object(starter, "_write_pid_record"):
+                        with mock.patch.object(starter.atexit, "register"):
+                            starter.main()
+
+        fake_jobs_mcp.main.assert_called_once_with()
+        self.assertTrue(log_entries)
+        self.assertIn("Cleanup scan failed", log_entries[0]["errors"][0])
 
 
 if __name__ == "__main__":
