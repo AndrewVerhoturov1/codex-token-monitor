@@ -135,6 +135,144 @@ def _run_job(tmpdir: Path, worker_path: Path, mode: str, config_overrides: dict 
 
 class OpenCodeJobsCoreTests(unittest.TestCase):
 
+    def test_build_adapter_command_includes_logs_directory_and_debug_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            cfg = jobs.JobConfig(
+                debug_visible_terminal=True,
+                debug_open_session_tui=True,
+                opencode_attach_url="http://localhost:4096",
+                opencode_command=r"C:\Users\andre\AppData\Roaming\npm\opencode.cmd",
+                export_session="always",
+            )
+            command = jobs._build_adapter_command(
+                cfg,
+                task_file=tmpdir / "task.md",
+                job_dir=tmpdir / "job-dir",
+                provider_id="deepseek",
+                model_id="deepseek-v4-flash",
+                stdout_path=tmpdir / "stdout.log",
+                stderr_path=tmpdir / "stderr.log",
+                directory=str(tmpdir / "workspace"),
+            )
+            self.assertIn("--stdout-log", command)
+            self.assertIn(str(tmpdir / "stdout.log"), command)
+            self.assertIn("--stderr-log", command)
+            self.assertIn(str(tmpdir / "stderr.log"), command)
+            self.assertIn("--directory", command)
+            self.assertIn(str(tmpdir / "workspace"), command)
+            self.assertIn("--opencode-command", command)
+            self.assertIn(r"C:\Users\andre\AppData\Roaming\npm\opencode.cmd", command)
+            self.assertIn("--debug-visible-terminal", command)
+            self.assertIn("--debug-open-session-tui", command)
+            self.assertIn("--opencode-attach-url", command)
+            self.assertIn("http://localhost:4096", command)
+            self.assertIn("--export-session", command)
+            self.assertIn("always", command)
+
+    def test_load_config_reads_debug_visible_terminal(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            config_path = tmpdir / "config.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "jobs_dir": "jobs",
+                        "debug_visible_terminal": True,
+                        "debug_open_session_tui": True,
+                        "opencode_attach_url": "http://localhost:4096",
+                        "opencode_command": r"C:\Users\andre\AppData\Roaming\npm\opencode.cmd",
+                        "export_session": "always",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+            config = jobs.load_config(config_path)
+            self.assertTrue(config.debug_visible_terminal)
+            self.assertTrue(config.debug_open_session_tui)
+            self.assertEqual(config.opencode_attach_url, "http://localhost:4096")
+            self.assertEqual(config.opencode_command, r"C:\Users\andre\AppData\Roaming\npm\opencode.cmd")
+            self.assertEqual(config.export_session, "always")
+
+    def test_collect_debug_metadata_reports_requested_visibility_states(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            job_dir = tmpdir / "job"
+            job_dir.mkdir(parents=True, exist_ok=True)
+            (job_dir / "opencode_launch.json").write_text(
+                json.dumps(
+                    {
+                        "attach_url": "http://localhost:4096",
+                        "session_lookup_attempted": True,
+                        "session_lookup_status": "session_found",
+                        "session_lookup_error": "",
+                        "session_id_found": True,
+                        "session_id": "ses_123",
+                        "tui_open_attempted": True,
+                        "tui_open_status": "launched_not_confirmed",
+                        "tui_open_command": "wt.exe new-tab ...",
+                        "tui_open_error": "",
+                        "export_session": "on_failure",
+                        "export_session_status": "exported",
+                        "export_session_reason": "",
+                        "session_export_path": str(job_dir / "opencode_session_export.json"),
+                        "session_transcript_path": str(job_dir / "opencode_session_transcript.md"),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+            cfg = jobs.JobConfig(
+                debug_visible_terminal=True,
+                debug_open_session_tui=True,
+                opencode_attach_url="http://localhost:4096",
+            )
+            metadata = jobs._collect_debug_metadata(
+                config=cfg,
+                job_dir=job_dir,
+                process_pid=777,
+            )
+            self.assertEqual(metadata["debug_visible_terminal_status"], "adapter_started_not_confirmed")
+            self.assertEqual(metadata["debug_open_session_tui_status"], "launched_not_confirmed")
+            self.assertEqual(metadata["debug_session_id"], "ses_123")
+            self.assertEqual(metadata["debug_attach_url"], "http://localhost:4096")
+            self.assertEqual(metadata["export_session_status"], "exported")
+
+    def test_collect_debug_metadata_reports_session_not_found(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            job_dir = tmpdir / "job"
+            job_dir.mkdir(parents=True, exist_ok=True)
+            (job_dir / "opencode_launch.json").write_text(
+                json.dumps(
+                    {
+                        "session_lookup_attempted": True,
+                        "session_lookup_status": "session_not_found",
+                        "session_lookup_error": "",
+                        "session_id_found": False,
+                        "session_id": "",
+                        "tui_open_attempted": False,
+                        "tui_open_status": "launch_not_attempted",
+                        "tui_open_command": "",
+                        "tui_open_error": "",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+            cfg = jobs.JobConfig(debug_open_session_tui=True)
+            metadata = jobs._collect_debug_metadata(
+                config=cfg,
+                job_dir=job_dir,
+                process_pid=555,
+            )
+            self.assertEqual(metadata["debug_open_session_tui_status"], "session_not_found")
+            self.assertIn("session_not_found", metadata["debug_open_session_tui_reason"])
+
     def assert_iso_utc(self, ts: str) -> None:
         pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$"
         self.assertRegex(ts, pattern, f"Timestamp {ts!r} is not ISO UTC")
@@ -342,8 +480,74 @@ class OpenCodeJobsCoreTests(unittest.TestCase):
                 "started_at", "finished_at", "duration_ms",
                 "exit_code", "timed_out", "provider_id", "model_id",
                 "result_path", "stdout_path", "stderr_path",
+                "launch_path",
+                "debug_visible_terminal_requested",
+                "debug_visible_terminal_status",
+                "debug_visible_terminal_reason",
+                "debug_visible_terminal_pid",
+                "debug_open_session_tui_requested",
+                "debug_open_session_tui_status",
+                "debug_open_session_tui_reason",
+                "debug_session_id",
+                "debug_tui_command",
+                "debug_attach_url",
+                "export_session_mode",
+                "export_session_status",
+                "export_session_reason",
+                "session_export_path",
+                "session_transcript_path",
             }
             self.assertEqual(set(done.keys()), expected_keys)
+
+    def test_cleanup_old_jobs_dry_run_preserves_recent_20(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            jobs_dir = tmpdir / "jobs"
+            jobs_dir.mkdir(parents=True, exist_ok=True)
+            now_ts = time.time()
+
+            for index in range(25):
+                job_dir = jobs_dir / f"job-{index:02d}"
+                job_dir.mkdir(parents=True, exist_ok=True)
+                status = jobs.STATUS_COMPLETED
+                (job_dir / "done.json").write_text(
+                    json.dumps({"status": status}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                ts = now_ts - ((40 - index) * 86400)
+                os.utime(job_dir / "done.json", (ts, ts))
+
+            cfg = jobs.JobConfig(jobs_dir=str(jobs_dir))
+            result = jobs.cleanup_old_jobs(cfg, dry_run=True, now_ts=now_ts)
+            self.assertEqual(result["scanned"], 25)
+            self.assertEqual(result["kept_recent"], 20)
+            self.assertEqual(result["eligible"], 5)
+            self.assertEqual(result["deleted"], 0)
+            self.assertEqual(len(result["candidates"]), 5)
+
+    def test_cleanup_old_jobs_dry_run_respects_failure_retention(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            jobs_dir = tmpdir / "jobs"
+            jobs_dir.mkdir(parents=True, exist_ok=True)
+            now_ts = time.time()
+
+            for index in range(21):
+                job_dir = jobs_dir / f"job-{index:02d}"
+                job_dir.mkdir(parents=True, exist_ok=True)
+                status = jobs.STATUS_BLOCKED
+                age_days = 29
+                (job_dir / "done.json").write_text(
+                    json.dumps({"status": status}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                ts = now_ts - (age_days * 86400)
+                os.utime(job_dir / "done.json", (ts, ts))
+
+            cfg = jobs.JobConfig(jobs_dir=str(jobs_dir))
+            result = jobs.cleanup_old_jobs(cfg, dry_run=True, now_ts=now_ts)
+            self.assertEqual(result["eligible"], 0)
+            self.assertEqual(result["kept_by_age"], 1)
 
     def test_done_not_written_before_result_on_success(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -565,8 +769,8 @@ class OpenCodeJobsSmokeTests(unittest.TestCase):
         if shutil.which("opencode") is None:
             self.skipTest("opencode CLI is not available in PATH")
 
-        provider_id = os.environ.get("OPENCODE_JOB_WRAPPER_PROVIDER_ID", "deepseek")
-        model_id = os.environ.get("OPENCODE_JOB_WRAPPER_MODEL_ID", "deepseek-v4-flash")
+        provider_id = os.environ.get("OPENCODE_JOB_WRAPPER_PROVIDER_ID", "opencode")
+        model_id = os.environ.get("OPENCODE_JOB_WRAPPER_MODEL_ID", "deepseek-v4-flash-free")
         task_text = (
             "Return a one-line validation message and follow the provided file protocol exactly. "
             "Do not modify repository files outside the supplied job directory."
