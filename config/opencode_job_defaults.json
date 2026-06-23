@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "jobs_dir": "_local/codex-token-monitor/opencode-jobs",
-  "timeout_seconds": 600,
+  "timeout_seconds": 720,
   "poll_interval_ms": 1000,
   "provider_id": "opencode",
   "model_id": "deepseek-v4-flash-free",

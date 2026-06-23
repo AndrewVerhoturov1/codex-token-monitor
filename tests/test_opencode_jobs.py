@@ -135,6 +135,9 @@ def _run_job(tmpdir: Path, worker_path: Path, mode: str, config_overrides: dict 
 
 class OpenCodeJobsCoreTests(unittest.TestCase):
 
+    def test_job_config_default_timeout_is_720_seconds(self) -> None:
+        self.assertEqual(jobs.JobConfig().timeout_seconds, 720)
+
     def test_build_adapter_command_includes_logs_directory_and_debug_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
@@ -169,6 +172,18 @@ class OpenCodeJobsCoreTests(unittest.TestCase):
             self.assertIn("http://localhost:4096", command)
             self.assertIn("--export-session", command)
             self.assertIn("always", command)
+            self.assertEqual(command[0], sys.executable)
+            self.assertEqual(command[1], str(jobs.REPO_ROOT / "scripts" / "codex_token_monitor_opencode_adapter.py"))
+
+    def test_normalize_builtin_adapter_command_uses_current_python_and_absolute_script(self) -> None:
+        command = jobs._normalize_builtin_adapter_command([
+            "python",
+            "scripts/codex_token_monitor_opencode_adapter.py",
+            "--task-file",
+            "task.md",
+        ])
+        self.assertEqual(command[0], sys.executable)
+        self.assertEqual(command[1], str(jobs.REPO_ROOT / "scripts" / "codex_token_monitor_opencode_adapter.py"))
 
     def test_load_config_reads_debug_visible_terminal(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -657,6 +672,106 @@ class OpenCodeJobsCoreTests(unittest.TestCase):
             result = jobs.run_opencode_job("task", config=cfg)
             self.assertEqual(result.status, jobs.STATUS_FAILED)
             self.assertEqual(result.reason, "process_exited_without_done")
+
+    def test_builtin_adapter_bootstrap_timeout_creates_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            worker = _make_fake_worker(tmpdir)
+            cfg = jobs.JobConfig(
+                jobs_dir=str(tmpdir / "jobs"),
+                timeout_seconds=30,
+                poll_interval_ms=50,
+                provider_id="test",
+                model_id="test-model",
+                command_template=[
+                    sys.executable, str(worker),
+                    "--job-dir", "{job_dir}",
+                    "--mode", "timeout",
+                ],
+            )
+            with mock.patch.object(jobs, "_command_uses_builtin_adapter", return_value=True):
+                with mock.patch.object(jobs, "ADAPTER_BOOTSTRAP_TIMEOUT_SECONDS", 1):
+                    result = jobs.run_opencode_job("task", config=cfg)
+
+            self.assertEqual(result.status, jobs.STATUS_FAILED)
+            self.assertEqual(result.reason, "adapter_bootstrap_timeout")
+            job_dir = Path(result.result_path).parent
+            self.assertTrue((job_dir / "stdout.log").exists())
+            self.assertTrue((job_dir / "stderr.log").exists())
+            self.assertTrue((job_dir / "opencode_launch.json").exists())
+            self.assertIn("adapter bootstrap timed out", (job_dir / "stderr.log").read_text(encoding="utf-8"))
+            launch = json.loads((job_dir / "opencode_launch.json").read_text(encoding="utf-8"))
+            self.assertEqual(launch["launch_writer"], "wrapper_prelaunch")
+            self.assertEqual(launch["wrapper_launch_status"], "adapter_bootstrap_timeout")
+
+    def test_builtin_adapter_exit_without_bootstrap_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            cfg = jobs.JobConfig(
+                jobs_dir=str(tmpdir / "jobs"),
+                timeout_seconds=5,
+                poll_interval_ms=50,
+                provider_id="test",
+                model_id="test-model",
+                command_template=[
+                    sys.executable, "-c", "import sys; sys.exit(0)",
+                    "--job-dir", "{job_dir}",
+                ],
+            )
+            with mock.patch.object(jobs, "_command_uses_builtin_adapter", return_value=True):
+                result = jobs.run_opencode_job("task", config=cfg)
+
+            self.assertEqual(result.status, jobs.STATUS_FAILED)
+            self.assertEqual(result.reason, "adapter_exited_without_bootstrap")
+            job_dir = Path(result.result_path).parent
+            self.assertIn("adapter exited before writing adapter launch artifacts", (job_dir / "stderr.log").read_text(encoding="utf-8"))
+
+    def test_builtin_adapter_launch_detaches_stdin_and_captures_bootstrap_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            cfg = jobs.JobConfig(
+                jobs_dir=str(tmpdir / "jobs"),
+                timeout_seconds=5,
+                poll_interval_ms=50,
+                provider_id="test",
+                model_id="test-model",
+                command_template=[
+                    sys.executable, "-c", "import sys; sys.exit(0)",
+                    "--job-dir", "{job_dir}",
+                ],
+            )
+
+            class FakeProcess:
+                pid = 12345
+
+                def __init__(self) -> None:
+                    self.returncode = 0
+
+                def poll(self) -> int:
+                    return 0
+
+                def wait(self, timeout: int | None = None) -> int:
+                    self.returncode = 0
+                    return 0
+
+            with mock.patch.object(jobs, "_command_uses_builtin_adapter", return_value=True):
+                with mock.patch.object(jobs.subprocess, "Popen", return_value=FakeProcess()) as popen_mock:
+                    result = jobs.run_opencode_job("task", config=cfg)
+
+            self.assertEqual(result.reason, "adapter_exited_without_bootstrap")
+            self.assertIs(popen_mock.call_args.kwargs["stdin"], subprocess.DEVNULL)
+            job_dir = Path(result.result_path).parent
+            self.assertTrue((job_dir / "adapter_bootstrap_stdout.log").exists())
+            self.assertTrue((job_dir / "adapter_bootstrap_stderr.log").exists())
+            launch = json.loads((job_dir / "opencode_launch.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                launch["adapter_bootstrap_stdout_path"],
+                str(job_dir / "adapter_bootstrap_stdout.log"),
+            )
+            self.assertEqual(
+                launch["adapter_bootstrap_stderr_path"],
+                str(job_dir / "adapter_bootstrap_stderr.log"),
+            )
 
 
 class OpenCodeJobsCliTests(unittest.TestCase):

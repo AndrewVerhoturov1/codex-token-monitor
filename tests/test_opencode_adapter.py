@@ -188,6 +188,36 @@ class OpenCodeAdapterTests(unittest.TestCase):
             ],
         )
 
+    def test_build_terminal_open_command_prefers_windows_terminal_when_available(self) -> None:
+        with mock.patch.object(adapter.shutil, "which", return_value=r"C:\Windows\System32\wt.exe"):
+            command, launcher = adapter._build_terminal_open_command(
+                command_tokens=[
+                    r"C:\Users\andre\AppData\Roaming\npm\opencode.cmd",
+                    "attach",
+                    "http://localhost:4096",
+                ],
+                window_title="codex-job-123",
+            )
+        self.assertEqual(launcher, "wt.exe")
+        self.assertEqual(command[0], r"C:\Windows\System32\wt.exe")
+        self.assertIn("new-tab", command)
+        self.assertIn("--title", command)
+        self.assertIn("codex-job-123", command)
+
+    def test_build_terminal_open_command_falls_back_to_powershell(self) -> None:
+        with mock.patch.object(adapter.shutil, "which", return_value=None):
+            command, launcher = adapter._build_terminal_open_command(
+                command_tokens=[
+                    r"C:\Users\andre\AppData\Roaming\npm\opencode.cmd",
+                    "attach",
+                    "http://localhost:4096",
+                ],
+                window_title="codex-job-123",
+            )
+        self.assertEqual(launcher, "powershell.exe")
+        self.assertEqual(command[0], "powershell.exe")
+        self.assertIn("-NoExit", command)
+
     def test_write_launch_artifacts_writes_manual_command_and_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             job_dir = Path(tmp)

@@ -244,10 +244,6 @@ def _build_terminal_open_command(*, command_tokens: list[str], window_title: str
         opencode_input_path=Path("."),
         command_tokens=command_tokens,
     )
-
-
-def _build_export_command(*, opencode_command: str, session_id: str) -> list[str]:
-    return [opencode_command, "export", session_id]
     wt_path = shutil.which("wt.exe")
     if wt_path:
         return (
@@ -270,8 +266,12 @@ def _build_export_command(*, opencode_command: str, session_id: str) -> list[str
             "-Command",
             inner_command,
         ],
-        "powershell.exe",
-    )
+            "powershell.exe",
+        )
+
+
+def _build_export_command(*, opencode_command: str, session_id: str) -> list[str]:
+    return [opencode_command, "export", session_id]
 
 
 def _write_launch_artifacts(
@@ -633,6 +633,7 @@ def _run_opencode(
     if not debug_visible_terminal:
         proc = subprocess.Popen(
             command_tokens,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -772,6 +773,7 @@ def main() -> None:
         opencode_input=augmented_task,
         command_tokens=command_tokens,
         launch_payload={
+            "launch_writer": "adapter",
             "provider_id": args.provider_id,
             "model_id": args.model_id,
             "working_directory": args.directory or "",

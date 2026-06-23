@@ -27,6 +27,8 @@ EXIT_BLOCKED = 20
 EXIT_FAILED = 30
 EXIT_CONFIG_ERROR = 31
 EXIT_PROTOCOL_ERROR = 32
+DEFAULT_TIMEOUT_SECONDS = 720
+ADAPTER_BOOTSTRAP_TIMEOUT_SECONDS = 15
 
 EXPORT_SESSION_OFF = "off"
 EXPORT_SESSION_ON_FAILURE = "on_failure"
@@ -43,7 +45,7 @@ VALID_EXPORT_SESSION_MODES = frozenset({
 @dataclass
 class JobConfig:
     jobs_dir: str = "_local/codex-token-monitor/opencode-jobs"
-    timeout_seconds: int = 600
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     poll_interval_ms: int = 1000
     provider_id: str = "opencode"
     model_id: str = "deepseek-v4-flash-free"
@@ -144,6 +146,14 @@ def _atomic_write_text(path: Path, text: str) -> None:
             tmp.unlink(missing_ok=True)
 
 
+def _append_text(path: Path, text: str) -> None:
+    if not text:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(text)
+
+
 def _utcnow() -> str:
     now = datetime.now(timezone.utc)
     return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond:06d}"[:3] + "Z"
@@ -203,6 +213,8 @@ def _build_adapter_command(
         provider_id=provider_id,
         model_id=model_id,
     )
+    if _command_uses_builtin_adapter(command_tokens):
+        command_tokens = _normalize_builtin_adapter_command(command_tokens)
     command_tokens.extend([
         "--stdout-log", str(stdout_path),
         "--stderr-log", str(stderr_path),
@@ -228,6 +240,94 @@ def _command_uses_builtin_adapter(command_tokens: list[str]) -> bool:
         "codex_token_monitor_opencode_adapter.py",
     }
     return any(token in adapter_markers or token.endswith("codex_token_monitor_opencode_adapter.py") for token in command_tokens)
+
+
+def _normalize_builtin_adapter_command(command_tokens: list[str]) -> list[str]:
+    normalized = list(command_tokens)
+    if normalized:
+        launcher = Path(normalized[0]).name.casefold()
+        if launcher in {"python", "python.exe", "python3", "python3.exe", "py", "py.exe"} and sys.executable:
+            normalized[0] = sys.executable
+    for index, token in enumerate(normalized):
+        token_norm = token.replace("\\", "/")
+        if token_norm.endswith("scripts/codex_token_monitor_opencode_adapter.py"):
+            normalized[index] = str(REPO_ROOT / "scripts" / "codex_token_monitor_opencode_adapter.py")
+            break
+        if token_norm == "codex_token_monitor_opencode_adapter.py":
+            normalized[index] = str(REPO_ROOT / "scripts" / "codex_token_monitor_opencode_adapter.py")
+            break
+    return normalized
+
+
+def _command_display(command_tokens: list[str]) -> str:
+    try:
+        return subprocess.list2cmdline(command_tokens)
+    except Exception:
+        return " ".join(command_tokens)
+
+
+def _update_launch_artifact(job_dir: Path, **updates: Any) -> None:
+    launch_path = job_dir / "opencode_launch.json"
+    payload = _read_json_safe(launch_path)
+    if not isinstance(payload, dict):
+        payload = {}
+    payload.update(updates)
+    _atomic_write_json(launch_path, payload)
+
+
+def _write_wrapper_log_preamble(path: Path, *, mode: str, cwd: str | None, command_tokens: list[str]) -> None:
+    preamble = (
+        f"[wrapper] mode={mode}\n"
+        f"[wrapper] cwd={cwd or ''}\n"
+        f"[wrapper] command={_command_display(command_tokens)}\n\n"
+    )
+    _atomic_write_text(path, preamble)
+
+
+def _write_wrapper_bootstrap_artifacts(
+    *,
+    job_dir: Path,
+    stdout_path: Path,
+    stderr_path: Path,
+    command_tokens: list[str],
+    directory: str | None,
+    provider_id: str,
+    model_id: str,
+    config: JobConfig,
+    uses_builtin_adapter: bool,
+) -> None:
+    mode = "visible_terminal" if config.debug_visible_terminal else "silent"
+    _write_wrapper_log_preamble(stdout_path, mode=mode, cwd=directory, command_tokens=command_tokens)
+    _write_wrapper_log_preamble(stderr_path, mode=mode, cwd=directory, command_tokens=command_tokens)
+    _atomic_write_json(
+        job_dir / "opencode_launch.json",
+        {
+            "launch_writer": "wrapper_prelaunch",
+            "wrapper_started_at": _utcnow(),
+            "wrapper_launch_status": "pending",
+            "wrapper_launch_error": "",
+            "provider_id": provider_id,
+            "model_id": model_id,
+            "working_directory": directory or "",
+            "cwd": str(REPO_ROOT),
+            "debug_visible_terminal": config.debug_visible_terminal,
+            "debug_open_session_tui": config.debug_open_session_tui,
+            "export_session": _normalize_export_session_mode(config.export_session),
+            "stdout_path": str(stdout_path),
+            "stderr_path": str(stderr_path),
+            "command_tokens": command_tokens,
+            "command_display": _command_display(command_tokens),
+            "uses_builtin_adapter": uses_builtin_adapter,
+            "adapter_bootstrap_timeout_seconds": ADAPTER_BOOTSTRAP_TIMEOUT_SECONDS if uses_builtin_adapter else 0,
+        },
+    )
+
+
+def _adapter_bootstrap_completed(job_dir: Path) -> bool:
+    launch_data = _read_json_safe(job_dir / "opencode_launch.json")
+    if isinstance(launch_data, dict) and str(launch_data.get("launch_writer", "")) == "adapter":
+        return True
+    return (job_dir / "opencode_input.md").exists() and (job_dir / "opencode_manual_command.txt").exists()
 
 
 def load_config(config_path: Path | None = None) -> JobConfig:
@@ -266,6 +366,29 @@ def _read_with_tail_max(path: Path, config: JobConfig) -> str:
     return summary
 
 
+def _append_bootstrap_capture_excerpt(
+    *,
+    target_path: Path,
+    bootstrap_path: Path,
+    label: str,
+    config: JobConfig,
+) -> None:
+    excerpt = _read_with_tail_max(bootstrap_path, config).strip()
+    if not excerpt:
+        return
+    _append_text(
+        target_path,
+        f"\n[wrapper] {label} bootstrap capture:\n{excerpt}\n",
+    )
+
+
+def _is_log_preamble_only(text: str) -> bool:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    return all(line.startswith("[wrapper]") or line.startswith("[adapter]") for line in lines)
+
+
 def _derive_summary(status: str, result_path: Path, stderr_path: Path, stdout_path: Path, config: JobConfig) -> str:
     success_like = frozenset({STATUS_COMPLETED, STATUS_PARTIAL})
     if status in success_like:
@@ -274,6 +397,13 @@ def _derive_summary(status: str, result_path: Path, stderr_path: Path, stdout_pa
     else:
         primary = stderr_path
         fallbacks = [stdout_path, result_path]
+    text = _read_with_tail_max(primary, config)
+    if text.strip() and not _is_log_preamble_only(text):
+        return text
+    for fb in fallbacks:
+        text = _read_with_tail_max(fb, config)
+        if text.strip() and not _is_log_preamble_only(text):
+            return text
     text = _read_with_tail_max(primary, config)
     if text.strip():
         return text
@@ -295,6 +425,9 @@ def _collect_debug_metadata(
     launch_data = _read_json_safe(launch_path)
     if not isinstance(launch_data, dict):
         launch_data = {}
+    launch_writer = str(launch_data.get("launch_writer", "") or "")
+    wrapper_launch_status = str(launch_data.get("wrapper_launch_status", "") or "")
+    wrapper_launch_error = str(launch_data.get("wrapper_launch_error", "") or "")
 
     visible_requested = bool(config.debug_visible_terminal)
     open_tui_requested = bool(config.debug_open_session_tui)
@@ -315,6 +448,13 @@ def _collect_debug_metadata(
     if not visible_requested:
         visible_status = "not_requested"
         visible_reason = ""
+    elif launch_writer == "wrapper_prelaunch" and wrapper_launch_status in {
+        "adapter_bootstrap_timeout",
+        "adapter_exited_without_bootstrap",
+        "launch_failed",
+    }:
+        visible_status = "diagnostics_missing"
+        visible_reason = wrapper_launch_error or "Adapter did not replace wrapper bootstrap diagnostics."
     elif process_launch_error:
         visible_status = "launch_failed"
         visible_reason = process_launch_error
@@ -337,6 +477,9 @@ def _collect_debug_metadata(
     elif process_pid is None and not launch_data:
         open_tui_status = "not_started"
         open_tui_reason = "Adapter did not start, so session lookup did not begin."
+    elif launch_writer == "wrapper_prelaunch":
+        open_tui_status = "diagnostics_missing"
+        open_tui_reason = wrapper_launch_error or "Adapter did not replace wrapper bootstrap diagnostics."
     elif not launch_data:
         open_tui_status = "diagnostics_missing"
         open_tui_reason = "Adapter did not write opencode_launch.json diagnostics."
@@ -506,6 +649,8 @@ def run_opencode_job(
     done_path = job_dir / "done.json"
     stdout_path = job_dir / "stdout.log"
     stderr_path = job_dir / "stderr.log"
+    bootstrap_stdout_path = job_dir / "adapter_bootstrap_stdout.log"
+    bootstrap_stderr_path = job_dir / "adapter_bootstrap_stderr.log"
     debug_metadata = _collect_debug_metadata(config=config, job_dir=job_dir, process_pid=None)
 
     for p in [done_path, result_path]:
@@ -548,6 +693,24 @@ def run_opencode_job(
         stderr_path=stderr_path,
         directory=directory,
     )
+    uses_builtin_adapter = _command_uses_builtin_adapter(command_tokens)
+    _write_wrapper_bootstrap_artifacts(
+        job_dir=job_dir,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        command_tokens=command_tokens,
+        directory=directory,
+        provider_id=provider_id,
+        model_id=model_id,
+        config=config,
+        uses_builtin_adapter=uses_builtin_adapter,
+    )
+    if uses_builtin_adapter:
+        _update_launch_artifact(
+            job_dir,
+            adapter_bootstrap_stdout_path=str(bootstrap_stdout_path),
+            adapter_bootstrap_stderr_path=str(bootstrap_stderr_path),
+        )
 
     stdout_handle = None
     stderr_handle = None
@@ -557,21 +720,39 @@ def run_opencode_job(
         popen_kwargs: dict[str, Any] = {
             "shell": False,
             "cwd": str(REPO_ROOT),
+            # The MCP host itself is stdio-driven. Explicitly detach child stdin
+            # so adapter startup does not depend on inherited transport handles.
+            "stdin": subprocess.DEVNULL,
         }
         if config.debug_visible_terminal and sys.platform == "win32":
             popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-        elif _command_uses_builtin_adapter(command_tokens):
-            popen_kwargs["stdout"] = subprocess.DEVNULL
-            popen_kwargs["stderr"] = subprocess.DEVNULL
+        elif uses_builtin_adapter:
+            stdout_handle = open(bootstrap_stdout_path, "a", encoding="utf-8")
+            stderr_handle = open(bootstrap_stderr_path, "a", encoding="utf-8")
+            popen_kwargs["stdout"] = stdout_handle
+            popen_kwargs["stderr"] = stderr_handle
         else:
-            stdout_handle = open(stdout_path, "w", encoding="utf-8")
-            stderr_handle = open(stderr_path, "w", encoding="utf-8")
+            stdout_handle = open(stdout_path, "a", encoding="utf-8")
+            stderr_handle = open(stderr_path, "a", encoding="utf-8")
             popen_kwargs["stdout"] = stdout_handle
             popen_kwargs["stderr"] = stderr_handle
         process = subprocess.Popen(command_tokens, **popen_kwargs)
         process_pid = process.pid
+        _update_launch_artifact(
+            job_dir,
+            wrapper_launch_status="started",
+            wrapper_launch_error="",
+            wrapper_process_pid=process_pid,
+        )
     except OSError as e:
         process_launch_error = f"Failed to launch process: {e}"
+        _append_text(stderr_path, f"[wrapper] {process_launch_error}\n")
+        _update_launch_artifact(
+            job_dir,
+            wrapper_launch_status="launch_failed",
+            wrapper_launch_error=process_launch_error,
+            wrapper_process_pid=None,
+        )
         debug_metadata = _collect_debug_metadata(
             config=config,
             job_dir=job_dir,
@@ -610,12 +791,38 @@ def run_opencode_job(
 
     timed_out = False
     protocol_violation = False
+    adapter_bootstrap_failed = False
+    adapter_bootstrap_reason = ""
     poll_interval = config.poll_interval_ms / 1000.0
     deadline = time.monotonic() + config.timeout_seconds
+    bootstrap_deadline = (
+        time.monotonic() + min(ADAPTER_BOOTSTRAP_TIMEOUT_SECONDS, max(config.timeout_seconds, 1))
+        if uses_builtin_adapter
+        else None
+    )
 
     while time.monotonic() < deadline:
         ret = process.poll()
         if ret is not None:
+            break
+        if bootstrap_deadline is not None and time.monotonic() >= bootstrap_deadline and not _adapter_bootstrap_completed(job_dir):
+            adapter_bootstrap_failed = True
+            adapter_bootstrap_reason = "adapter_bootstrap_timeout"
+            message = (
+                f"[wrapper] adapter bootstrap timed out after {ADAPTER_BOOTSTRAP_TIMEOUT_SECONDS}s "
+                "before writing adapter launch artifacts.\n"
+            )
+            _append_text(stderr_path, message)
+            _update_launch_artifact(
+                job_dir,
+                wrapper_launch_status="adapter_bootstrap_timeout",
+                wrapper_launch_error=message.strip(),
+            )
+            _terminate_process_tree(process.pid)
+            try:
+                process.wait(timeout=30)
+            except Exception:
+                pass
             break
         if done_path.exists() and not result_path.exists():
             protocol_violation = True
@@ -661,7 +868,24 @@ def run_opencode_job(
     except Exception:
         duration_ms = 0
 
-    if protocol_violation:
+    if adapter_bootstrap_failed:
+        _append_bootstrap_capture_excerpt(
+            target_path=stdout_path,
+            bootstrap_path=bootstrap_stdout_path,
+            label="stdout",
+            config=config,
+        )
+        _append_bootstrap_capture_excerpt(
+            target_path=stderr_path,
+            bootstrap_path=bootstrap_stderr_path,
+            label="stderr",
+            config=config,
+        )
+        status = STATUS_FAILED
+        reason = adapter_bootstrap_reason
+        summary = _derive_summary(status, result_path, stderr_path, stdout_path, config)
+        _atomic_write_text(result_path, "# Job Failed\n\n**Reason:** adapter_bootstrap_timeout\n")
+    elif protocol_violation:
         status = STATUS_FAILED
         reason = "protocol_violation_done_before_result"
         summary = _derive_summary(status, result_path, stderr_path, stdout_path, config)
@@ -678,9 +902,30 @@ def run_opencode_job(
         summary = _derive_summary(status, result_path, stderr_path, stdout_path, config)
     elif exit_code is not None:
         status = STATUS_FAILED
-        reason = "process_exited_without_done"
+        if uses_builtin_adapter and not _adapter_bootstrap_completed(job_dir):
+            _append_bootstrap_capture_excerpt(
+                target_path=stdout_path,
+                bootstrap_path=bootstrap_stdout_path,
+                label="stdout",
+                config=config,
+            )
+            _append_bootstrap_capture_excerpt(
+                target_path=stderr_path,
+                bootstrap_path=bootstrap_stderr_path,
+                label="stderr",
+                config=config,
+            )
+            reason = "adapter_exited_without_bootstrap"
+            _append_text(stderr_path, "[wrapper] adapter exited before writing adapter launch artifacts.\n")
+            _update_launch_artifact(
+                job_dir,
+                wrapper_launch_status="adapter_exited_without_bootstrap",
+                wrapper_launch_error="Adapter exited before writing adapter launch artifacts.",
+            )
+        else:
+            reason = "process_exited_without_done"
         summary = _derive_summary(status, result_path, stderr_path, stdout_path, config)
-        _atomic_write_text(result_path, f"# Job Failed\n\n**Reason:** process_exited_without_done\n")
+        _atomic_write_text(result_path, f"# Job Failed\n\n**Reason:** {reason}\n")
     else:
         status = STATUS_FAILED
         reason = "process_exited_without_done"
