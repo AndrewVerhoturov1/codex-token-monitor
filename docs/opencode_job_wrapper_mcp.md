@@ -68,6 +68,7 @@ Tool возвращает компактный JSON:
 глобальном пользовательском конфиге:
 
 - [config.toml](C:\Users\andre\.codex\config.toml)
+- [scripts/install_opencode_jobs_mcp.py](</D:/Codex+opencode_new/Proect_C_O/codex-token-monitor/scripts/install_opencode_jobs_mcp.py>)
 
 Ниже пример для user-level MCP-конфига Codex на Windows.
 Точный верхнеуровневый формат пользовательского файла конфигурации может
@@ -75,7 +76,7 @@ Tool возвращает компактный JSON:
 
 - `server name`: `opencode_jobs`
 - `command`: `python`
-- `args`: `["-m", "scripts.codex_token_monitor_opencode_jobs_mcp"]`
+- `args`: `["scripts/start_opencode_jobs_mcp.py"]`
 - `cwd`: `D:\Codex+opencode_new\Proect_C_O\codex-token-monitor`
 - `startup_timeout_sec`: `30`
 - `tool_timeout_sec`: `900`
@@ -88,8 +89,7 @@ Tool возвращает компактный JSON:
     "opencode_jobs": {
       "command": "python",
       "args": [
-        "-m",
-        "scripts.codex_token_monitor_opencode_jobs_mcp"
+        "scripts/start_opencode_jobs_mcp.py"
       ],
       "cwd": "D:\\Codex+opencode_new\\Proect_C_O\\codex-token-monitor",
       "startup_timeout_sec": 30,
@@ -106,6 +106,49 @@ Tool возвращает компактный JSON:
 Если `python` не доступен в `PATH`, используйте свой стандартный Python
 launcher для Windows, но не добавляйте в конфиг секреты, токены или
 автозапуск OpenCode-задач.
+
+Самый безопасный путь подключения теперь такой:
+
+```powershell
+python scripts/install_opencode_jobs_mcp.py
+```
+
+Что делает installer:
+
+- добавляет или обновляет блок `[mcp_servers.opencode_jobs]` в пользовательском `config.toml`;
+- переводит старый `python -m scripts.codex_token_monitor_opencode_jobs_mcp` на `python scripts/start_opencode_jobs_mcp.py`;
+- делает backup существующего `config.toml` перед перезаписью блока;
+- печатает, нужен ли перезапуск Codex.
+
+После любого изменения `config.toml` нужно один раз полностью перезапустить Codex, потому что текущая сессия не подхватывает новый MCP-маршрут на лету.
+
+Важно для новых чатов Codex: `opencode_jobs` может быть deferred tool.
+Это означает, что в начале новой сессии `mcp__opencode_jobs.opencode_job_run_and_wait`
+иногда ещё не виден как callable tool, хотя сервер уже корректно подключён.
+
+Практическое правило для smoke и обычной работы:
+
+1. если tool уже callable, используйте его сразу;
+2. если tool не виден, сделайте ровно один `tool_search` по `opencode_job_run_and_wait` или `opencode_jobs`;
+3. если `tool_search` вернул tool, используйте его и не считайте это ошибкой маршрута;
+4. только если после этого tool всё равно не найден, считайте маршрут недоступным в текущей сессии.
+
+Стартовать нужно именно через [scripts/start_opencode_jobs_mcp.py](</D:/Codex+opencode_new/Proect_C_O/codex-token-monitor/scripts/start_opencode_jobs_mcp.py>),
+а не напрямую через `python -m scripts.codex_token_monitor_opencode_jobs_mcp`.
+Этот стартёр перед запуском свежего MCP:
+
+- находит старые процессы `opencode_jobs` по точным маркерам командной строки;
+- не трогает `mcp__opencode.*`, `opencode serve` и чужие Python-процессы;
+- останавливает только старые процессы самого `opencode_jobs` MCP;
+- пишет PID/state в `_local/codex-token-monitor/opencode-jobs-mcp.pid.json`;
+- пишет startup audit в `_local/codex-token-monitor/opencode-jobs-mcp-startup.log`.
+
+Это нужно, чтобы старые процессы `opencode_jobs` с устаревшим кодом не
+оставались висеть и не обслуживали новые сессии Codex вместо свежего старта.
+
+Дополнительная защита от старого конфига теперь есть и в самом legacy entrypoint:
+если кто-то всё же запускает `python -m scripts.codex_token_monitor_opencode_jobs_mcp`,
+он автоматически перепрыгивает в `scripts/start_opencode_jobs_mcp.py`, а не обходит стартёр.
 
 `tool_timeout_sec` здесь увеличен специально: сам tool ждёт завершения
 job-wrapper вне модельного цикла, поэтому стандартного короткого MCP timeout

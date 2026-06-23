@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,18 @@ import codex_token_monitor_opencode_jobs as jobs
 SERVER_NAME = "opencode_jobs"
 TOOL_NAME = "opencode_job_run_and_wait"
 MCP_SUMMARY_MAX_CHARS = 1200
+STARTER_ENV = "OPENCODE_JOBS_MCP_STARTED_VIA_STARTER"
+STARTER_PATH = SCRIPT_DIR / "start_opencode_jobs_mcp.py"
+
+
+def _ensure_started_via_starter() -> None:
+    if os.environ.get(STARTER_ENV) == "1":
+        return
+    if not STARTER_PATH.exists():
+        return
+    env = os.environ.copy()
+    env[STARTER_ENV] = "1"
+    os.execve(sys.executable, [sys.executable, str(STARTER_PATH)], env)
 
 
 def _normalize_text(value: Any) -> str | None:
@@ -265,6 +278,7 @@ def opencode_job_run_and_wait(
 
 
 def main() -> None:
+    _ensure_started_via_starter()
     mcp.run()
 
 

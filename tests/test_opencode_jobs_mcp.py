@@ -157,6 +157,23 @@ def _make_job_result(*, status: str = "completed", reason: str = "completed", su
 
 class OpenCodeJobsMcpAdapterTests(unittest.TestCase):
 
+    def test_legacy_entrypoint_redirects_to_starter(self) -> None:
+        with mock.patch.dict(jobs_mcp.os.environ, {}, clear=True):
+            with mock.patch.object(jobs_mcp.os, "execve") as execve:
+                jobs_mcp._ensure_started_via_starter()
+
+        execve.assert_called_once()
+        executable, argv, env = execve.call_args.args
+        self.assertEqual(executable, sys.executable)
+        self.assertEqual(argv, [sys.executable, str(jobs_mcp.STARTER_PATH)])
+        self.assertEqual(env[jobs_mcp.STARTER_ENV], "1")
+
+    def test_legacy_entrypoint_skips_redirect_when_started_via_starter(self) -> None:
+        with mock.patch.dict(jobs_mcp.os.environ, {jobs_mcp.STARTER_ENV: "1"}, clear=True):
+            with mock.patch.object(jobs_mcp.os, "execve") as execve:
+                jobs_mcp._ensure_started_via_starter()
+        execve.assert_not_called()
+
     def test_job_result_to_mcp_response_returns_expected_fields(self) -> None:
         response = jobs_mcp.job_result_to_mcp_response(_make_job_result())
         self.assertEqual(
