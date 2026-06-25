@@ -1,143 +1,156 @@
 # Kimi C4 External Tool Reference
 
-This public reference is a compact, stable description of the extended OpenCode/Kimi tool environment.
+C4 is a Kimi execution profile where the agent receives only `webfetch` as a real tool, reads this public reference once via that tool, and returns a `PATCH_BUNDLE` instead of using file tools directly.
 
-C4 prompts may link here instead of embedding long repeated tool and profile documentation. This file is reference text only. A model reading this file does not receive tool permissions from it. Actual tools are controlled only by the runtime profile and temporary OpenCode configuration used for that run.
+This file is reference text only. A model reading this file does not receive tool permissions from it. Actual tools are controlled only by the runtime profile and temporary OpenCode configuration used for that run.
 
-## C4 intent
+---
 
-C4 is for tasks where Kimi should receive a short prompt plus a public reference link for the extended tool catalog and shared operating rules.
+## Table of Contents
 
-C4 must not be treated as C3 automatically.
+1. [C4 Design Intent](#c4-design-intent)
+2. [Allowed Actual Tool: webfetch](#allowed-actual-tool-webfetch)
+3. [Virtual PATCH_BUNDLE Format](#virtual-patch_bundle-format)
+4. [Windows Command Guidance](#windows-command-guidance)
+5. [Safety Rules](#safety-rules)
+6. [Final Response Checklist](#final-response-checklist)
+7. [Example: Minimal C4 Workflow](#example-minimal-c4-workflow)
 
-- C1: no tools, PATCH_BUNDLE only.
-- C2: file tools only: read, write, edit, glob, grep, bash.
-- C3: full tool catalog, only with an explicit reason.
-- C4: compact prompt with a public reference link. Runtime tools are still selected by the runner and must be reported explicitly.
+---
 
-## Tool identity catalog
+## C4 Design Intent
 
-Common OpenCode tool IDs referenced by the full profile:
+C4 is C1 + a public reference file.
 
-- bash
-- read
-- glob
-- grep
-- edit
-- write
-- task
-- webfetch
-- todowrite
-- websearch
-- skill
-- apply_patch
+- **C1**: no tools, PATCH_BUNDLE only.
+- **C4**: webfetch (to read this reference) + PATCH_BUNDLE output.
 
-This list is descriptive. It is not a permission grant.
+C4 is **not** C2 (file tools). C4 is **not** C3 (full catalog). C4 does not receive read/write/edit/glob/grep/bash. C4 does not receive GitHub tools.
 
-## File tool signatures
+---
 
-These are the file tools used by file-capable profiles such as C2.
+## Allowed Actual Tool: webfetch
 
-```text
-read(filePath) -> content or error
-write(filePath, content) -> ok or error
-edit(filePath, oldString, newString) -> ok or error
-glob(pattern) -> matching paths
-grep(pattern, include?) -> matching lines
-bash(command, description?, timeout?) -> stdout/stderr/exit code
+### webfetch
+
+Fetch content from a specified URL. Returns the content in the requested format.
+
+**Parameters:**
+- `url` (required): A fully-formed valid URL.
+- `format` (optional): `"markdown"` (default), `"text"`, or `"html"`.
+
+**Constraints:**
+- `webfetch` may only be used to fetch the designated C4 reference URL provided by the runtime. Do not fetch arbitrary URLs.
+- The reference URL is provided by the runtime in the agent prompt. Do not hardcode a URL in the task prompt.
+
+---
+
+## Virtual PATCH_BUNDLE Format
+
+C4 does not have file tools. All file changes must be returned as a `PATCH_BUNDLE` in the model response. The outer OpenCode / Codex Route A is responsible for applying the bundle.
+
+### PATCH_BUNDLE structure
+
+A PATCH_BUNDLE is a sequence of patch blocks. Each block represents one file operation.
+
+```
+PATCH_BUNDLE start
+--- a/<filepath>
++++ b/<filepath>
+@@ -<start>,<count> +<start>,<count> @@
+ <unified diff content>
+--- a/<filepath>
++++ b/<filepath>
+@@ -<start>,<count> +<start>,<count> @@
+ <unified diff content>
+PATCH_BUNDLE end
 ```
 
-File tools are for bounded local workspace tasks. They must not be used to read secrets, print tokens, install dependencies, start watch/server loops, or perform Git writes unless the active task explicitly allows that.
+### File creation
 
-## GitHub tool families
+For new files, use `/dev/null` as the source:
 
-The full profile may expose GitHub tool families for repository and project operations:
-
-- file contents read
-- create or update file
-- push multiple files
-- code search
-- pull request create/read/list
-- issue read/write/comment
-- commit read/list
-- branch list/create
-- actions list/get/trigger
-
-GitHub tools are not for ordinary local filesystem work. They require an explicit GitHub task and a bounded scope. This reference does not authorize GitHub writes.
-
-## Output formats
-
-Prefer compact, machine-checkable reports.
-
-```text
-TASK_STATUS: COMPLETED / PARTIAL / BLOCKED / FAILED / NEEDS_CODEX_DECISION
+```
+PATCH_BUNDLE start
+--- a/dev/null
++++ b/path/to/new-file.ext
+@@ -0,0 +1,<lineCount> @@
++<content line 1>
++<content line 2>
+PATCH_BUNDLE end
 ```
 
-For patch-only work, use a PATCH_BUNDLE with clear file boundaries. For normal file work, report changed files and verification.
+### File deletion
 
-Recommended final report fields:
+```
+PATCH_BUNDLE start
+--- a/path/to/file.ext
++++ b/dev/null
+@@ -<start>,<count> +0,0 @@
+-<content line 1>
+-<content line 2>
+PATCH_BUNDLE end
+```
 
-- task status
-- files changed
-- verification performed
-- tools actually available
-- full tool catalog sent: yes/no
-- GitHub tools sent: yes/no
-- permanent config changed: yes/no
-- Git write actions used: yes/no
+### Rules
 
-## Core operating rules
+- Each PATCH_BUNDLE must have a clear `start` and `end` marker.
+- File paths are relative to the repository root.
+- Do not include unrelated files in the same bundle.
+- The outer route applies the patch; C4 must not attempt to apply it via bash or any other tool.
 
-- Do not invent tool outputs.
-- Do not claim a file, command, GitHub object, or test result exists unless a tool actually confirmed it.
-- If a needed tool is unavailable, report the missing tool and stop or request a route change.
-- Keep task scope bounded to the paths and actions in the prompt.
-- Do not read or print `.env`, tokens, cookies, credentials, or secrets.
-- Do not change permanent OpenCode config unless the task explicitly requests it.
-- Do not run installs, updates, servers, watchers, or network-heavy commands unless explicitly allowed.
-- Do not perform Git writes unless explicitly allowed.
-- Do not use GitHub writes unless the task is explicitly a GitHub task.
+---
 
-## Guard rules by domain
+## Windows Command Guidance
 
-File tasks:
+C4 agents never execute commands. However, if reference documentation or the task prompt mentions Windows commands, follow these rules:
 
-- use file tools only within the allowed scope;
-- keep edits minimal;
-- verify with no-install checks when possible;
-- stop before dependency installs or persistent servers.
+- **Do not use `mkdir -p`**. This is a Unix-ism and produces errors in Windows PowerShell.
+- **Preferred equivalent**: If a directory creation command is ever needed (in docs or examples), use:
+  ```powershell
+  New-Item -ItemType Directory -Force -Path "path\to\dir"
+  ```
+- **Preferred file creation**: Use PATCH_BUNDLE file creation (see above), not command-line file creation.
 
-GitHub tasks:
+---
 
-- use GitHub tools only when explicitly requested;
-- prefer read-only probes before writes;
-- protect default branches unless the user explicitly requested a direct publish/update;
-- report whether GitHub writes were performed.
+## Safety Rules
 
-No-tools tasks:
+1. **No secrets**: Do not read, print, or expose .env, tokens, cookies, credentials, API keys, or any secret values.
+2. **No installs**: Do not install or update packages, dependencies, or system components.
+3. **No git writes**: Do not run git add/commit/push/reset/clean. All git operations are handled by the outer route.
+4. **No permanent opencode config edits**: Do not edit opencode.jsonc or any OpenCode configuration files. Use only temporary config provided by the runtime.
+5. **No GitHub tools**: Do not use any GitHub API tools (PR, issue, actions, search, file contents). GitHub operations are handled by the outer route.
+6. **No file tools**: Do not use read/write/edit/glob/grep/bash. Use PATCH_BUNDLE for all file changes.
+7. **No websearch**: Do not use websearch. Only webfetch for the designated reference URL.
+8. **No network commands**: Do not run network commands (curl, wget, Invoke-WebRequest) via any interface. Only webfetch.
+9. **Bounded scope**: Keep all work within the paths and scope specified in the task prompt.
 
-- return PATCH_BUNDLE only;
-- do not simulate reads or command outputs;
-- keep patches self-contained and reviewable.
+---
 
-## Profile comparison
+## Final Response Checklist
 
-| Profile | Prompt style | Runtime tools | Full catalog | GitHub tools |
-|---|---|---|---|---|
-| C1 | compact patch bundle | none | no | no |
-| C2 | file-agent prompt | read/write/edit/glob/grep/bash | no | no |
-| C3 | full agent prompt | full OpenCode catalog | yes | yes, if configured |
-| C4 | compact prompt + this reference link | selected by runner | must be reported | must be reported |
+Every C4 response must include:
 
-## C4 prompt contract
+- [ ] TASK_STATUS near the top (COMPLETED / PARTIAL / BLOCKED / FAILED / NEEDS_CODEX_DECISION)
+- [ ] PATCH_BUNDLE for all file changes (if any)
+- [ ] C4 actual tools reported (should be: webfetch only)
+- [ ] full_tool_catalog_sent: false
+- [ ] github_tools_sent: false
+- [ ] permanent opencode config touched: false
+- [ ] Git write actions used: none
 
-A C4 prompt should include:
+---
 
-- this reference URL;
-- a one-sentence description of what this reference contains;
-- the actual runtime tools available in the current run;
-- explicit statement whether full tool catalog was sent;
-- explicit statement whether GitHub tools were sent;
-- the concrete task brief and bounded scope.
+## Example: Minimal C4 Workflow
 
-The task prompt remains authoritative over this reference. If this reference conflicts with the task prompt, follow the narrower and safer instruction.
+1. Runtime launches C4 agent with `webfetch` tool and URL to this reference.
+2. Agent calls `webfetch` with the reference URL to read this document.
+3. Agent reads the task prompt.
+4. Agent returns:
+   - TASK_STATUS: COMPLETED
+   - PATCH_BUNDLE with the required file changes
+   - Verification summary
+   - full_tool_catalog_sent: false
+   - github_tools_sent: false
+5. Outer OpenCode / Codex Route A applies the PATCH_BUNDLE and verifies.
