@@ -27,6 +27,8 @@ C4 is C1 + a public reference file.
 
 C4 is **not** C2 (file tools). C4 is **not** C3 (full catalog). C4 does not receive read/write/edit/glob/grep/bash. C4 does not receive GitHub tools.
 
+**Hard rule**: The FIRST assistant message MUST contain a `webfetch` call to the reference URL. If `webfetch` is unavailable or fails, return `TASK_STATUS: BLOCKED` and do not produce PATCH_BUNDLE.
+
 ---
 
 ## Allowed Actual Tool: webfetch
@@ -42,6 +44,8 @@ Fetch content from a specified URL. Returns the content in the requested format.
 **Constraints:**
 - `webfetch` may only be used to fetch the designated C4 reference URL provided by the runtime. Do not fetch arbitrary URLs.
 - The reference URL is provided by the runtime in the agent prompt. Do not hardcode a URL in the task prompt.
+- **The FIRST assistant action MUST be a `webfetch` call** to the reference URL. Do not answer or produce PATCH_BUNDLE before reading the reference.
+- If `webfetch` is unavailable or fails, **MUST return `TASK_STATUS: BLOCKED`** and MUST NOT produce PATCH_BUNDLE.
 
 ---
 
@@ -133,7 +137,8 @@ C4 agents never execute commands. However, if reference documentation or the tas
 Every C4 response must include:
 
 - [ ] TASK_STATUS near the top (COMPLETED / PARTIAL / BLOCKED / FAILED / NEEDS_CODEX_DECISION)
-- [ ] PATCH_BUNDLE for all file changes (if any)
+- [ ] webfetch call made as first action (no webfetch = rule violation)
+- [ ] PATCH_BUNDLE for all file changes (if any; must NOT exist if webfetch failed)
 - [ ] C4 actual tools reported (should be: webfetch only)
 - [ ] full_tool_catalog_sent: false
 - [ ] github_tools_sent: false
@@ -142,10 +147,10 @@ Every C4 response must include:
 
 ---
 
-## Example: Minimal C4 Workflow
+## Example: Minimal C4 Workflow (Happy Path)
 
 1. Runtime launches C4 agent with `webfetch` tool and URL to this reference.
-2. Agent calls `webfetch` with the reference URL to read this document.
+2. Agent's **first action**: calls `webfetch` with the reference URL to read this document.
 3. Agent reads the task prompt.
 4. Agent returns:
    - TASK_STATUS: COMPLETED
@@ -154,3 +159,13 @@ Every C4 response must include:
    - full_tool_catalog_sent: false
    - github_tools_sent: false
 5. Outer OpenCode / Codex Route A applies the PATCH_BUNDLE and verifies.
+
+## Example: C4 Blocked Workflow (webfetch Failure)
+
+1. Runtime launches C4 agent with `webfetch` tool and URL to this reference.
+2. Agent attempts `webfetch` as first action. The call fails or is unavailable.
+3. Agent returns:
+   - TASK_STATUS: BLOCKED
+   - No PATCH_BUNDLE
+   - Summary: "webfetch unavailable, cannot proceed"
+4. Outer Codex reports the BLOCKED status upstream.
