@@ -60,7 +60,7 @@ The external chat agent:
 
 ## Request Naming
 
-All Zchat requests use the format: `ZCHAT-YYYYMMDD-HHMMSS-<slug>`
+All Zchat requests use the format: `ZCHAT-YYYYMMDD-HHMMSS-{slug}`
 - UTC timestamp with seconds
 - Lowercase slug derived from task description
 - Example: `ZCHAT-20260627-143052-add-login-feature`

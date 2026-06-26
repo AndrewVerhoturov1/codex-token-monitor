@@ -1907,14 +1907,14 @@ class ZchatExternalAgentComplianceTests(unittest.TestCase):
     def test_repo_navigation_contains_full_request_format(self) -> None:
         nav_path = ROOT / "docs" / "zchat_repo_navigation.md"
         content = nav_path.read_text(encoding="utf-8")
-        self.assertIn("ZCHAT-YYYYMMDD-HHMMSS-<slug>", content,
+        self.assertIn("ZCHAT-YYYYMMDD-HHMMSS-{slug}", content,
             "Repo navigation must contain canonical request naming format")
         self.assertIn("Request Naming", content,
             "Repo navigation must have a Request Naming section")
         import re
-        pattern = r"ZCHAT-YYYYMMDD-HHMMSS-<slug>"
+        pattern = r"ZCHAT-YYYYMMDD-HHMMSS-\{slug\}"
         self.assertTrue(re.search(pattern, content),
-            "Request format ZCHAT-YYYYMMDD-HHMMSS-<slug> must appear verbatim")
+            "Request format ZCHAT-YYYYMMDD-HHMMSS-{slug} must appear verbatim")
 
     def test_repo_navigation_contains_public_github_raw_truth_rule(self) -> None:
         nav_path = ROOT / "docs" / "zchat_repo_navigation.md"
