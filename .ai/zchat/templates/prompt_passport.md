@@ -14,6 +14,22 @@
 
 {required_reading}
 
+## Required Task Source URLs
+
+{required_task_source_urls}
+
+## Optional Task Source URLs
+
+{optional_task_source_urls}
+
+## Side Files / Provided Excerpts
+
+{side_files}
+
+## Authority Order
+
+{authority_order}
+
 ## Missing Information Policy
 
 {missing_information_policy}
@@ -42,6 +58,18 @@ checksums.sha256       - Per-file SHA256 verification digests
 payload/               - All deliverable files relative to repo root
 ```
 
+## Preflight Checklist
+
+- [ ] `manifest.json` contains all required v2 fields with correct values.
+- [ ] `checksums.sha256` covers every payload file with accurate SHA-256 digests.
+- [ ] `payload/` directory contains exactly the files listed in `manifest.payload_files` — no extra, no missing.
+- [ ] Logical paths (manifest, checksums) are repo-relative WITHOUT `payload/` prefix. Physical ZIP entries use `payload/{repo_relative_path}`.
+- [ ] No file path violates `allowed_paths` (if set and non-empty) or matches `forbidden_paths`.
+- [ ] No path uses absolute paths, `..` traversal, or escapes the repository root.
+- [ ] Every SHA-256 in `manifest.payload_files` matches the actual file content.
+- [ ] `Sources Read Report` is included in `context_readback.md` covering every provided source.
+- [ ] `Context Readback` (Confirmed/Inferred/Not verified/Needs local verification) is in `context_readback.md`.
+
 ## Allowed Paths
 
 {allowed_paths}
@@ -60,12 +88,13 @@ payload/               - All deliverable files relative to repo root
 - Checksums may be fabricated: verify every file before accepting.
 - Manifest may be incomplete: extra payload files or missing manifest entries are structural violations.
 - Allowed/forbidden path policies may be violated: strict prefix-based checks apply.
+- A bad ZIP is worse than no ZIP.
 
 ## Human Actions
 
 1. Review prompt.md, prompt_passport.md, and request_manifest.json.
 2. Deliver the prompt to the external chat (outside Codex/OpenCode).
-3. Receive the ZIP package back from the external chat.
+3. Receive the ZIP package back from the external chat as an attached/downloadable file.
 4. Run `zchat_import_pack` to validate and extract the ZIP.
 5. Run `zchat_verify_pack` to produce a machine verdict.
 6. Make the final decision via `zchat_decision_pack`.

@@ -1104,6 +1104,15 @@ def zchat_prompt_pack(
         required_reading = (
             f"1. Static manual (canonical): {manual_url}\n"
             f"2. Repo navigation (canonical): {nav_url}\n"
+            f"3. This task prompt (read in full)\n"
+        )
+        if resolved_urls:
+            required_reading += (
+                f"4. Required Task Source URLs (all of the following):\n" +
+                "\n".join(f"   - {url}" for url in resolved_urls) + "\n"
+            )
+        required_reading += (
+            "5. Optional Task Source URLs / Side Files (if any are listed below)\n"
         )
         missing_information_policy = (
             "If information required to complete the task is missing from all available sources, "
@@ -1111,9 +1120,62 @@ def zchat_prompt_pack(
             "Do NOT guess, fabricate, or assume. Do NOT produce a ZIP."
         )
         sources_read_report_requirement = (
-            "You MUST include a Sources Read Report in context_readback.md covering "
-            "every provided source URL: what was read, partially read, or not read and why. "
-            "For ZIP package tasks, the Sources Read Report must go into context_readback.md."
+            "For ZIP package tasks, you MUST include a Sources Read Report in context_readback.md "
+            "covering every provided source URL: what was read, partially read, or not read and why. "
+            "Use the canonical Sources Read Report field set from the static manual. "
+            "For blocked/conflict responses, include a brief Sources Read Report in the chat response body; no ZIP is produced."
+        )
+        required_task_source_urls_block = (
+            "\n".join(f"- {url}" for url in resolved_urls)
+            if resolved_urls
+            else "No required task source URLs provided."
+        )
+        optional_task_source_urls_block = "None specified."
+        side_files_block = "None specified."
+        authority_order_block = (
+            "1. Canonical public docs (static manual, repo navigation) — highest authority.\n"
+            "2. This task prompt — overrides only where task is more specific and does not contradict canonical docs.\n"
+            "3. Required task source URLs — below canonical docs; above optional sources.\n"
+            "4. Optional task source URLs / side files — lowest authority among provided sources.\n"
+            "5. External search / web results — never above any provided source.\n"
+            "6. Guessing / fabrication — never allowed.\n"
+            "\n"
+            "If any source below level 1 contradicts a canonical doc, the canonical doc wins. "
+            "If the conflict involves response modes, path rules, ZIP contract, trust chain, "
+            "stop-if-missing policy, or local/runtime claims, return CONTRACT_CONFLICT."
+        )
+        package_manifest_skeleton = (
+            "Below is a concrete package manifest skeleton. Fill in values that only you can provide "
+            "({ISO8601_UTC}, {non-empty string} for package_id, {64-char hex sha256} per file, "
+            "{repo_relative_path} values for payload file paths and context_readback). "
+            "Values the system already knows are filled in for you:\n\n"
+            "```json\n"
+            "{\n"
+            '  "manifest_version": "2.0",\n'
+            '  "package_id": "{non-empty string}",\n'
+            '  "created_at": "{ISO8601_UTC}",\n'
+            '  "mode": "zchat_import_pack",\n'
+            '  "zchat_result_type": "package",\n'
+            '  "run_policy": "never_auto_run",\n'
+            '  "context_readback": "{repo_relative_path}",\n'
+            '  "payload_files": [\n'
+            '    {"path": "{repo_relative_path}", "sha256": "{64-char hex sha256}"}\n'
+            '  ],\n'
+        )
+        if normalized_allowed:
+            package_manifest_skeleton += (
+                '  "allowed_paths": ' + json.dumps(normalized_allowed, ensure_ascii=False) + ',\n'
+            )
+        if normalized_forbidden:
+            package_manifest_skeleton += (
+                '  "forbidden_paths": ' + json.dumps(normalized_forbidden, ensure_ascii=False) + ',\n'
+            )
+        package_manifest_skeleton += (
+            '  "metadata": {\n'
+            '    "context_readback": "{repo_relative_path}"\n'
+            '  }\n'
+            "}\n"
+            "```"
         )
 
         prompt_content = (ZCHAT_TEMPLATE_DIR / "prompt.md").read_text(encoding="utf-8")
@@ -1126,6 +1188,11 @@ def zchat_prompt_pack(
         prompt_content = prompt_content.replace("{required_reading}", required_reading)
         prompt_content = prompt_content.replace("{missing_information_policy}", missing_information_policy)
         prompt_content = prompt_content.replace("{sources_read_report_requirement}", sources_read_report_requirement)
+        prompt_content = prompt_content.replace("{required_task_source_urls}", required_task_source_urls_block)
+        prompt_content = prompt_content.replace("{optional_task_source_urls}", optional_task_source_urls_block)
+        prompt_content = prompt_content.replace("{side_files}", side_files_block)
+        prompt_content = prompt_content.replace("{authority_order}", authority_order_block)
+        prompt_content = prompt_content.replace("{package_manifest_skeleton}", package_manifest_skeleton)
 
         source_urls_block = "\n".join(f"- {url}" for url in resolved_urls) if resolved_urls else "No source_urls provided."
         allowed_block = "\n".join(f"- {p}" for p in normalized_allowed) if normalized_allowed else "No explicit allowed_paths provided."
@@ -1159,6 +1226,10 @@ def zchat_prompt_pack(
         passport_content = passport_content.replace("{repo_navigation_url}", nav_url)
         passport_content = passport_content.replace("{required_reading}", required_reading)
         passport_content = passport_content.replace("{missing_information_policy}", missing_information_policy)
+        passport_content = passport_content.replace("{required_task_source_urls}", required_task_source_urls_block)
+        passport_content = passport_content.replace("{optional_task_source_urls}", optional_task_source_urls_block)
+        passport_content = passport_content.replace("{side_files}", side_files_block)
+        passport_content = passport_content.replace("{authority_order}", authority_order_block)
         passport_content = passport_content.replace("{source_policy}", "Prefer public GitHub raw URLs for context files.")
         passport_content = passport_content.replace("{base_policy}", "Repository-only scope; no external writes; no runtime access.")
         passport_content = passport_content.replace("{resolved_sources}", sources_block)
@@ -1175,6 +1246,16 @@ def zchat_prompt_pack(
         artifacts.append("prompt_passport.md")
 
         artifacts.append("request_manifest.json")
+        required_reading_list = [
+            f"1. Static manual (canonical): {manual_url}",
+            f"2. Repo navigation (canonical): {nav_url}",
+            f"3. This task prompt (read in full)",
+        ]
+        if resolved_urls:
+            required_reading_list.append(
+                "4. Required Task Source URLs: " + ", ".join(resolved_urls)
+            )
+        required_reading_list.append("5. Optional Task Source URLs / Side Files (if any)")
         manifest = {
             "manifest_version": "1.0",
             "request_name": request_name,
@@ -1184,9 +1265,17 @@ def zchat_prompt_pack(
             "artifacts": artifacts,
             "static_manual_url": manual_url,
             "repo_navigation_url": nav_url,
-            "required_reading": [
-                f"1. Static manual (canonical): {manual_url}",
-                f"2. Repo navigation (canonical): {nav_url}",
+            "required_reading": required_reading_list,
+            "required_task_source_urls": list(resolved_urls),
+            "optional_task_source_urls": [],
+            "side_files": [],
+            "authority_order": [
+                "1. Canonical public docs (static manual, repo navigation) — highest authority.",
+                "2. This task prompt — overrides only where more specific and does not contradict canonical docs.",
+                "3. Required task source URLs — below canonical docs; above optional sources.",
+                "4. Optional task source URLs / side files — lowest authority among provided sources.",
+                "5. External search / web results — never above any provided source.",
+                "6. Guessing / fabrication — never allowed.",
             ],
             "missing_information_policy": "BLOCKED_MISSING_CONTEXT: stop, do not guess, do not produce ZIP",
             "source_policy": "public_github_raw_first",

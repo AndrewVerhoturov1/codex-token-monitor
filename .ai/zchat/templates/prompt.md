@@ -11,6 +11,24 @@
 
 {required_reading}
 
+## Required Task Source URLs
+
+{required_task_source_urls}
+
+## Optional Task Source URLs
+
+{optional_task_source_urls}
+
+## Side Files / Provided Excerpts
+
+{side_files}
+
+## Authority / Conflict Hierarchy
+
+The following is the canonical authority order. When sources disagree, the higher-ranked source wins. If the conflict is unresolvable and involves response modes, path rules, ZIP contract, trust chain, stop-if-missing policy, or local/runtime claims, you MUST return status `CONTRACT_CONFLICT`.
+
+{authority_order}
+
 ## Stop-if-Missing-Information Policy
 
 {missing_information_policy}
@@ -39,10 +57,6 @@ You are an **external chat** (not Codex, not OpenCode). You have **no authority*
 
 {constraints}
 
-## Source URLs
-
-{source_urls}
-
 ## Allowed Paths
 
 {allowed_paths}
@@ -55,15 +69,6 @@ You are an **external chat** (not Codex, not OpenCode). You have **no authority*
 
 {expected_outputs}
 
-## Context Readback Requirements
-
-Before producing any output, you MUST include a **Context Readback** section that explicitly separates:
-
-- **Confirmed**: Facts verified from provided sources. Cite specific source URL and line/region.
-- **Inferred**: Reasonable deductions from confirmed facts. State your inference chain.
-- **Not verified**: Claims you believe are true but cannot confirm from provided sources.
-- **Needs local verification**: Statements that require repo-local access (running tests, checking git state, reading non-provided files). You MUST flag these and NOT fabricate results.
-
 ## Fact Separation Requirements
 
 All deliverables MUST follow this separation:
@@ -74,6 +79,35 @@ All deliverables MUST follow this separation:
 | **Inferred** | Logical deduction from confirmed facts | With reasoning |
 | **Not verified** | Cannot confirm from provided sources | Flagged |
 | **Needs local verification** | Requires repo-local access you cannot perform | Flagged, never fabricated |
+
+## Citation Guidance
+
+When citing sources in deliverables:
+- Cite the **source URL** and, when available, a **section heading**, **anchor**, or a short **quoted phrase**.
+- Use **line numbers only when they were provided** to you in the task sources.
+- **Never invent line numbers.** If you do not have line numbers from the sources, cite by section heading or quoted phrase.
+
+## Response Format
+
+Every response MUST start with exactly one status line (first line, exact match). The three valid response modes are:
+
+| Status | Meaning |
+|---|---|
+| `PACKAGE_READY` | ZIP package is ready; all requirements met from canonical sources. |
+| `BLOCKED_MISSING_CONTEXT` | Required information is missing; cannot proceed. |
+| `CONTRACT_CONFLICT` | Provided sources or requirements conflict with the canonical contract. |
+
+When status is `BLOCKED_MISSING_CONTEXT` or `CONTRACT_CONFLICT`:
+- The second line MUST be `No ZIP produced.` and no ZIP may be created.
+- Include a brief **Sources Read Report** in the chat response body explaining which sources were read, partially read, or not read and why. No ZIP is produced.
+
+When status is `PACKAGE_READY`:
+- The **Context Readback** (Confirmed/Inferred/Not verified/Needs local verification categories) goes into `manifest.context_readback` as a payload file. It does NOT appear before the status line.
+- Produce the ZIP package according to the contract below.
+
+## Package Manifest Skeleton
+
+{package_manifest_skeleton}
 
 ## Expected ZIP Contract (v2)
 
@@ -141,6 +175,23 @@ But manifest.json paths MUST be repo-relative WITHOUT the `payload/` prefix:
 
 One line per payload file.
 
+## Preflight Checklist
+
+Before declaring `PACKAGE_READY`, verify ALL of the following:
+
+- [ ] `manifest.json` contains all required v2 fields with correct values.
+- [ ] `checksums.sha256` covers every payload file with accurate SHA-256 digests.
+- [ ] `payload/` directory contains exactly the files listed in `manifest.payload_files` — no extra, no missing.
+- [ ] Logical paths (manifest, checksums) are repo-relative WITHOUT `payload/` prefix. Physical ZIP entries use `payload/{repo_relative_path}`.
+- [ ] No file path violates `allowed_paths` (if set and non-empty).
+- [ ] No file path matches any `forbidden_paths` (if set), nor the global forbidden prefixes: `.git/`, `.env*`, `.ai/zchat/`.
+- [ ] No path uses absolute paths, `..` traversal, or escapes the repository root.
+- [ ] Every SHA-256 in `manifest.payload_files` matches the actual file content.
+- [ ] `Sources Read Report` is included in `context_readback.md` covering every provided source.
+- [ ] `Context Readback` (Confirmed/Inferred/Not verified/Needs local verification) is in `context_readback.md`.
+
+**A bad ZIP is worse than no ZIP.** If any item above fails, do NOT produce a ZIP. Report `BLOCKED_MISSING_CONTEXT` or `CONTRACT_CONFLICT` instead.
+
 ## Verification Files Policy
 
 - Verification files are listed in `verification_files` in the manifest.
@@ -159,13 +210,25 @@ One line per payload file.
 
 ## Import Policy
 
+- **imported != accepted**: ZIP is untrusted. Even if import succeeds, files are only staged for human review.
+- **received != applied**: `zchat_receive_pack` extracts to quarantine only. Apply is a separate planned step (not yet implemented).
 - **allowed_paths** (if set and non-empty): every payload file MUST match at least one allowed prefix.
 - **forbidden_paths** (if set): no payload file MAY match any forbidden prefix.
 - **Global forbidden prefixes ALWAYS apply**: `.git/`, `.env*`, `.ai/zchat/`, absolute paths, `..` traversal, paths escaping repository root.
 
-## Important
+## PACKAGE_READY Caveats
 
-- **imported != accepted**: ZIP is untrusted. Even if import succeeds, files are only staged for human review.
-- **received != applied**: `zchat_receive_pack` extracts to quarantine only. Apply is a separate planned step (not yet implemented).
-- Return the ZIP package path and a short summary to the human. Do not write files directly into the repo.
+`PACKAGE_READY` does NOT mean any of the following, unless explicitly stated by the requester:
+- The ZIP was received by Zchat, verified locally, or accepted.
+- Payload files were applied to the repository.
+- Tests passed or the repository is in a clean git state.
+- A commit or push occurred.
+
+Do NOT claim any local, runtime, git, or test outcomes unless the requester provided that information to you.
+
+## ZIP Delivery
+
+- Return the ZIP as an **attached or downloadable file** if your environment supports it.
+- Identify the **ZIP filename** and **package_id** in your response.
+- Do NOT claim a repository path, local file-system path, or runtime path for the ZIP.
 - If source_urls are empty, no branch is needed; do not create one.

@@ -73,6 +73,18 @@ class ZchatPromptPackTests(unittest.TestCase):
             self.assertIn("external chat", prompt_text.lower())
             self.assertIn("no authority", prompt_text.lower())
 
+    def test_prompt_md_contains_strict_response_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("PACKAGE_READY", prompt_text)
+            self.assertIn("BLOCKED_MISSING_CONTEXT", prompt_text)
+            self.assertIn("CONTRACT_CONFLICT", prompt_text)
+            self.assertIn("Response Format", prompt_text)
+            self.assertIn("No ZIP produced.", prompt_text)
+
     def test_prompt_md_contains_expected_zip_structure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "zchat_output"
@@ -185,7 +197,8 @@ class ZchatPromptPackTests(unittest.TestCase):
             )
             self.assertEqual(result.status, "completed")
             prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
-            self.assertIn("Source URLs", prompt_text)
+            self.assertIn("Required Task Source URLs", prompt_text)
+            self.assertIn("Optional Task Source URLs", prompt_text)
             self.assertIn("https://example.com/a.py", prompt_text)
             self.assertIn("https://example.com/b.py", prompt_text)
             self.assertNotIn("No source_urls provided.", prompt_text)
@@ -216,7 +229,7 @@ class ZchatPromptPackTests(unittest.TestCase):
             result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
             self.assertEqual(result.status, "completed")
             prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
-            self.assertIn("No source_urls provided.", prompt_text)
+            self.assertIn("No required task source URLs provided.", prompt_text)
             self.assertIn("No explicit allowed_paths provided.", prompt_text)
             self.assertIn("No explicit forbidden_paths provided.", prompt_text)
             self.assertIn("No explicit expected_outputs provided.", prompt_text)
@@ -230,7 +243,7 @@ class ZchatPromptPackTests(unittest.TestCase):
             )
             self.assertEqual(result.status, "completed")
             prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
-            self.assertNotIn("No source_urls provided.", prompt_text)
+            self.assertNotIn("No required task source URLs provided.", prompt_text)
             self.assertIn("https://example.com/file.py", prompt_text)
 
     def test_passport_empty_lists_show_fallback_phrases(self) -> None:
@@ -243,6 +256,180 @@ class ZchatPromptPackTests(unittest.TestCase):
             self.assertIn("- No explicit allowed_paths provided.", passport_text)
             self.assertIn("- No explicit forbidden_paths provided.", passport_text)
             self.assertIn("- No explicit expected_outputs provided.", passport_text)
+
+    def test_prompt_contains_required_task_source_urls_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                source_urls=["https://example.com/req.py"],
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("Required Task Source URLs", prompt_text)
+            self.assertIn("Optional Task Source URLs", prompt_text)
+            self.assertIn("Side Files", prompt_text)
+
+    def test_prompt_contains_authority_conflict_hierarchy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("Authority / Conflict Hierarchy", prompt_text)
+            self.assertIn("CONTRACT_CONFLICT", prompt_text)
+
+    def test_prompt_contains_package_manifest_skeleton(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                allowed_paths=["docs/"],
+                forbidden_paths=["secrets/"],
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("Package Manifest Skeleton", prompt_text)
+            self.assertIn("docs/", prompt_text)
+            self.assertIn("secrets/", prompt_text)
+
+    def test_prompt_contains_preflight_checklist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("Preflight Checklist", prompt_text)
+
+    def test_prompt_contains_bad_zip_phrase(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("A bad ZIP is worse than no ZIP.", prompt_text)
+
+    def test_prompt_contains_package_ready_caveats(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("PACKAGE_READY Caveats", prompt_text)
+            self.assertIn("ZIP was received", prompt_text)
+
+    def test_prompt_contains_zip_delivery_attached_downloadable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("ZIP Delivery", prompt_text)
+            self.assertIn("attached", prompt_text.lower())
+            self.assertIn("downloadable", prompt_text.lower())
+
+    def test_prompt_contains_citation_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("Citation Guidance", prompt_text)
+            self.assertIn("Never invent line numbers", prompt_text)
+
+    def test_prompt_does_not_have_context_readback_before_status_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertNotIn("Before producing any output", prompt_text)
+
+    def test_prompt_response_format_explicit_status_line_first(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("first line", prompt_text)
+
+    def test_request_manifest_contains_new_contract_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                source_urls=["https://example.com/file.py"],
+            )
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertIn("required_task_source_urls", manifest)
+            self.assertIn("optional_task_source_urls", manifest)
+            self.assertIn("side_files", manifest)
+            self.assertIn("authority_order", manifest)
+            self.assertIsInstance(manifest["required_task_source_urls"], list)
+            self.assertIsInstance(manifest["optional_task_source_urls"], list)
+            self.assertIsInstance(manifest["side_files"], list)
+            self.assertIsInstance(manifest["authority_order"], list)
+            self.assertEqual(manifest["required_task_source_urls"], ["https://example.com/file.py"])
+            self.assertEqual(manifest["optional_task_source_urls"], [])
+            self.assertEqual(manifest["side_files"], [])
+
+    def test_prompt_passport_contains_new_contract_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
+            self.assertIn("Required Task Source URLs", passport_text)
+            self.assertIn("Optional Task Source URLs", passport_text)
+            self.assertIn("Side Files", passport_text)
+            self.assertIn("Authority Order", passport_text)
+            self.assertIn("Preflight Checklist", passport_text)
+            self.assertIn("A bad ZIP is worse than no ZIP", passport_text)
+
+    def test_prompt_required_reading_includes_five_levels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                source_urls=["https://example.com/a.py"],
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("1. Static manual", prompt_text)
+            self.assertIn("2. Repo navigation", prompt_text)
+            self.assertIn("3. This task prompt", prompt_text)
+            self.assertIn("4. Required Task Source URLs", prompt_text)
+            self.assertIn("5. Optional Task Source URLs / Side Files", prompt_text)
+
+    def test_request_manifest_required_reading_has_five_levels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                source_urls=["https://example.com/file.py"],
+            )
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["required_reading"]), 5)
+            self.assertIn("Static manual", manifest["required_reading"][0])
+
+    def test_prompt_does_not_claim_repo_local_zip_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertNotIn("Return the ZIP package path", prompt_text)
+            self.assertIn("do not claim a repository path", prompt_text.lower())
+
+    def test_context_readback_in_manifest_not_before_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("manifest.context_readback", prompt_text)
 
 
 class ZchatImportPackTests(unittest.TestCase):
@@ -2286,7 +2473,7 @@ class ZchatCanonicalUrlBlockedTests(unittest.TestCase):
             self.assertEqual(result.status, "completed",
                 f"Expected completed but got {result.status}: {result.error}")
             prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
-            self.assertIn("Source URLs", prompt_text)
+            self.assertIn("Required Task Source URLs", prompt_text)
 
 
 if __name__ == "__main__":

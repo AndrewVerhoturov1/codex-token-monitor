@@ -27,8 +27,9 @@ You are an **external chat agent**. You have **no authority** over the target re
 
 1. This static manual (`docs/zchat_external_agent_static_manual.md`)
 2. Repo navigation (`docs/zchat_repo_navigation.md`)
-3. Prompt-provided source URLs (in the order listed)
-4. Any additional public repo files you choose to read via raw URLs
+3. Task prompt (read in full)
+4. Required task source URLs (in the order listed in the prompt)
+5. Optional task source URLs / side files (if any are listed in the prompt)
 
 ## Stop-If-Missing-Information Rule
 
@@ -174,6 +175,44 @@ Statements that require repo-local access (running tests, checking git state, re
 - `verification_files` is REQUIRED only if **explicitly requested** by the task.
 - If not explicitly requested, the `verification_files` field SHOULD be omitted or empty `[]`.
 - Verification files are NOT executed; they are read as text and scanned for dangerous patterns during `zchat_inspect_verification_pack`.
+
+## Citation Guidance
+
+When citing sources in deliverables:
+- Cite the **source URL** and, when available, a **section heading**, **anchor**, or a short **quoted phrase**.
+- Use **line numbers only when they were provided** to you in the task sources.
+- **Never invent line numbers.** If you do not have line numbers from the sources, cite by section heading or quoted phrase.
+
+## Preflight Checklist
+
+Before declaring `PACKAGE_READY`, verify ALL of the following:
+- [ ] `manifest.json` contains all required v2 fields with correct values.
+- [ ] `checksums.sha256` covers every payload file with accurate SHA-256 digests.
+- [ ] `payload/` directory contains exactly the files listed in `manifest.payload_files` — no extra, no missing.
+- [ ] Logical paths (manifest, checksums) are repo-relative WITHOUT `payload/` prefix. Physical ZIP entries use `payload/{repo_relative_path}`.
+- [ ] No file path violates `allowed_paths` (if set and non-empty) or matches `forbidden_paths`.
+- [ ] No path uses absolute paths, `..` traversal, or escapes the repository root.
+- [ ] Every SHA-256 in `manifest.payload_files` matches the actual file content.
+- [ ] `Sources Read Report` is included in `context_readback.md` covering every provided source.
+- [ ] `Context Readback` (Confirmed/Inferred/Not verified/Needs local verification) is in `context_readback.md`.
+
+**A bad ZIP is worse than no ZIP.** If any item above fails, do NOT produce a ZIP. Report `BLOCKED_MISSING_CONTEXT` or `CONTRACT_CONFLICT` instead.
+
+## PACKAGE_READY Caveats
+
+`PACKAGE_READY` does NOT mean any of the following, unless explicitly stated by the requester:
+- The ZIP was received by Zchat, verified locally, or accepted.
+- Payload files were applied to the repository.
+- Tests passed or the repository is in a clean git state.
+- A commit or push occurred.
+
+Do NOT claim any local, runtime, git, or test outcomes unless the requester provided that information to you.
+
+## ZIP Delivery
+
+- Return the ZIP as an **attached or downloadable file** if your environment supports it.
+- Identify the **ZIP filename** and **package_id** in your response.
+- Do NOT claim a repository path, local file-system path, or runtime path for the ZIP.
 
 ## Quarantine-First Semantics
 
