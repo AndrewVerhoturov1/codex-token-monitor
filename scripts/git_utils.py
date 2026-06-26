@@ -17,6 +17,32 @@ def zchat_slug_id_is_valid(slug: str) -> bool:
     return bool(re.match(r"^ZCHAT-\d{8}-\d{6}-[a-f0-9]{8}$", slug))
 
 
+def zchat_request_name(task: str | None = None) -> str:
+    now = datetime.now(timezone.utc)
+    ts = now.strftime("%Y%m%d-%H%M%S")
+    slug = _zchat_task_to_slug(task) if task else "task"
+    return f"ZCHAT-{ts}-{slug}"
+
+
+def _zchat_task_to_slug(task: str) -> str:
+    import re
+    raw = task.strip().casefold()
+    raw = re.sub(r"[^a-z0-9\s-]", "", raw)
+    raw = re.sub(r"\s+", "-", raw)
+    raw = re.sub(r"-{2,}", "-", raw)
+    raw = raw.strip("-")
+    if len(raw) > 48:
+        raw = raw[:48].rstrip("-")
+    if not raw:
+        raw = "task"
+    return raw
+
+
+def zchat_request_name_is_valid(name: str) -> bool:
+    import re
+    return bool(re.match(r"^ZCHAT-\d{8}-\d{6}-[a-z0-9][a-z0-9-]*$", name))
+
+
 @dataclass
 class BranchMetadata:
     slug_id: str = ""

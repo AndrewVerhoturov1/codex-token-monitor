@@ -766,12 +766,56 @@ def _sha256_file(path: Path) -> str:
     return _sha256_hex(path.read_bytes())
 
 
+ZCHAT_STATIC_MANUAL_URL = (
+    "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/"
+    "docs/zchat_external_agent_static_manual.md"
+)
+ZCHAT_REPO_NAVIGATION_URL = (
+    "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/"
+    "docs/zchat_repo_navigation.md"
+)
+
+
+def _zchat_canonical_public_urls() -> tuple[str, str]:
+    return (ZCHAT_STATIC_MANUAL_URL, ZCHAT_REPO_NAVIGATION_URL)
+
+
+_ZCHAT_SKIP_URL_CHECK = False
+
+
+def _zchat_check_canonical_urls_reachable() -> str:
+    if _ZCHAT_SKIP_URL_CHECK:
+        return ""
+    import urllib.request
+    for label, url in [
+        ("static manual", ZCHAT_STATIC_MANUAL_URL),
+        ("repo navigation", ZCHAT_REPO_NAVIGATION_URL),
+    ]:
+        try:
+            req = urllib.request.Request(url, method="HEAD")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                status = getattr(resp, "status", 0)
+                if isinstance(status, int) and (status < 200 or status >= 300):
+                    return f"{label} URL unreachable (HTTP {status}): {url}"
+        except Exception as e:
+            return f"{label} URL unreachable: {url} ({e})"
+    return ""
+
+
 def _zchat_slug_id() -> str:
     return _git_utils.zchat_slug_id()
 
 
 def _zchat_slug_id_is_valid(slug: str) -> bool:
     return _git_utils.zchat_slug_id_is_valid(slug)
+
+
+def _zchat_request_name(task: str | None = None) -> str:
+    return _git_utils.zchat_request_name(task)
+
+
+def _zchat_request_name_is_valid(name: str) -> bool:
+    return _git_utils.zchat_request_name_is_valid(name)
 
 
 @dataclass
@@ -1033,10 +1077,9 @@ def zchat_prompt_pack(
     forbidden_paths: str | list[str] | None = None,
     expected_outputs: str | list[str] | None = None,
 ) -> ZchatPromptPackResult:
-    if not request_id:
-        request_id = _zchat_slug_id()
+    request_name = request_id if request_id else _zchat_request_name(task)
     if output_dir is None:
-        output_dir = ZCHAT_RUNTIME_REQUESTS / request_id
+        output_dir = ZCHAT_RUNTIME_REQUESTS / request_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
     resolved_urls = source_urls or []
@@ -1048,10 +1091,41 @@ def zchat_prompt_pack(
         now_utc = _utcnow()
         artifacts: list[str] = []
 
+        manual_url, nav_url = _zchat_canonical_public_urls()
+        url_check_error = _zchat_check_canonical_urls_reachable()
+        if url_check_error:
+            return ZchatPromptPackResult(
+                request_id=request_name,
+                output_dir=str(output_dir),
+                status="blocked",
+                error=url_check_error,
+            )
+
+        required_reading = (
+            f"1. Static manual (canonical): {manual_url}\n"
+            f"2. Repo navigation (canonical): {nav_url}\n"
+        )
+        missing_information_policy = (
+            "If information required to complete the task is missing from all available sources, "
+            "stop immediately with status BLOCKED_MISSING_CONTEXT. "
+            "Do NOT guess, fabricate, or assume. Do NOT produce a ZIP."
+        )
+        sources_read_report_requirement = (
+            "You MUST include a Sources Read Report in context_readback.md covering "
+            "every provided source URL: what was read, partially read, or not read and why. "
+            "For ZIP package tasks, the Sources Read Report must go into context_readback.md."
+        )
+
         prompt_content = (ZCHAT_TEMPLATE_DIR / "prompt.md").read_text(encoding="utf-8")
+        prompt_content = prompt_content.replace("{request_name}", request_name)
         prompt_content = prompt_content.replace("{task}", task)
         prompt_content = prompt_content.replace("{context}", context or "No additional context provided.")
         prompt_content = prompt_content.replace("{constraints}", constraints or "Follow repository conventions.")
+        prompt_content = prompt_content.replace("{static_manual_url}", manual_url)
+        prompt_content = prompt_content.replace("{repo_navigation_url}", nav_url)
+        prompt_content = prompt_content.replace("{required_reading}", required_reading)
+        prompt_content = prompt_content.replace("{missing_information_policy}", missing_information_policy)
+        prompt_content = prompt_content.replace("{sources_read_report_requirement}", sources_read_report_requirement)
 
         source_urls_block = "\n".join(f"- {url}" for url in resolved_urls) if resolved_urls else "No source_urls provided."
         allowed_block = "\n".join(f"- {p}" for p in normalized_allowed) if normalized_allowed else "No explicit allowed_paths provided."
@@ -1077,9 +1151,14 @@ def zchat_prompt_pack(
         expected_block = "\n".join(f"- {o}" for o in normalized_expected) if normalized_expected else "- No explicit expected_outputs provided."
 
         passport_content = (ZCHAT_TEMPLATE_DIR / "prompt_passport.md").read_text(encoding="utf-8")
-        passport_content = passport_content.replace("{request_id}", request_id)
+        passport_content = passport_content.replace("{request_name}", request_name)
+        passport_content = passport_content.replace("{request_id}", request_name)
         passport_content = passport_content.replace("{task}", task)
         passport_content = passport_content.replace("{prompt_path}", str(output_dir / "prompt.md"))
+        passport_content = passport_content.replace("{static_manual_url}", manual_url)
+        passport_content = passport_content.replace("{repo_navigation_url}", nav_url)
+        passport_content = passport_content.replace("{required_reading}", required_reading)
+        passport_content = passport_content.replace("{missing_information_policy}", missing_information_policy)
         passport_content = passport_content.replace("{source_policy}", "Prefer public GitHub raw URLs for context files.")
         passport_content = passport_content.replace("{base_policy}", "Repository-only scope; no external writes; no runtime access.")
         passport_content = passport_content.replace("{resolved_sources}", sources_block)
@@ -1098,10 +1177,18 @@ def zchat_prompt_pack(
         artifacts.append("request_manifest.json")
         manifest = {
             "manifest_version": "1.0",
-            "request_id": request_id,
+            "request_name": request_name,
+            "request_id": request_name,
             "created_at": now_utc,
             "mode": ZCHAT_MODE_PROMPT_PACK,
             "artifacts": artifacts,
+            "static_manual_url": manual_url,
+            "repo_navigation_url": nav_url,
+            "required_reading": [
+                f"1. Static manual (canonical): {manual_url}",
+                f"2. Repo navigation (canonical): {nav_url}",
+            ],
+            "missing_information_policy": "BLOCKED_MISSING_CONTEXT: stop, do not guess, do not produce ZIP",
             "source_policy": "public_github_raw_first",
             "branch_policy": "temporary_branch_only_if_public_insufficient",
             "dependencies": resolved_urls,
@@ -1124,14 +1211,14 @@ def zchat_prompt_pack(
         _atomic_write_json(manifest_path, manifest)
 
         return ZchatPromptPackResult(
-            request_id=request_id,
+            request_id=request_name,
             output_dir=str(output_dir),
             artifacts=artifacts,
             status="completed",
         )
     except Exception as e:
         return ZchatPromptPackResult(
-            request_id=request_id,
+            request_id=request_name,
             output_dir=str(output_dir),
             status="failed",
             error=f"{type(e).__name__}: {e}",

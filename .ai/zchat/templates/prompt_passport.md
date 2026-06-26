@@ -1,8 +1,22 @@
 # Prompt Passport
 
+- **Request Name**: {request_name}
 - **Zchat ID**: {request_id}
 - **Goal**: {task}
 - **Prompt file**: `{prompt_path}`
+
+## Canonical Public Docs
+
+- **Static Manual**: {static_manual_url}
+- **Repo Navigation**: {repo_navigation_url}
+
+## Required Reading
+
+{required_reading}
+
+## Missing Information Policy
+
+{missing_information_policy}
 
 ## Source Policy
 

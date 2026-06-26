@@ -4,6 +4,8 @@
 
 | Entry | Path | Description |
 |---|---|---|
+| Public Static Manual | `docs/zchat_external_agent_static_manual.md` | Canonical external agent static manual (committed to main) |
+| Public Repo Navigation | `docs/zchat_repo_navigation.md` | Canonical external agent repo navigation (committed to main) |
 | Templates | `.ai/zchat/templates/` | Prompt-pack artifact templates (v2 unified) |
 | Schemas | `.ai/zchat/schemas/` | JSON schema definitions for manifest validation |
 | Docs | `.ai/zchat/docs/` | Skill contracts, v1 created doc, and documentation |

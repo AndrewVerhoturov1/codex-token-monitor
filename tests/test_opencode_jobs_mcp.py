@@ -24,6 +24,10 @@ jobs_mcp = importlib.util.module_from_spec(MCP_SPEC)
 assert MCP_SPEC.loader is not None
 MCP_SPEC.loader.exec_module(jobs_mcp)
 
+jobs._ZCHAT_SKIP_URL_CHECK = True
+if "codex_token_monitor_opencode_jobs" in sys.modules:
+    sys.modules["codex_token_monitor_opencode_jobs"]._ZCHAT_SKIP_URL_CHECK = True
+
 FAKE_WORKER_SOURCE = r'''
 import json
 import sys
