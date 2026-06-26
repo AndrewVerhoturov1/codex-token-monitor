@@ -1857,12 +1857,74 @@ class ZchatExternalAgentComplianceTests(unittest.TestCase):
         self.assertIn("imported != accepted", content)
         self.assertIn("verified != accepted", content)
 
+    def test_static_manual_physical_zip_structure_uses_payload_braces_not_hardcoded_context_readback(self) -> None:
+        manual_path = ROOT / "docs" / "zchat_external_agent_static_manual.md"
+        content = manual_path.read_text(encoding="utf-8")
+        structure_start = content.find("## Physical ZIP Structure")
+        self.assertGreater(structure_start, -1, "Physical ZIP Structure section not found")
+        structure_end = content.find("## ", structure_start + 1)
+        if structure_end == -1:
+            structure_end = len(content)
+        structure_section = content[structure_start:structure_end]
+        self.assertIn("{context_readback}", structure_section,
+            "Physical ZIP structure must use {context_readback} placeholder, not hardcoded name")
+        self.assertNotIn("context_readback.md", structure_section,
+            "Physical ZIP structure section must NOT hardcode context_readback.md")
+
+    def test_static_manual_contains_safe_payload_path_rule_braces(self) -> None:
+        manual_path = ROOT / "docs" / "zchat_external_agent_static_manual.md"
+        content = manual_path.read_text(encoding="utf-8")
+        self.assertIn("payload/{repo_relative_path}", content,
+            "Static manual must contain safe payload path rule pattern payload/{repo_relative_path}")
+
+    def test_static_manual_contains_canonical_sources_read_report_fields(self) -> None:
+        manual_path = ROOT / "docs" / "zchat_external_agent_static_manual.md"
+        content = manual_path.read_text(encoding="utf-8")
+        report_section_start = content.find("## Sources Read Report")
+        self.assertGreater(report_section_start, -1, "Canonical Sources Read Report section not found")
+        next_h2 = content.find("## ", report_section_start + 1)
+        if next_h2 == -1:
+            next_h2 = len(content)
+        report_section = content[report_section_start:next_h2]
+        for field in [
+            "STATIC_MANUAL_READ",
+            "REPO_NAVIGATION_READ",
+            "TASK_PROMPT_READ",
+            "SOURCE_URLS_READ",
+            "SIDE_FILES_READ",
+            "UNREAD_OR_UNAVAILABLE_SOURCES",
+        ]:
+            self.assertIn(field, report_section,
+                f"Sources Read Report must contain field: {field}")
+
     def test_repo_navigation_exists(self) -> None:
         nav_path = ROOT / "docs" / "zchat_repo_navigation.md"
         self.assertTrue(nav_path.exists(), f"Repo navigation not found: {nav_path}")
         content = nav_path.read_text(encoding="utf-8")
         self.assertIn("canonical", content.lower())
         self.assertIn("AndrewVerhoturov1/codex-token-monitor", content)
+
+    def test_repo_navigation_contains_full_request_format(self) -> None:
+        nav_path = ROOT / "docs" / "zchat_repo_navigation.md"
+        content = nav_path.read_text(encoding="utf-8")
+        self.assertIn("ZCHAT-YYYYMMDD-HHMMSS-<slug>", content,
+            "Repo navigation must contain canonical request naming format")
+        self.assertIn("Request Naming", content,
+            "Repo navigation must have a Request Naming section")
+        import re
+        pattern = r"ZCHAT-YYYYMMDD-HHMMSS-<slug>"
+        self.assertTrue(re.search(pattern, content),
+            "Request format ZCHAT-YYYYMMDD-HHMMSS-<slug> must appear verbatim")
+
+    def test_repo_navigation_contains_public_github_raw_truth_rule(self) -> None:
+        nav_path = ROOT / "docs" / "zchat_repo_navigation.md"
+        content = nav_path.read_text(encoding="utf-8")
+        self.assertIn("highest authority", content.lower(),
+            "Repo navigation must state static manual is highest authority")
+        found = any("public github" in line.lower() and "raw truth" in line.lower()
+                    for line in content.splitlines())
+        self.assertTrue(found,
+            "Repo navigation must contain public GitHub/raw truth rule")
 
     def test_prompt_pack_contains_static_manual_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

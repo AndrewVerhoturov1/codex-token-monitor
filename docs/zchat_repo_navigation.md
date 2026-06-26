@@ -16,10 +16,12 @@ All canonical public documentation for Zchat is in `docs/` at the repository roo
 
 ## What the Agent MAY Rely On
 
-- **Canonical public docs** in `docs/` — these are the single source of truth for contracts.
+- **Canonical public docs** in `docs/` — these are the single source of truth for contracts. The static manual (`docs/zchat_external_agent_static_manual.md`) is the **highest authority** above all other sources.
 - **Task-provided source URLs** — explicitly listed in the prompt under Source URLs.
 - **Public GitHub raw URLs** — files committed to the `main` branch of this repository, accessed via `https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/<path>`.
 - **Additional repo files** — may be read starting from canonical docs and this navigation, following the Source Priority defined in the static manual.
+
+**Public GitHub/raw truth rule**: public GitHub raw URLs are the sole source of truth only for committed public docs and contracts. Local runtime state (git status, test results, build artifacts, non-committed files) is **never** a source of truth. The agent MUST NOT rely on any information that is not committed and publicly accessible on the `main` branch.
 
 ## What the Agent MUST NOT Assume
 

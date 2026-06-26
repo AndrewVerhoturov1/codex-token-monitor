@@ -81,9 +81,9 @@ You MUST produce a ZIP intake package with this structure:
 
 ```
 manifest.json          - Metadata v2 (see below)
-checksums.sha256       - <sha256_hex>  <relative_path> per file
+checksums.sha256       - {sha256_hex}  {repo_relative_path} per file
 payload/               - Directory containing all deliverable files
-  context_readback.md  - Required: context readback with Confirmed/Inferred/Not verified/Needs local verification
+  {context_readback}   - Required: path from manifest.context_readback; contains Confirmed/Inferred/Not verified/Needs local verification
   ...                  - Other deliverable files
 ```
 
@@ -92,20 +92,20 @@ payload/               - Directory containing all deliverable files
 ```json
 {
   "manifest_version": "2.0",
-  "package_id": "<non-empty string>",
-  "created_at": "<ISO8601 UTC>",
+  "package_id": "{non-empty string}",
+  "created_at": "{ISO8601 UTC}",
   "mode": "zchat_import_pack",
   "zchat_result_type": "advice|review|package",
   "run_policy": "never_auto_run",
-  "context_readback": "context_readback.md",
+  "context_readback": "{repo_relative_path}",
   "payload_files": [
-    {"path": "<relative path>", "sha256": "<64-char hex sha256>"}
+    {"path": "{repo_relative_path}", "sha256": "{64-char hex sha256}"}
   ],
-  "verification_files": ["<relative path to verification scripts>"],
-  "allowed_paths": ["<prefix>", ...],
-  "forbidden_paths": ["<prefix>", ...],
+  "verification_files": ["{repo_relative_path}"],
+  "allowed_paths": ["{prefix}", ...],
+  "forbidden_paths": ["{prefix}", ...],
   "metadata": {
-    "context_readback": "context_readback.md"
+    "context_readback": "{repo_relative_path}"
   }
 }
 ```
@@ -120,13 +120,13 @@ Optional v2 fields:
 
 ### PATH RULE (critical)
 
-Deliverable files inside the ZIP MUST be stored as `payload/<repo-relative-path>` (physical ZIP path).
+Deliverable files inside the ZIP MUST be stored as `payload/{repo_relative_path}` (physical ZIP path).
 But manifest.json paths MUST be repo-relative WITHOUT the `payload/` prefix:
 
 | Field | Format | Example |
 |---|---|---|
 | `payload_files[].path` | repo-relative (no `payload/`) | `"docs/result.md"` |
-| `checksums.sha256` paths | repo-relative (no `payload/`) | `<sha256>  docs/result.md` |
+| `checksums.sha256` paths | repo-relative (no `payload/`) | `{sha256}  docs/result.md` |
 | `context_readback` | repo-relative (no `payload/`) | `"docs/context_readback.md"` |
 | `verification_files[]` | repo-relative (no `payload/`) | `"docs/check.py"` |
 | `metadata.context_readback` | repo-relative (no `payload/`) | `"docs/context_readback.md"` |
@@ -136,7 +136,7 @@ But manifest.json paths MUST be repo-relative WITHOUT the `payload/` prefix:
 ### checksums.sha256 format
 
 ```
-<sha256_hex>  <relative_path>
+{sha256_hex}  {repo_relative_path}
 ```
 
 One line per payload file.

@@ -80,12 +80,12 @@ In addition to v1.0 fields, manifest v2.0 requires:
 Every import ZIP must contain:
 - `manifest.json` — metadata with `payload_files` list, each entry has `path` and `sha256`. v2 adds `zchat_result_type`, `run_policy`, `context_readback`, optional `verification_files`.
 - `checksums.sha256` — per-file SHA256 verification digests.
-- `payload/` — directory containing all deliverable files, stored as `payload/<repo-relative-path>`.
-- `payload/context_readback.md` (v2 required) — Confirmed/Inferred/Not verified/Needs local verification breakdown (physical ZIP path).
+- `payload/` — directory containing all deliverable files, stored as `payload/{repo_relative_path}`.
+- `payload/{context_readback}` (v2 required) — Confirmed/Inferred/Not verified/Needs local verification breakdown; file name from `manifest.context_readback`, physical ZIP path is `payload/{repo_relative_path}`.
 
 ### Path Rule (v2 critical)
 
-Physical ZIP paths: files stored as `payload/<repo-relative-path>`.
+Physical ZIP paths: files stored as `payload/{repo_relative_path}`.
 Manifest/checksum paths: repo-relative WITHOUT the `payload/` prefix.
 
 | Field | Format |

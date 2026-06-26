@@ -40,7 +40,7 @@ If information required to complete the task is missing from all available sourc
 
 ## Strict Response Modes
 
-Every response MUST start with a status line (first line, exact match):
+Every response MUST start with a status line (first line, exact match). There are exactly three valid response modes:
 
 | Status | Meaning |
 |---|---|
@@ -51,10 +51,12 @@ Every response MUST start with a status line (first line, exact match):
 ### Blocked / Conflict Behavior
 
 When status is `BLOCKED_MISSING_CONTEXT` or `CONTRACT_CONFLICT`:
-- ZIP is **NOT** created.
-- Free text explanation is allowed.
-- First line MUST be the status.
-- A separate line `No ZIP produced.` is REQUIRED.
+- The first line of the response MUST be the exact status string.
+- A separate line `No ZIP produced.` is REQUIRED immediately after the status line (or as the second content line).
+- ZIP is **NOT** created under any circumstances.
+- Free text explanation is allowed after `No ZIP produced.`
+- The agent MUST NOT make false local claims: do not assert git state, test results, file existence, or any repo-local facts the agent cannot verify from provided canonical sources.
+- If the agent needs to reference missing or unverifiable information, it MUST place those claims in the `Needs local verification` category only.
 
 ## ZIP Assembly Procedure
 
@@ -63,23 +65,23 @@ When status is `PACKAGE_READY`, produce a ZIP with this procedure:
 1. Create `manifest.json` — Metadata v2.0 with `payload_files` list and sha256 per file.
 2. Create `checksums.sha256` — Per-file SHA256 verification digests.
 3. Create `payload/` directory — All deliverable files inside.
-4. Create `payload/context_readback.md` — REQUIRED always (see Context Readback Format below).
-5. Add any requested deliverable files inside `payload/`.
-6. Create `payload/verification_files/` with verification scripts — ONLY if explicitly requested by the task.
+4. Create context readback file inside `payload/` — REQUIRED always. The logical path is task-specific and stored in `manifest.context_readback` (a repo-relative path). The physical ZIP entry MUST be `payload/{context_readback}` where `{context_readback}` is exactly the value of `manifest.context_readback`. Do NOT hardcode `payload/context_readback.md` unless the task explicitly sets `manifest.context_readback` to `context_readback.md` and `allowed_paths` permits that path. See Context Readback Format below.
+5. Add any requested deliverable files inside `payload/`. Each physical entry MUST be `payload/{repo_relative_path}`.
+6. Create verification files inside `payload/` — ONLY if explicitly requested by the task. Physical entries MUST be `payload/{repo_relative_path}` where `{repo_relative_path}` matches a path listed in `manifest.verification_files[]`.
 
 ## Path Rule
 
-Physical ZIP entries MUST be stored as `payload/<repo-relative-path>`.
+Physical ZIP entries MUST be stored as `payload/{repo_relative_path}`.
 
-Logical manifest/checksum paths MUST be `<repo-relative-path>` WITHOUT `payload/` prefix.
+Logical manifest/checksum paths MUST be `{repo_relative_path}` WITHOUT `payload/` prefix.
 
 | Field | Physical ZIP | Manifest/Checksum |
 |---|---|---|
-| `payload_files[].path` | `payload/<path>` | `<path>` |
-| `checksums.sha256` | N/A | `<sha256>  <path>` |
-| `context_readback` | `payload/<path>` | `<path>` |
-| `verification_files[]` | `payload/<path>` | `<path>` |
-| `metadata.context_readback` | `payload/<path>` | `<path>` |
+| `payload_files[].path` | `payload/{repo_relative_path}` | `{repo_relative_path}` |
+| `checksums.sha256` | N/A | `{sha256}  {repo_relative_path}` |
+| `context_readback` | `payload/{repo_relative_path}` | `{repo_relative_path}` |
+| `verification_files[]` | `payload/{repo_relative_path}` | `{repo_relative_path}` |
+| `metadata.context_readback` | `payload/{repo_relative_path}` | `{repo_relative_path}` |
 
 **Never include `payload/` in manifest `payload_files[].path`, `context_readback`, `verification_files`, `metadata.context_readback`, or `checksums.sha256`.**
 
@@ -88,20 +90,20 @@ Logical manifest/checksum paths MUST be `<repo-relative-path>` WITHOUT `payload/
 ```json
 {
   "manifest_version": "2.0",
-  "package_id": "<non-empty string>",
-  "created_at": "<ISO8601 UTC>",
+  "package_id": "{non-empty string}",
+  "created_at": "{ISO8601 UTC}",
   "mode": "zchat_import_pack",
   "zchat_result_type": "advice|review|package",
   "run_policy": "never_auto_run",
-  "context_readback": "<repo-relative path to context_readback.md>",
+  "context_readback": "{repo_relative_path}",
   "payload_files": [
-    {"path": "<repo-relative path>", "sha256": "<64-char hex sha256>"}
+    {"path": "{repo_relative_path}", "sha256": "{64-char hex sha256}"}
   ],
-  "verification_files": ["<repo-relative path>"],
-  "allowed_paths": ["<prefix>"],
-  "forbidden_paths": ["<prefix>"],
+  "verification_files": ["{repo_relative_path}"],
+  "allowed_paths": ["{prefix}"],
+  "forbidden_paths": ["{prefix}"],
   "metadata": {
-    "context_readback": "<repo-relative path to context_readback.md>"
+    "context_readback": "{repo_relative_path}"
   }
 }
 ```
@@ -109,8 +111,8 @@ Logical manifest/checksum paths MUST be `<repo-relative-path>` WITHOUT `payload/
 ## Checksums Template
 
 ```
-<sha256_hex>  <repo-relative-path>
-<sha256_hex>  <repo-relative-path>
+{sha256_hex}  {repo_relative_path}
+{sha256_hex}  {repo_relative_path}
 ```
 
 One line per payload file. Paths are repo-relative WITHOUT `payload/` prefix.
@@ -121,30 +123,39 @@ One line per payload file. Paths are repo-relative WITHOUT `payload/` prefix.
 manifest.json
 checksums.sha256
 payload/
-  context_readback.md        <-- REQUIRED always
-  <repo-relative-path-1>
-  <repo-relative-path-2>
-  verification_files/        <-- OPTIONAL, only if explicitly requested
-    <script>
+  {context_readback}                           <-- REQUIRED always; path from manifest.context_readback
+  {repo_relative_path_1}
+  {repo_relative_path_2}
+  {verification_file_path}                     <-- OPTIONAL, only if explicitly requested; paths from manifest.verification_files[]
 ```
+
+## Sources Read Report
+
+Every prompt-pack task response MUST include a Sources Read Report in `context_readback.md`. The report MUST cover every provided source and MUST include all of the following fields with explicit values:
+
+| Field | Meaning | Example |
+|---|---|---|
+| `STATIC_MANUAL_READ` | Whether the static manual was fully read, partially read, or not read | `Read` |
+| `Static manual URL/version/sections read` | Canonical static manual URL, its declared version, and which sections were read | `https://raw.githubusercontent.com/.../zchat_external_agent_static_manual.md, v1.0.0, full` |
+| `REPO_NAVIGATION_READ` | Whether the repo navigation was read | `Read` |
+| `Repo navigation URL/version/sections read` | Canonical repo navigation URL, its declared version, and which sections were read | `https://raw.githubusercontent.com/.../zchat_repo_navigation.md, v1.0.0, full` |
+| `TASK_PROMPT_READ` | Whether the task prompt was read | `Read` |
+| `Task prompt name/sections read` | Request name from the prompt and which sections were read | `ZCHAT-20260627-120000-add-feature, full` |
+| `SOURCE_URLS_READ` | Whether each task-provided source URL was read | `Read (2/2 fully, 0 partially, 0 not read)` |
+| `SIDE_FILES_READ` | Which additional files beyond explicit source URLs were read | `docs/zchat_external_agent_static_manual.md (via canonical URL)` |
+| `UNREAD_OR_UNAVAILABLE_SOURCES` | Sources that were not read or were unavailable, with reason | `None` or `https://example.com/missing.py — URL returned 404` |
+
+Format MUST be markdown-friendly. The report MUST be placed inside `context_readback.md` before the evidence categories below.
 
 ## Context Readback Format
 
-`context_readback.md` is **REQUIRED always**. It MUST contain:
-
-### Sources Read Report
-
-| Source | Status | Notes |
-|---|---|---|
-| `<source URL or description>` | `Read` / `Partially read` / `Not read` | Reason if not fully read |
-
-For each source provided in the prompt, report whether it was read.
+`context_readback.md` is **REQUIRED always**. It MUST contain exactly four top-level evidence categories listed below, placed after the Sources Read Report. No other top-level categories are allowed in the evidence section.
 
 ### Confirmed
 
 Facts verified from provided sources. Cite specific source URL and line/region.
 
-### Inferred  
+### Inferred
 
 Reasonable deductions from confirmed facts. State the inference chain.
 
@@ -154,12 +165,14 @@ Claims you believe are true but cannot confirm from provided sources. Flag clear
 
 ### Needs local verification
 
-Statements that require repo-local access (running tests, checking git state, reading non-provided files). NEVER fabricate these results.
+Statements that require repo-local access (running tests, checking git state, reading non-provided files). NEVER fabricate these results. If the agent cannot verify a fact from canonical sources, it MUST place that claim here — never assert it as confirmed or inferred.
 
 ## Verification Files
 
+- `manifest.verification_files[]` stores **repo-relative logical paths** (no `payload/` prefix).
+- Physical ZIP entries for verification files MUST be `payload/{repo_relative_path}` where `{repo_relative_path}` matches exactly a path listed in `manifest.verification_files[]`.
 - `verification_files` is REQUIRED only if **explicitly requested** by the task.
-- If not requested, `verification_files` field SHOULD be omitted or empty `[]`.
+- If not explicitly requested, the `verification_files` field SHOULD be omitted or empty `[]`.
 - Verification files are NOT executed; they are read as text and scanned for dangerous patterns during `zchat_inspect_verification_pack`.
 
 ## Quarantine-First Semantics
@@ -171,10 +184,11 @@ Statements that require repo-local access (running tests, checking git state, re
 
 ## Honest Sources Read Report Rules
 
-For every prompt-pack task, you MUST produce a Sources Read Report:
+For every prompt-pack task, you MUST produce a Sources Read Report following the canonical `## Sources Read Report` section above:
 - Report what was read (fully).
 - Report what was partially read (and why).
 - Report what task-provided files/URLs were **not** read and **why**.
+- Include all nine canonical fields: `STATIC_MANUAL_READ`, Static manual URL/version/sections, `REPO_NAVIGATION_READ`, Repo navigation URL/version/sections, `TASK_PROMPT_READ`, Task prompt name/sections, `SOURCE_URLS_READ`, `SIDE_FILES_READ`, `UNREAD_OR_UNAVAILABLE_SOURCES`.
 - For ZIP package tasks, the Sources Read Report MUST be included in `context_readback.md`.
 
 ## Version Reporting
