@@ -1102,16 +1102,19 @@ def _read_live_log_fallback_steps(
     default_model: str,
     default_reasoning: str,
     default_cwd: str,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Fallback for live sessions missing rollout JSONL.
 
     Builds coarse per-turn steps from logs_2.sqlite. This is intentionally
     lower fidelity than rollout parsing, but avoids empty detail pages for
     recent/live sessions whose raw rollout files are absent.
+
+    Returns (steps, fallback_ai_calls) where fallback_ai_calls are explicitly
+    degraded with mapping_confidence=\"fallback_logs_only\" and is_zero_usage=True.
     """
     logs_path = codex_dir / "logs_2.sqlite"
     if not logs_path.exists():
-        return []
+        return [], []
 
     try:
         conn = sqlite3.connect(f"file:{logs_path}?mode=ro", uri=True)
@@ -1124,7 +1127,7 @@ def _read_live_log_fallback_steps(
         rows = cursor.fetchall()
         conn.close()
     except Exception:
-        return []
+        return [], []
 
     turns: dict[str, dict[str, Any]] = {}
     turn_order: list[str] = []
@@ -1285,7 +1288,41 @@ def _read_live_log_fallback_steps(
             },
         })
 
-    return steps
+    fallback_ai_calls: list[dict[str, Any]] = []
+    for step in steps:
+        call_idx = to_int(step.get("step_index", 0))
+        fallback_ai_calls.append({
+            "call_index": call_idx,
+            "event_index": 0,
+            "timestamp": str(step.get("timestamp", "")),
+            "model": str(step.get("model", "unknown")),
+            "step_index": call_idx,
+            "turn_id": str(step.get("turn_id", "")),
+            "is_zero_usage": True,
+            "usage": {
+                "input_tokens": 0,
+                "cached_tokens": 0,
+                "non_cached_input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": 0,
+                "tool_tokens": 0,
+            },
+            "estimated_cost": {
+                "estimated_total_cost_usd": None,
+                "estimated_input_cost_usd": None,
+                "estimated_cached_cost_usd": None,
+                "estimated_output_cost_usd": None,
+            },
+            "mapping_confidence": "fallback_logs_only",
+            "mapping_note": (
+                "Восстановлен из logs_2.sqlite без raw rollout JSONL. "
+                "Per-request usage недоступно; call-level модель деградирована "
+                "(zero usage, fallback confidence). Данные о реальной стоимости "
+                "этого вызова отсутствуют."
+            ),
+        })
+
+    return steps, fallback_ai_calls
 
 
 def build_live_session_detail(source: dict[str, Any], session_id: str) -> dict[str, Any] | None:
@@ -1322,10 +1359,11 @@ def build_live_session_detail(source: dict[str, Any], session_id: str) -> dict[s
 
     events = _read_rollout_jsonl(codex_dir, session_id)
     used_logs_fallback = False
+    session_ai_calls: list[dict[str, Any]] = []
     if events:
-        steps, timeline_events = _build_live_steps(events, session_id)
+        steps, timeline_events, session_ai_calls = _build_live_steps(events, session_id)
     else:
-        steps = _read_live_log_fallback_steps(
+        steps, session_ai_calls = _read_live_log_fallback_steps(
             codex_dir,
             session_id,
             default_model=model,
@@ -1410,6 +1448,151 @@ def build_live_session_detail(source: dict[str, Any], session_id: str) -> dict[s
         "available": bool(total_input or total_output),
     }
 
+    # ── v2.8: Call-level audit metrics from session_ai_calls ──
+    ai_calls_with_usage = [c for c in session_ai_calls if not c["is_zero_usage"]]
+    ai_calls_zero_usage = [c for c in session_ai_calls if c["is_zero_usage"]]
+    ai_calls_unmapped = [c for c in session_ai_calls if c["mapping_confidence"] == "unmapped"]
+    ai_calls_mapped = [c for c in session_ai_calls if c["mapping_confidence"] != "unmapped"]
+
+    ai_calls_with_usage_count = len(ai_calls_with_usage)
+    ai_calls_zero_usage_count = len(ai_calls_zero_usage)
+    ai_calls_total_count = len(session_ai_calls)
+    ai_calls_unmapped_count = len(ai_calls_unmapped)
+    ai_calls_mapped_count = len(ai_calls_mapped)
+
+    ai_calls_total_input = sum(c["usage"]["input_tokens"] for c in ai_calls_with_usage)
+    ai_calls_total_cached = sum(c["usage"]["cached_tokens"] for c in ai_calls_with_usage)
+    ai_calls_total_output = sum(c["usage"]["output_tokens"] for c in ai_calls_with_usage)
+    ai_calls_total_reasoning = sum(c["usage"]["reasoning_tokens"] for c in ai_calls_with_usage)
+    ai_calls_total_cost = sum(
+        c["estimated_cost"].get("estimated_total_cost_usd") or 0
+        for c in ai_calls_with_usage
+    )
+
+    usage_buckets: dict[str, list[int]] = {
+        "zero": [],
+        "tiny_1_1000": [],
+        "small_1001_10000": [],
+        "medium_10001_50000": [],
+        "large_50001_200000": [],
+        "xlarge_200001_plus": [],
+    }
+    for idx, c in enumerate(ai_calls_with_usage):
+        inp = c["usage"]["input_tokens"]
+        if inp == 0:
+            usage_buckets["zero"].append(c["call_index"])
+        elif inp <= 1000:
+            usage_buckets["tiny_1_1000"].append(c["call_index"])
+        elif inp <= 10000:
+            usage_buckets["small_1001_10000"].append(c["call_index"])
+        elif inp <= 50000:
+            usage_buckets["medium_10001_50000"].append(c["call_index"])
+        elif inp <= 200000:
+            usage_buckets["large_50001_200000"].append(c["call_index"])
+        else:
+            usage_buckets["xlarge_200001_plus"].append(c["call_index"])
+
+    honest_audit_summary: dict[str, Any] = {
+        "ai_calls_total": ai_calls_total_count,
+        "ai_calls_with_usage": ai_calls_with_usage_count,
+        "ai_calls_zero_usage": ai_calls_zero_usage_count,
+        "ai_calls_mapped_to_visible_steps": ai_calls_mapped_count,
+        "ai_calls_unmapped": ai_calls_unmapped_count,
+        "ai_calls_total_input_tokens": ai_calls_total_input,
+        "ai_calls_total_cached_tokens": ai_calls_total_cached,
+        "ai_calls_total_output_tokens": ai_calls_total_output,
+        "ai_calls_total_reasoning_tokens": ai_calls_total_reasoning,
+        "ai_calls_total_cost_usd": round(ai_calls_total_cost, 6) if ai_calls_total_cost else None,
+        "ai_calls_usage_buckets_by_input": {
+            k: {"count": len(v), "call_indices": v}
+            for k, v in usage_buckets.items()
+        },
+        "note_ru": (
+            "ВНИМАНИЕ: call-level модель деградирована. Rollout JSONL не найден; "
+            "AI calls восстановлены из logs_2.sqlite (fallback). Все вызовы помечены "
+            "mapping_confidence=fallback_logs_only и is_zero_usage=True. "
+            "Per-request usage и стоимость недоступны."
+            if used_logs_fallback
+            else "Честный call-level аудит: каждый AI-вызов учтён отдельно. Zero-usage события посчитаны отдельно. Unmapped — вызовы без доказуемой связи с видимым шагом."
+        ),
+        "degraded_from_fallback": used_logs_fallback,
+    }
+
+    if ai_calls_unmapped_count > 0:
+        summary_warnings.append({
+            "id": "ai_calls_unmapped",
+            "message": f"{ai_calls_unmapped_count} AI-вызовов не удалось привязать к видимым шагам — см. ai_calls[].mapping_confidence=unmapped.",
+        })
+    if ai_calls_zero_usage_count > 0:
+        summary_warnings.append({
+            "id": "ai_calls_zero_usage",
+            "message": f"{ai_calls_zero_usage_count} AI-вызовов имеют нулевое usage — посчитаны отдельно в honest_audit_summary.",
+        })
+
+    # ── v2.9: honesty warnings ──
+
+    # Mismatch between call-level cost sum and cumulative session cost
+    all_calls_cost_total = sum(
+        c["estimated_cost"].get("estimated_total_cost_usd") or 0
+        for c in ai_calls_with_usage
+    )
+    if total_cost and abs(total_cost - all_calls_cost_total) > 0.0001:
+        summary_warnings.append({
+            "id": "call_vs_cumulative_cost_mismatch",
+            "message": (
+                f"Сумма call-level cost (${round(all_calls_cost_total, 6)}) "
+                f"не совпадает с cumulative session cost (${round(total_cost, 6)}): "
+                f"Δ=${round(total_cost - all_calls_cost_total, 6)}."
+            ),
+        })
+
+    # Positive unmapped/internal usage when visible steps exist — signals "leak"
+    visible_steps_count_val = len(steps)
+    if visible_steps_count_val > 0:
+        uoiu = unmapped_or_internal_usage
+        positives = []
+        for field, label in (
+            ("input_tokens", "input"),
+            ("cached_tokens", "cached"),
+            ("output_tokens", "output"),
+            ("reasoning_tokens", "reasoning"),
+            ("tool_tokens", "tool"),
+        ):
+            val = to_int(uoiu.get(field, 0))
+            if val > 0:
+                positives.append(f"{label}={val}")
+        if positives:
+            summary_warnings.append({
+                "id": "positive_unmapped_or_internal_usage",
+                "message": (
+                    f"Обнаружена положительная unmapped/internal usage при "
+                    f"{visible_steps_count_val} видимых шагах: часть usage не относится "
+                    f"к видимым шагам ({'; '.join(positives)}). "
+                    f"Возможна утечка части usage вне видимых шагов."
+                ),
+            })
+
+    # Aggregate reported_by_agent items across all steps
+    total_reported_by_agent = 0
+    for step in steps:
+        aa = step.get("agent_activity", {})
+        if not isinstance(aa, dict):
+            continue
+        all_items = aa.get("activity_items", [])
+        total_reported_by_agent += sum(
+            1 for it in all_items
+            if isinstance(it, dict) and it.get("status") == "reported_by_agent"
+        )
+    if total_reported_by_agent > 0:
+        summary_warnings.append({
+            "id": "reported_by_agent_items",
+            "message": (
+                f"{total_reported_by_agent} упоминаний файлов/команд только со слов агента "
+                f"(reported_by_agent, без подтверждения в raw tool events). "
+                f"Упомянутые, не обязательно все были прочитаны/выполнены."
+            ),
+        })
+
     return {
         "id": session_id,
         "title": title,
@@ -1446,6 +1629,12 @@ def build_live_session_detail(source: dict[str, Any], session_id: str) -> dict[s
         },
         "timeline_events": timeline_events,
         "steps": steps,
+        "ai_calls": session_ai_calls,
+        "ai_calls_count": ai_calls_total_count,
+        "ai_calls_with_usage_count": ai_calls_with_usage_count,
+        "ai_calls_zero_usage_count": ai_calls_zero_usage_count,
+        "ai_calls_unmapped_count": ai_calls_unmapped_count,
+        "ai_calls_honest_audit_summary": honest_audit_summary,
     }
 
 
@@ -1796,8 +1985,85 @@ def _classify_service_call(tool_name: str, args: dict[str, Any]) -> dict[str, An
     }
 
 
-def _build_live_steps(events: list[dict[str, Any]], thread_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _build_session_ai_calls(
+    all_usage_events: list[dict[str, Any]],
+    steps: list[dict[str, Any]],
+    session_model: str,
+) -> list[dict[str, Any]]:
+    """Build session-level ai_calls array from all captured last_token_usage checkpoints.
+
+    This is the PRIMARY truth model for call-level audit in UI/export.
+    Each entry represents one AI model call with its usage, mapped or unmapped to a visible step.
+
+    Returns list with explicit fields:
+      call_index, event_index, timestamp, model, step_index (None if unmapped),
+      is_zero_usage, usage, cost, mapping_confidence, mapping_note
+    """
+    ai_calls: list[dict[str, Any]] = []
+    # Map step_index -> step turn_id for linking
+    step_turn_map: dict[int, str] = {}
+    for s in steps:
+        si = to_int(s.get("step_index"), 0)
+        if si and si not in step_turn_map:
+            step_turn_map[si] = str(s.get("turn_id", ""))
+
+    for idx, item in enumerate(all_usage_events):
+        inp = to_int(item.get("input_tokens", 0))
+        cached = to_int(item.get("cached_tokens", 0))
+        out = to_int(item.get("output_tokens", 0))
+        reas = to_int(item.get("reasoning_tokens", 0))
+        tool = to_int(item.get("tool_tokens", 0))
+        model = str(item.get("model", session_model))
+        si = item.get("step_index")
+        is_zero = (inp == 0 and cached == 0 and out == 0 and reas == 0 and tool == 0)
+        non_cached = max(inp - cached, 0)
+
+        costs = _estimate_usage_costs(model, inp, cached, out)
+
+        mapped_step = None
+        mapping_confidence = "unmapped"
+        mapping_note = ""
+
+        if si is not None and si > 0:
+            mapped_step = si
+            mapping_confidence = "high"
+            mapping_note = "Маппирован к видимому шагу по глобальному event_index попаданию"
+        elif idx == len(all_usage_events) - 1 and steps:
+            mapped_step = steps[-1].get("step_index")
+            mapping_confidence = "medium"
+            mapping_note = "Последний AI-запрос после закрытия видимого шага; отнесён к последнему видимому шагу"
+        else:
+            mapping_confidence = "unmapped"
+            mapping_note = "AI-запрос между видимыми шагами; не маппирован к конкретному шагу"
+
+        ai_calls.append({
+            "call_index": idx + 1,
+            "event_index": item.get("event_index", 0),
+            "timestamp": str(item.get("timestamp", "")),
+            "model": model,
+            "step_index": mapped_step,
+            "turn_id": step_turn_map.get(mapped_step, "") if mapped_step else "",
+            "is_zero_usage": is_zero,
+            "usage": {
+                "input_tokens": inp,
+                "cached_tokens": cached,
+                "non_cached_input_tokens": non_cached,
+                "output_tokens": out,
+                "reasoning_tokens": reas,
+                "tool_tokens": tool,
+            },
+            "estimated_cost": costs,
+            "mapping_confidence": mapping_confidence,
+            "mapping_note": mapping_note,
+        })
+
+    return ai_calls
+
+
+def _build_live_steps(events: list[dict[str, Any]], thread_id: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Parse rollout events into step structure with honest token mapping.
+
+    Returns (steps, timeline_events, session_ai_calls).
 
     Real rollout schema:
       {type: "turn_context", payload: {model, effort, turn_id, ...}}
@@ -1812,6 +2078,9 @@ def _build_live_steps(events: list[dict[str, Any]], thread_id: str) -> tuple[lis
 
     v2.5: Captures function_call/function_call_output as live_tool_events
     and builds human_timeline from real tool evidence.
+
+    v2.8: Call-level audit — session_ai_calls array is the primary truth model
+    for UI/export, with explicit zero-usage and unmapped tracking.
     """
     steps: list[dict[str, Any]] = []
     timeline_events: list[dict[str, Any]] = []
@@ -1828,6 +2097,8 @@ def _build_live_steps(events: list[dict[str, Any]], thread_id: str) -> tuple[lis
     global_event_index = 0
     # v2.1: carry cumulative_after from previous visible step for cumulative_before
     prev_step_cumulative_after: dict[str, Any] | None = None
+    # v2.8: session-level AI call tracking for call-level audit
+    _all_session_request_usages: list[dict[str, Any]] = []
 
     def _classify_event(ev: dict[str, Any], ev_idx: int) -> dict[str, Any] | None:
         """Classify a single raw rollout event into an activity item.
@@ -3661,6 +3932,45 @@ def _build_live_steps(events: list[dict[str, Any]], thread_id: str) -> tuple[lis
         # Build human_timeline from live_tool_events + request_usage_items
         _build_agent_activity(current_step, raw_activity_items, full_step_usage, event_range, request_usage_items, processed_tool_events)
 
+        # ── v2.9: per-step honesty warnings ──
+        step_warnings: list[dict[str, str]] | list[str] = current_step.get("warnings") or []
+        step_warnings_list: list[str] = list(step_warnings)
+
+        # Warning: raw tool evidence exists but activity shows 0 tool operations
+        lte_count = len(processed_tool_events)
+        er_raw_count = event_range.get("raw_events_count", 0)
+        has_raw_tool_evidence = lte_count > 0 or er_raw_count > 0
+        if has_raw_tool_evidence:
+            aa_counts = current_step.get("agent_activity", {}).get("activity_counts", {})
+            tool_activity_sum = (
+                to_int(aa_counts.get("file_reads", 0))
+                + to_int(aa_counts.get("file_writes", 0))
+                + to_int(aa_counts.get("shell_commands", 0))
+                + to_int(aa_counts.get("git_operations", 0))
+                + to_int(aa_counts.get("test_runs", 0))
+            )
+            if tool_activity_sum == 0 and lte_count > 0:
+                step_warnings_list.append(
+                    f"Raw tool evidence detected ({lte_count} tool events, "
+                    f"{er_raw_count} raw events) "
+                    f"but step activity counts show 0 classified tool operations."
+                )
+
+        # Warning: reported_by_agent items without raw evidence
+        all_items = current_step.get("agent_activity", {}).get("activity_items", [])
+        reported_count = sum(
+            1 for it in all_items if isinstance(it, dict) and it.get("status") == "reported_by_agent"
+        )
+        if reported_count > 0:
+            step_warnings_list.append(
+                f"{reported_count} activity items are reported_by_agent "
+                f"(from text, not confirmed by raw tool events). "
+                f"These files/commands are mentioned but not necessarily executed."
+            )
+
+        if step_warnings_list:
+            current_step["warnings"] = step_warnings_list
+
         # Fallback: no request usage at all
         if not primary_request_usage and isinstance(usage, dict):
             usage["available"] = False
@@ -3999,8 +4309,8 @@ def _build_live_steps(events: list[dict[str, Any]], thread_id: str) -> tuple[lis
                         if txt:
                             pending_text.append(str(txt))
 
-        if token_count and isinstance(token_count, dict) and current_step:
-            current_step.setdefault("_all_request_usages", []).append({
+        if token_count and isinstance(token_count, dict):
+            usage_item = {
                 "event_index": global_event_index,
                 "timestamp": str(ev.get("timestamp", "")),
                 "input_tokens": to_int(token_count.get("input_tokens", token_count.get("input_token_count", 0))),
@@ -4008,8 +4318,13 @@ def _build_live_steps(events: list[dict[str, Any]], thread_id: str) -> tuple[lis
                 "output_tokens": to_int(token_count.get("output_tokens", token_count.get("output_token_count", 0))),
                 "reasoning_tokens": to_int(token_count.get("reasoning_output_tokens", token_count.get("reasoning_token_count", 0))),
                 "tool_tokens": to_int(token_count.get("tool_tokens", token_count.get("tool_token_count", 0))),
-            })
-            current_step.setdefault("environment", {})["model_context_window"] = model_context_window
+                "model": current_model,
+                "step_index": step_index if current_step else None,
+            }
+            _all_session_request_usages.append(usage_item)
+            if current_step:
+                current_step.setdefault("_all_request_usages", []).append(usage_item)
+                current_step.setdefault("environment", {})["model_context_window"] = model_context_window
 
         if total_token_snapshot and isinstance(total_token_snapshot, dict) and current_step:
             current_step.setdefault("_all_total_snapshots", []).append({
@@ -4037,7 +4352,10 @@ def _build_live_steps(events: list[dict[str, Any]], thread_id: str) -> tuple[lis
 
     finalize_current_step("session_end")
 
-    return steps, timeline_events
+    session_ai_calls = _build_session_ai_calls(
+        _all_session_request_usages, steps, current_model
+    )
+    return steps, timeline_events, session_ai_calls
 # ── HTTP Handler ──
 
 
@@ -4074,6 +4392,12 @@ class MonitorHandler(SimpleHTTPRequestHandler):
         # Suppress default logs for cleaner output
         pass
 
+    def end_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        super().end_headers()
+
     def _send_json(self, data: Any, status: int = 200) -> None:
         body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
         self.send_response(status)
@@ -4101,7 +4425,6 @@ class MonitorHandler(SimpleHTTPRequestHandler):
                 "Content-Disposition",
                 f'attachment; filename="{filename}"',
             )
-            self.send_header("Cache-Control", "no-store")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             with path.open("rb") as handle:

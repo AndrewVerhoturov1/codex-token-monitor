@@ -473,8 +473,14 @@ function renderHeader() {
   const hasAmbiguousLiveSteps = sourceKind === "live" && (s.steps || []).some(t => t?.usage?.available === false);
   const usageNote = hasAmbiguousLiveSteps ? " · часть шагов без точной per-step разбивки" : "";
 
+  // v2.8: call-level audit stats as primary truth
+  const cas = s.ai_calls_honest_audit_summary || {};
+  const callAuditNote = cas.ai_calls_total
+    ? ` · AI calls: ${cas.ai_calls_with_usage || 0} с usage / ${cas.ai_calls_zero_usage || 0} zero / ${cas.ai_calls_unmapped || 0} unmapped`
+    : "";
+
   document.getElementById("title").textContent = s.title;
-  document.getElementById("meta").textContent = `${src ? src.name : ""} [${kindLabel}] · ${s.id} · ${s.date} · ${s.workdir}${usageNote}`;
+  document.getElementById("meta").textContent = `${src ? src.name : ""} [${kindLabel}] · ${s.id} · ${s.date} · ${s.workdir}${usageNote}${callAuditNote}`;
   document.getElementById("stats").innerHTML = [
     stat("Cost", money(z.cost), "good"),
     stat("Input", nf.format(z.input), "blue"),
@@ -552,6 +558,111 @@ function renderSteps() {
     const warnEl = document.createElement("div");
     warnEl.innerHTML = usageWarning;
     root.appendChild(warnEl);
+  }
+
+  // v2.8: Call-level audit — AI calls summary as primary truth above steps
+  if (s.ai_calls && s.ai_calls.length > 0) {
+    const cas = s.ai_calls_honest_audit_summary || {};
+    const buckets = cas.ai_calls_usage_buckets_by_input || {};
+    const isFallback = cas.degraded_from_fallback || false;
+    const callsSection = document.createElement("div");
+    callsSection.className = "ai-calls-section";
+    callsSection.innerHTML = `
+      <div class="box" style="margin-top:0">
+        <h3>AI Calls — честный call-level аудит (primary truth)${isFallback ? ' <span style="color:#c09853;font-weight:400">[DEGRADED: fallback]</span>' : ''}</h3>
+        <div class="muted xsmall" style="margin-bottom:6px">${isFallback
+          ? '<span style="color:#c09853;font-weight:600">ДЕГРАДАЦИЯ: rollout JSONL не найден.</span> Call-level модель восстановлена из logs_2.sqlite (fallback). Per-request usage отсутствует, все вызовы помечены zero-usage. Данные о стоимости недоступны. Это <b>не</b> raw request-level truth.'
+          : 'Каждый AI-вызов с live last_token_usage. Zero-usage посчитаны отдельно. Unmapped помечены явно.'}</div>
+        ${isFallback ? '<div class="warning-banner" style="background:#3a2a00;border:1px solid #c09853;color:#c09853;padding:6px 10px;margin-bottom:8px;border-radius:4px;font-size:12px">Сессия без rollout: call-level данные деградированы и не отражают реальную per-request стоимость.</div>' : ''}
+        <div class="metrics" style="margin-bottom:6px">
+          ${metric("Всего AI calls", nf.format(cas.ai_calls_total || 0))}
+          ${metric("С usage", nf.format(cas.ai_calls_with_usage || 0))}
+          ${metric("Zero usage", nf.format(cas.ai_calls_zero_usage || 0))}
+          ${metric(isFallback ? "Fallback" : "Unmapped", isFallback ? nf.format(cas.ai_calls_total || 0) : nf.format(cas.ai_calls_unmapped || 0))}
+          ${metric("Input (calls)", nf.format(cas.ai_calls_total_input_tokens || 0))}
+          ${metric("Output (calls)", nf.format(cas.ai_calls_total_output_tokens || 0))}
+          ${metric("Cost (calls)", (cas.ai_calls_total_cost_usd != null) ? money(cas.ai_calls_total_cost_usd) : "—")}
+        </div>
+        ${(() => {
+          let buckHtml = '<div class="muted xsmall" style="margin-top:4px">Buckets (по input_tokens):</div><div class="pills" style="flex-wrap:wrap">';
+          Object.entries(buckets).forEach(([k, v]) => {
+            const label = k.replace(/_/g, ' ');
+            buckHtml += '<span class="pill">' + label + ': ' + v.count + '</span>';
+          });
+          buckHtml += '</div>';
+          return buckHtml;
+        })()}
+        <button class="small" style="margin-top:6px" onclick="var el=document.getElementById('aiCallsTable');el.style.display=el.style.display==='none'?'block':'none'">Показать таблицу AI calls</button>
+        <div id="aiCallsTable" style="display:none;max-height:400px;overflow:auto;margin-top:6px">
+          <table style="width:100%;border-collapse:collapse;font-size:11px">
+            <thead><tr style="background:#2a2a2a">
+              <th style="text-align:right;padding:2px 4px">#</th>
+              <th style="text-align:left;padding:2px 4px">Model</th>
+              <th style="text-align:right;padding:2px 4px">Step</th>
+              <th style="text-align:right;padding:2px 4px">Input</th>
+              <th style="text-align:right;padding:2px 4px">Cached</th>
+              <th style="text-align:right;padding:2px 4px">Output</th>
+              <th style="text-align:right;padding:2px 4px">Reasoning</th>
+              <th style="text-align:right;padding:2px 4px">Cost</th>
+              <th style="text-align:center;padding:2px 4px">Zero?</th>
+              <th style="text-align:center;padding:2px 4px">Map conf</th>
+            </tr></thead><tbody>
+            ${s.ai_calls.map(function(c) {
+              const cost = c.estimated_cost || {};
+              const usage = c.usage || {};
+              const zeroMark = c.is_zero_usage ? '<span style="color:#c09853">zero</span>' : '<span style="color:#6a6">usage</span>';
+              const mapColor = c.mapping_confidence === 'unmapped' ? '#c44' : (c.mapping_confidence === 'medium' ? '#cc4' : (c.mapping_confidence === 'fallback_logs_only' ? '#c09853' : '#4a4'));
+              return '<tr style="' + (c.is_zero_usage ? 'opacity:0.5' : '') + '">' +
+                '<td style="text-align:right;padding:1px 4px">' + c.call_index + '</td>' +
+                '<td style="padding:1px 4px">' + escapeHtml(c.model) + '</td>' +
+                '<td style="text-align:right;padding:1px 4px">' + (c.step_index || '—') + '</td>' +
+                '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.input_tokens || 0) + '</td>' +
+                '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.cached_tokens || 0) + '</td>' +
+                '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.output_tokens || 0) + '</td>' +
+                '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.reasoning_tokens || 0) + '</td>' +
+                '<td style="text-align:right;padding:1px 4px;font-weight:600">' + (cost.estimated_total_cost_usd != null ? money(cost.estimated_total_cost_usd) : '—') + '</td>' +
+                '<td style="text-align:center;padding:1px 4px">' + zeroMark + '</td>' +
+                '<td style="text-align:center;padding:1px 4px;color:' + mapColor + '">' + escapeHtml(c.mapping_confidence) + '</td>' +
+                '</tr>';
+            }).join("")}
+            </tbody></table>
+          </div>
+      </div>`;
+    root.appendChild(callsSection);
+  }
+
+  // ── v2.9: honesty warnings — session-level ──
+  var honestyWarnings = [];
+  var summaryWarnings = (s.summary && s.summary.warnings) || [];
+  summaryWarnings.forEach(function(w) {
+    var msg = typeof w === 'string' ? w : (w && w.message) ? w.message : '';
+    if (msg && (msg.indexOf('call-level') >= 0 || msg.indexOf('unmapped/internal') >= 0 ||
+        msg.indexOf('unmapped') >= 0 || msg.indexOf('zero') >= 0)) {
+      honestyWarnings.push(msg);
+    }
+  });
+  // Count reported_by_agent items across all steps
+  var totalReported = 0;
+  (s.steps || []).forEach(function(step) {
+    var items = (step.agent_activity && step.agent_activity.activity_items) || [];
+    items.forEach(function(it) {
+      if (it && it.status === 'reported_by_agent') totalReported++;
+    });
+  });
+  if (honestyWarnings.length > 0 || totalReported > 0) {
+    var hwEl = document.createElement('div');
+    var hwLines = '<div class="box yellow-box" style="margin-bottom:8px;border-left:3px solid #c09853">';
+    hwLines += '<h3 style="color:#c09853">⚠ Честные предупреждения (honesty warnings)</h3>';
+    hwLines += '<div class="muted xsmall" style="margin-bottom:4px">Эти предупреждения основаны на строгих проверках имеющихся данных.</div>';
+    honestyWarnings.forEach(function(w) {
+      hwLines += '<div class="muted xsmall" style="margin-bottom:2px">• ' + escapeHtml(w) + '</div>';
+    });
+    if (totalReported > 0) {
+      hwLines += '<div class="muted xsmall" style="margin-bottom:2px">• ' + totalReported + ' упоминаний файлов/команд только со слов агента (reported_by_agent, без подтверждения в raw tool events).</div>';
+    }
+    hwLines += '</div>';
+    hwEl.innerHTML = hwLines;
+    root.appendChild(hwEl);
   }
 
   const timelineByStep = new Map();
@@ -1661,6 +1772,12 @@ function buildSessionExportJson(session, steps) {
     summary: session?.summary || {},
     warnings: buildTelemetryWarnings(session, null),
     timeline_events: session?.timeline_events || [],
+    ai_calls: session?.ai_calls || [],
+    ai_calls_count: session?.ai_calls_count || 0,
+    ai_calls_with_usage_count: session?.ai_calls_with_usage_count || 0,
+    ai_calls_zero_usage_count: session?.ai_calls_zero_usage_count || 0,
+    ai_calls_unmapped_count: session?.ai_calls_unmapped_count || 0,
+    ai_calls_honest_audit_summary: session?.ai_calls_honest_audit_summary || {},
     steps: selectedStepsList.map(step => buildStepExportData(step, session)),
   };
 }
@@ -1696,6 +1813,8 @@ function buildSessionExportMarkdown(session, steps, title) {
     `- Raw model requests: ${summary.raw_model_requests_count ?? "—"}`,
     `- Visible step full usage sum (input): ${summary.visible_step_full_usage_sum?.input_tokens ?? "—"}`,
     `- Unmapped/internal usage (input): ${summary.unmapped_or_internal_usage?.input_tokens ?? "—"}`,
+    `- AI calls total: ${session.ai_calls_count ?? "—"} (with usage: ${session.ai_calls_with_usage_count ?? "—"}, zero: ${session.ai_calls_zero_usage_count ?? "—"}, unmapped: ${session.ai_calls_unmapped_count ?? "—"})`,
+    `- AI calls cost: ${session.ai_calls_honest_audit_summary?.ai_calls_total_cost_usd != null ? money(session.ai_calls_honest_audit_summary.ai_calls_total_cost_usd) : "—"}`,
     "",
     "## Warnings",
     ...(data.warnings.length ? data.warnings.map(w => `- ${w}`) : ["- none"]),
@@ -3187,5 +3306,99 @@ async function init() {
   initSources();
   await refreshAll();
 }
+
+function renderAiCallsSectionIntoSteps(root, session) {
+  if (!root || !session || !session.ai_calls || !session.ai_calls.length) return;
+  if (root.querySelector(".ai-calls-section")) return;
+
+  const cas = session.ai_calls_honest_audit_summary || {};
+  const buckets = cas.ai_calls_usage_buckets_by_input || {};
+  const isFallback = !!cas.degraded_from_fallback;
+  const callsSection = document.createElement("div");
+  callsSection.className = "ai-calls-section";
+  callsSection.innerHTML = `
+    <div class="box" style="margin-top:0;margin-bottom:8px">
+      <h3>AI Calls - honest call-level audit (primary truth)${isFallback ? ' <span style="color:#c09853;font-weight:400">[DEGRADED: fallback]</span>' : ''}</h3>
+      <div class="muted xsmall" style="margin-bottom:6px">${isFallback
+        ? '<span style="color:#c09853;font-weight:600">DEGRADED:</span> rollout JSONL not found. Call-level view was reconstructed from logs fallback and is not raw request-level truth.'
+        : 'Each AI call comes from live last_token_usage. Zero-usage is counted separately. Unmapped calls are marked explicitly.'}</div>
+      ${isFallback ? '<div class="warning-banner" style="background:#3a2a00;border:1px solid #c09853;color:#c09853;padding:6px 10px;margin-bottom:8px;border-radius:4px;font-size:12px">Fallback session: call-level data is degraded and does not reflect true per-request cost.</div>' : ''}
+      <div class="metrics" style="margin-bottom:6px">
+        ${metric("AI calls", nf.format(cas.ai_calls_total || 0))}
+        ${metric("With usage", nf.format(cas.ai_calls_with_usage || 0))}
+        ${metric("Zero usage", nf.format(cas.ai_calls_zero_usage || 0))}
+        ${metric(isFallback ? "Fallback" : "Unmapped", nf.format(isFallback ? (cas.ai_calls_total || 0) : (cas.ai_calls_unmapped || 0)))}
+        ${metric("Input", nf.format(cas.ai_calls_total_input_tokens || 0))}
+        ${metric("Output", nf.format(cas.ai_calls_total_output_tokens || 0))}
+        ${metric("Cost", cas.ai_calls_total_cost_usd != null ? money(cas.ai_calls_total_cost_usd) : "-")}
+      </div>
+      <div class="muted xsmall" style="margin-top:4px">Buckets by input_tokens:</div>
+      <div class="pills" style="flex-wrap:wrap;margin-bottom:6px">
+        ${Object.entries(buckets).map(([k, v]) => `<span class="pill">${escapeHtml(k.replace(/_/g, " "))}: ${nf.format((v && v.count) || 0)}</span>`).join("")}
+      </div>
+      <button class="small" style="margin-top:6px" onclick="var el=document.getElementById('aiCallsTable');el.style.display=el.style.display==='none'?'block':'none'">Show AI calls table</button>
+      <div id="aiCallsTable" style="display:none;max-height:400px;overflow:auto;margin-top:6px">
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="background:#2a2a2a">
+            <th style="text-align:right;padding:2px 4px">#</th>
+            <th style="text-align:left;padding:2px 4px">Model</th>
+            <th style="text-align:right;padding:2px 4px">Step</th>
+            <th style="text-align:right;padding:2px 4px">Input</th>
+            <th style="text-align:right;padding:2px 4px">Cached</th>
+            <th style="text-align:right;padding:2px 4px">Output</th>
+            <th style="text-align:right;padding:2px 4px">Reasoning</th>
+            <th style="text-align:right;padding:2px 4px">Cost</th>
+            <th style="text-align:center;padding:2px 4px">Zero?</th>
+            <th style="text-align:center;padding:2px 4px">Map</th>
+          </tr></thead><tbody>
+          ${session.ai_calls.map(function(c) {
+            const cost = c.estimated_cost || {};
+            const usage = c.usage || {};
+            const zeroMark = c.is_zero_usage ? '<span style="color:#c09853">zero</span>' : '<span style="color:#6a6">usage</span>';
+            const mapColor = c.mapping_confidence === "unmapped" ? "#c44" : (c.mapping_confidence === "medium" ? "#cc4" : (c.mapping_confidence === "fallback_logs_only" ? "#c09853" : "#4a4"));
+            return '<tr style="' + (c.is_zero_usage ? 'opacity:0.5' : '') + '">' +
+              '<td style="text-align:right;padding:1px 4px">' + c.call_index + '</td>' +
+              '<td style="padding:1px 4px">' + escapeHtml(c.model) + '</td>' +
+              '<td style="text-align:right;padding:1px 4px">' + (c.step_index || '-') + '</td>' +
+              '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.input_tokens || 0) + '</td>' +
+              '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.cached_tokens || 0) + '</td>' +
+              '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.output_tokens || 0) + '</td>' +
+              '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.reasoning_tokens || 0) + '</td>' +
+              '<td style="text-align:right;padding:1px 4px;font-weight:600">' + (cost.estimated_total_cost_usd != null ? money(cost.estimated_total_cost_usd) : '-') + '</td>' +
+              '<td style="text-align:center;padding:1px 4px">' + zeroMark + '</td>' +
+              '<td style="text-align:center;padding:1px 4px;color:' + mapColor + '">' + escapeHtml(c.mapping_confidence) + '</td>' +
+              '</tr>';
+          }).join("")}
+          </tbody></table>
+      </div>
+    </div>`;
+
+  const firstStep = root.querySelector(".step");
+  if (firstStep) {
+    root.insertBefore(callsSection, firstStep);
+  } else {
+    root.appendChild(callsSection);
+  }
+}
+
+const oldRenderHeader = renderHeader;
+renderHeader = function patchedRenderHeader() {
+  oldRenderHeader();
+  const s = sessionDetailCache;
+  if (!s) return;
+  const cas = s.ai_calls_honest_audit_summary || {};
+  if (!cas.ai_calls_total) return;
+  const meta = document.getElementById("meta");
+  if (!meta) return;
+  if (meta.textContent.includes("AI calls:")) return;
+  meta.textContent += ` · AI calls: ${cas.ai_calls_with_usage || 0} with usage / ${cas.ai_calls_zero_usage || 0} zero / ${cas.ai_calls_unmapped || 0} unmapped`;
+};
+
+const oldRenderSteps = renderSteps;
+renderSteps = function patchedRenderSteps() {
+  oldRenderSteps();
+  const root = document.getElementById("steps");
+  renderAiCallsSectionIntoSteps(root, sessionDetailCache);
+};
 
 init();

@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tile Kingdom - Hot-seat Tile-laying Board Game</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="app">
+
+<header id="top-bar">
+  <div id="title-area">
+    <h1>Tile Kingdom</h1>
+    <span id="subtitle">Hot-seat tile-placement prototype inspired by classic board games</span>
+  </div>
+  <button id="btn-help" title="How to play">?</button>
+</header>
+
+<div id="main-area">
+  <div id="left-panel">
+    <div id="players-panel"></div>
+    <div id="game-info">
+      <div class="info-row"><span class="info-label">Tiles left:</span> <span id="tiles-left">0</span></div>
+      <div class="info-row"><span class="info-label">Phase:</span> <span id="game-phase">Setup</span></div>
+    </div>
+  </div>
+
+  <div id="board-container">
+    <canvas id="board-canvas"></canvas>
+  </div>
+
+  <div id="right-panel">
+    <div id="current-tile-preview">
+      <div class="preview-label">Current Tile</div>
+      <canvas id="preview-canvas" width="140" height="140"></canvas>
+      <div id="rotation-display">Rotation: 0&deg;</div>
+    </div>
+    <div id="controls">
+      <button id="btn-rotate" class="ctrl-btn" title="Rotate tile 90° clockwise">↻ Rotate (R)</button>
+      <button id="btn-skip-meeple" class="ctrl-btn ctrl-secondary" title="Skip meeple placement">Skip Meeple</button>
+      <button id="btn-end-turn" class="ctrl-btn ctrl-primary" title="End current turn">End Turn</button>
+      <button id="btn-restart" class="ctrl-btn ctrl-danger">New Game</button>
+    </div>
+  </div>
+</div>
+
+<div id="log-panel">
+  <h3>Event Log</h3>
+  <div id="log-entries"></div>
+</div>
+
+</div>
+
+<div id="setup-modal" class="modal">
+  <div class="modal-content">
+    <h2>New Game</h2>
+    <div class="setup-row">
+      <label for="player-count">Number of players (2-5):</label>
+      <input type="number" id="player-count" min="2" max="5" value="2">
+    </div>
+    <div id="player-names"></div>
+    <button id="btn-start-game" class="ctrl-btn ctrl-primary">Start Game</button>
+  </div>
+</div>
+
+<div id="help-modal" class="modal hidden">
+  <div class="modal-content modal-help">
+    <h2>How to Play</h2>
+    <div class="help-section">
+      <h3>Objective</h3>
+      <p>Build the land tile by tile. Score points by completing roads, cities, and monasteries. Place your followers (meeples) strategically to claim features.</p>
+    </div>
+    <div class="help-section">
+      <h3>Game Flow</h3>
+      <ol>
+        <li><strong>Draw a tile</strong> - A random tile is drawn from the deck.</li>
+        <li><strong>Rotate &amp; place</strong> - Green-highlighted cells show valid placements. Click to place. Press <kbd>R</kbd> to rotate.</li>
+        <li><strong>Place a meeple (optional)</strong> - Click a feature (road, city, monastery, or field) on the just-placed tile. Cannot claim a feature already claimed by anyone.</li>
+        <li><strong>End turn</strong> - Completed features are scored automatically. Meeples return to your supply.</li>
+      </ol>
+    </div>
+    <div class="help-section">
+      <h3>Controls</h3>
+      <table>
+        <tr><td><kbd>Click</kbd></td><td>Place tile on highlighted cell</td></tr>
+        <tr><td><kbd>R</kbd></td><td>Rotate tile 90 degrees</td></tr>
+        <tr><td><kbd>Space</kbd></td><td>Skip meeple placement</td></tr>
+        <tr><td><kbd>Enter</kbd></td><td>End turn</td></tr>
+        <tr><td><kbd>Drag</kbd></td><td>Pan the board</td></tr>
+        <tr><td><kbd>Scroll</kbd></td><td>Zoom in/out</td></tr>
+      </table>
+    </div>
+    <div class="help-section">
+      <h3>Scoring</h3>
+      <ul>
+        <li><strong>Road (completed):</strong> 1 point per tile</li>
+        <li><strong>City (completed):</strong> 2 points per tile + 2 per shield</li>
+        <li><strong>Monastery (completed):</strong> 9 points when surrounded by 8 tiles</li>
+        <li><strong>End-game incomplete roads:</strong> 1 point per tile</li>
+        <li><strong>End-game incomplete cities:</strong> 1 point per tile + 1 per shield</li>
+        <li><strong>End-game monasteries:</strong> 1 point per surrounding tile + 1 for the monastery itself</li>
+        <li><strong>End-game fields:</strong> 3 points per completed city bordering the field</li>
+      </ul>
+    </div>
+    <div class="help-section">
+      <h3>About this Edition</h3>
+      <p>This is a hot-seat prototype for 2-5 players. The tile distribution is a <strong>representative deck</strong> (approximately 40 tiles) rather than the official 72-tile set. Core object rules and scoring mechanics are preserved. No AI or network play. All rendering is procedural (no original artwork used).</p>
+    </div>
+    <button id="btn-close-help" class="ctrl-btn">Close</button>
+  </div>
+</div>
+
+<script src="game.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
