@@ -11,6 +11,7 @@
 - **HTTP-сервер/дашборд** (`scripts/codex_token_monitor_server.py`) — раздаёт статику (HTML/JS/CSS) + JSON API (`/api/sources`, `/api/sessions`, `/api/session`, `/api/audit`, `/api/raw-export` и др.)
 - **Механизм сбора данных** — live (читает `state_5.sqlite`, `session_index.jsonl`, `rollout-*.jsonl` из `~/.codex`) и archive (читает `token_cost_dashboard_data.json` из `token-cost-normalized/` внутри дампов сессий)
 - **OpenCode jobs** — file-based job-wrapper: `codex_token_monitor_opencode_jobs.py` + адаптер `codex_token_monitor_opencode_adapter.py` + MCP-сервер `codex_token_monitor_opencode_jobs_mcp.py` + стартер `start_opencode_jobs_mcp.py`
+- **Zchat v1** — modes `zchat_prompt_pack`, `zchat_import_pack`, `zchat_verify_pack`, `zchat_decision_pack` внутри того же wrapper/MCP, со структурой `.ai/zchat/`
 - **Аудит** (`scripts/codex_token_monitor_audit.py`) — проверяет корректность данных о сессиях
 - **Конфигурация** в `config/`
 
@@ -22,6 +23,7 @@
 | `scripts/codex_token_monitor_opencode_jobs.py` | Job-wrapper: запуск, ожидание, очистка |
 | `scripts/codex_token_monitor_opencode_adapter.py` | Адаптер между job-wrapper и OpenCode CLI |
 | `scripts/codex_token_monitor_opencode_jobs_mcp.py` | MCP-сервер поверх job-wrapper |
+| `scripts/git_utils.py` | ZCHAT slug IDs, branch automation helpers |
 | `scripts/codex_token_monitor_adapter.py` | (путь .py — отсутствует, есть .py в config) |
 | `scripts/codex_token_monitor_audit.py` | Модуль аудита данных сессий |
 | `scripts/install_opencode_jobs_mcp.py` | Установка MCP-блока в `~/.codex/config.toml` |
@@ -68,6 +70,13 @@
 - `task.md` → `opencode_input.md` (с протоколом) → адаптер запускает OpenCode
 - Ожидание `result.md` + `done.json` (polling, до `timeout_seconds`)
 - Очистка старых job по retention (success: 7 дней, failure: 30 дней, keep recent: 20)
+
+**Zchat v1 modes** (внутри того же wrapper):
+
+- `zchat_prompt_pack` — создаёт prompt.md, prompt_passport.md, request_manifest.json. Политика: публичные GitHub raw URL приоритетны, временная ветка только при нехватке публичного контекста.
+- `zchat_import_pack` — строгий ZIP intake с manifest.json + checksums.sha256 + payload/. Безопасность: запрет path traversal, .git/, .env*, scope-выхода.
+- `zchat_verify_pack` — проверка pack-директории с машинным вердиктом (accepted_for_review / rejected_structural / rejected_scope / needs_codex_decision).
+- `zchat_decision_pack` — финальная стадия принятия решения Codex (accepted / rejected / needs_revision). Создаёт codex_decision.md и decision_manifest.json в соответствующих runtime-поддиректориях. См. `.ai/zchat/navigation.md`.
 
 ## Какие есть конфиги
 

@@ -1,14 +1,26 @@
 import argparse
+import hashlib
 import json
+import re
 import shutil
 import subprocess
 import sys
 import time
 import uuid
+import zipfile
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+_SCRIPT_DIR = Path(__file__).resolve().parent
+if str(_SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPT_DIR))
+
+try:
+    import git_utils as _git_utils
+except ImportError:
+    _git_utils = None
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = REPO_ROOT / "config"
@@ -39,6 +51,67 @@ VALID_EXPORT_SESSION_MODES = frozenset({
     EXPORT_SESSION_ON_FAILURE,
     EXPORT_SESSION_ON_DEBUG,
     EXPORT_SESSION_ALWAYS,
+})
+
+ZCHAT_MODE_PROMPT_PACK = "zchat_prompt_pack"
+ZCHAT_MODE_IMPORT_PACK = "zchat_import_pack"
+ZCHAT_MODE_VERIFY_PACK = "zchat_verify_pack"
+ZCHAT_MODE_DECISION_PACK = "zchat_decision_pack"
+ZCHAT_VALID_MODES = frozenset({
+    ZCHAT_MODE_PROMPT_PACK,
+    ZCHAT_MODE_IMPORT_PACK,
+    ZCHAT_MODE_VERIFY_PACK,
+    ZCHAT_MODE_DECISION_PACK,
+})
+
+ZCHAT_VERDICT_ACCEPTED = "accepted_for_review"
+ZCHAT_VERDICT_REJECTED_STRUCTURAL = "rejected_structural"
+ZCHAT_VERDICT_REJECTED_SCOPE = "rejected_scope"
+ZCHAT_VERDICT_NEEDS_DECISION = "needs_codex_decision"
+ZCHAT_DECISION_ACCEPTED = "accepted"
+ZCHAT_DECISION_REJECTED = "rejected"
+ZCHAT_DECISION_NEEDS_REVISION = "needs_revision"
+ZCHAT_VALID_VERDICTS = frozenset({
+    ZCHAT_VERDICT_ACCEPTED,
+    ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+    ZCHAT_VERDICT_REJECTED_SCOPE,
+    ZCHAT_VERDICT_NEEDS_DECISION,
+})
+ZCHAT_VALID_DECISIONS = frozenset({
+    ZCHAT_DECISION_ACCEPTED,
+    ZCHAT_DECISION_REJECTED,
+    ZCHAT_DECISION_NEEDS_REVISION,
+})
+
+ZCHAT_DIR = REPO_ROOT / ".ai" / "zchat"
+ZCHAT_TEMPLATE_DIR = ZCHAT_DIR / "templates"
+ZCHAT_SCHEMA_DIR = ZCHAT_DIR / "schemas"
+ZCHAT_DOCS_DIR = ZCHAT_DIR / "docs"
+ZCHAT_SKILLS_DIR = ZCHAT_DIR / "skills"
+ZCHAT_RUNTIME_DIR = ZCHAT_DIR / "runtime"
+ZCHAT_RUNTIME_REQUESTS = ZCHAT_RUNTIME_DIR / "requests"
+ZCHAT_RUNTIME_IMPORTS = ZCHAT_RUNTIME_DIR / "imports"
+ZCHAT_RUNTIME_REVIEWS = ZCHAT_RUNTIME_DIR / "reviews"
+ZCHAT_RUNTIME_ACCEPTED = ZCHAT_RUNTIME_DIR / "accepted"
+ZCHAT_RUNTIME_REJECTED = ZCHAT_RUNTIME_DIR / "rejected"
+ZCHAT_RUNTIME_BRANCHES = ZCHAT_RUNTIME_DIR / "branches"
+
+ZCHAT_FORBIDDEN_PATH_PREFIXES = frozenset({
+    ".git/",
+})
+ZCHAT_FORBIDDEN_PATH_PATTERNS = frozenset({
+    ".env",
+})
+ZCHAT_FORBIDDEN_PATH_SEGMENTS = frozenset({
+    ".ai/zchat", ".ai\\zchat",
+})
+
+ZCHAT_REQUIRED_IMPORT_FILES = frozenset({
+    "manifest.json", "checksums.sha256", "payload/",
+})
+
+ZCHAT_PROMPT_PACK_ARTIFACTS = frozenset({
+    "prompt.md", "prompt_passport.md", "request_manifest.json",
 })
 
 
@@ -622,6 +695,698 @@ def cleanup_old_jobs(
     }
 
 
+def _sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    return _sha256_hex(path.read_bytes())
+
+
+def _zchat_slug_id() -> str:
+    return _git_utils.zchat_slug_id()
+
+
+def _zchat_slug_id_is_valid(slug: str) -> bool:
+    return _git_utils.zchat_slug_id_is_valid(slug)
+
+
+@dataclass
+class ZchatPromptPackResult:
+    mode: str = ZCHAT_MODE_PROMPT_PACK
+    request_id: str = ""
+    output_dir: str = ""
+    artifacts: list[str] = field(default_factory=list)
+    status: str = ""
+    error: str = ""
+
+
+@dataclass
+class ZchatImportPackResult:
+    mode: str = ZCHAT_MODE_IMPORT_PACK
+    package_id: str = ""
+    verdict: str = ""
+    status: str = ""
+    error: str = ""
+    report_path: str = ""
+    files_imported: int = 0
+    files_skipped: int = 0
+
+
+@dataclass
+class ZchatVerifyPackResult:
+    mode: str = ZCHAT_MODE_VERIFY_PACK
+    verdict: str = ""
+    status: str = ""
+    error: str = ""
+    report_path: str = ""
+
+
+@dataclass
+class ZchatDecisionPackResult:
+    mode: str = ZCHAT_MODE_DECISION_PACK
+    decision_id: str = ""
+    verdict: str = ""
+    status: str = ""
+    error: str = ""
+    decision_path: str = ""
+    manifest_path: str = ""
+    journal_path: str = ""
+
+
+def _zchat_forbidden_path(file_path: str, repo_root: Path) -> str:
+    normalized = file_path.replace("\\", "/")
+    if normalized.startswith("/") or re.match(r"^[A-Za-z]:[/\\]", normalized):
+        return f"absolute path forbidden: {file_path}"
+    if ".." in Path(normalized).parts:
+        return f"path traversal forbidden: {file_path}"
+    for prefix in ZCHAT_FORBIDDEN_PATH_PREFIXES:
+        if normalized.startswith(prefix):
+            return f"forbidden path prefix {prefix}: {file_path}"
+    for pattern in ZCHAT_FORBIDDEN_PATH_PATTERNS:
+        if Path(normalized).name.startswith(pattern):
+            return f"forbidden filename pattern {pattern}: {file_path}"
+    for segment in ZCHAT_FORBIDDEN_PATH_SEGMENTS:
+        test_path = normalized.casefold()
+        if test_path.startswith(segment.casefold()):
+            return f"forbidden path segment {segment}: {file_path}"
+    resolved = (repo_root / normalized).resolve(strict=False)
+    try:
+        resolved.relative_to(repo_root.resolve(strict=False))
+    except ValueError:
+        return f"path escapes repository root: {file_path}"
+    return ""
+
+
+def zchat_prompt_pack(
+    task: str,
+    *,
+    output_dir: Path | None = None,
+    context: str = "",
+    constraints: str = "",
+    request_id: str = "",
+    source_urls: list[str] | None = None,
+) -> ZchatPromptPackResult:
+    if not request_id:
+        request_id = _zchat_slug_id()
+    if output_dir is None:
+        output_dir = ZCHAT_RUNTIME_REQUESTS / request_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        now_utc = _utcnow()
+        artifacts: list[str] = []
+
+        prompt_content = (ZCHAT_TEMPLATE_DIR / "prompt.md").read_text(encoding="utf-8")
+        prompt_content = prompt_content.replace("{task}", task)
+        prompt_content = prompt_content.replace("{context}", context or "No additional context provided.")
+        prompt_content = prompt_content.replace("{constraints}", constraints or "Follow repository conventions.")
+        prompt_path = output_dir / "prompt.md"
+        _atomic_write_text(prompt_path, prompt_content)
+        artifacts.append("prompt.md")
+
+        resolved_urls = source_urls or []
+        sources_block = "\n".join(f"- {url}" for url in resolved_urls) if resolved_urls else "- No external sources resolved."
+        branch_decision_info = _git_utils.resolve_branch_decision(source_urls=resolved_urls)
+        branch_decision = (
+            "Use public GitHub raw URLs only; temporary branch is NOT required."
+            if not branch_decision_info["create_branch"]
+            else "Public GitHub context insufficient; a temporary branch MAY be created."
+        )
+        passport_content = (ZCHAT_TEMPLATE_DIR / "prompt_passport.md").read_text(encoding="utf-8")
+        passport_content = passport_content.replace("{resolved_sources}", sources_block)
+        passport_content = passport_content.replace("{branch_decision}", branch_decision)
+        passport_content = passport_content.replace(
+            "{artifacts}",
+            "\n".join(f"- {a}" for a in artifacts),
+        )
+        passport_path = output_dir / "prompt_passport.md"
+        _atomic_write_text(passport_path, passport_content)
+        artifacts.append("prompt_passport.md")
+
+        artifacts.append("request_manifest.json")
+        manifest = {
+            "manifest_version": "1.0",
+            "request_id": request_id,
+            "created_at": now_utc,
+            "mode": ZCHAT_MODE_PROMPT_PACK,
+            "artifacts": artifacts,
+            "source_policy": "public_github_raw_first",
+            "branch_policy": "temporary_branch_only_if_public_insufficient",
+            "dependencies": resolved_urls,
+            "metadata": {
+                "context_provided": bool(context),
+                "constraints_provided": bool(constraints),
+                "source_urls_count": len(resolved_urls),
+            },
+        }
+        manifest_path = output_dir / "request_manifest.json"
+        _atomic_write_json(manifest_path, manifest)
+
+        return ZchatPromptPackResult(
+            request_id=request_id,
+            output_dir=str(output_dir),
+            artifacts=artifacts,
+            status="completed",
+        )
+    except Exception as e:
+        return ZchatPromptPackResult(
+            request_id=request_id,
+            output_dir=str(output_dir),
+            status="failed",
+            error=f"{type(e).__name__}: {e}",
+        )
+
+
+def zchat_import_pack(
+    zip_path: Path,
+    *,
+    target_root: Path | None = None,
+) -> ZchatImportPackResult:
+    if target_root is None:
+        target_root = REPO_ROOT
+    target_root = target_root.resolve(strict=True)
+
+    import_slug = _zchat_slug_id()
+    report_path = ZCHAT_RUNTIME_IMPORTS / import_slug / f"import_report_{uuid.uuid4().hex[:12]}.md"
+    ZCHAT_RUNTIME_IMPORTS.mkdir(parents=True, exist_ok=True)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not zip_path.exists():
+        return ZchatImportPackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error=f"ZIP file not found: {zip_path}",
+            report_path=str(report_path),
+        )
+
+    report_lines = [
+        "# Zchat Import Report",
+        "",
+        f"- **ZIP**: `{zip_path}`",
+        f"- **Target root**: `{target_root}`",
+        f"- **Started at**: {_utcnow()}",
+        "",
+    ]
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zip_entries = [info.filename.replace("\\", "/") for info in zf.infolist()]
+    except zipfile.BadZipFile as e:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append(f"\n**Error**: Bad ZIP file: {e}\n")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatImportPackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error=f"Bad ZIP file: {e}",
+            report_path=str(report_path),
+        )
+
+    top_level = set()
+    for entry in zip_entries:
+        parts = entry.split("/")
+        if parts[0]:
+            if len(parts) > 1:
+                top_level.add(parts[0] + "/")
+            else:
+                top_level.add(parts[0])
+
+    required = {"manifest.json", "checksums.sha256", "payload/"}
+    missing = required - top_level
+    if missing:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append(f"\n**Missing required top-level entries**: {sorted(missing)}\n")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatImportPackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error=f"Missing required entries: {sorted(missing)}",
+            report_path=str(report_path),
+        )
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            manifest_raw = zf.read("manifest.json")
+    except KeyError:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append(f"\n**Error**: manifest.json not found in ZIP\n")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatImportPackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error="manifest.json not found in ZIP",
+            report_path=str(report_path),
+        )
+
+    try:
+        manifest = json.loads(manifest_raw.decode("utf-8-sig"))
+    except json.JSONDecodeError as e:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append(f"\n**Error**: Invalid manifest JSON: {e}\n")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatImportPackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error=f"Invalid manifest JSON: {e}",
+            report_path=str(report_path),
+        )
+
+    if not isinstance(manifest, dict):
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append(f"\n**Error**: manifest.json must be a JSON object\n")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatImportPackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error="manifest.json must be a JSON object",
+            report_path=str(report_path),
+        )
+
+    package_id = str(manifest.get("package_id", ""))
+    payload_files = manifest.get("payload_files", [])
+    if not isinstance(payload_files, list) or not payload_files:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append(f"\n**Error**: payload_files missing or empty in manifest\n")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatImportPackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error="payload_files missing or empty in manifest",
+            report_path=str(report_path),
+        )
+
+    report_lines.append(f"- **Package ID**: `{package_id}`")
+    report_lines.append(f"- **Payload files**: {len(payload_files)}")
+    report_lines.append("")
+
+    scope_violations: list[str] = []
+    for pf in payload_files:
+        if not isinstance(pf, dict):
+            scope_violations.append(f"Invalid payload_files entry (not dict): {pf}")
+            continue
+        file_path = str(pf.get("path", ""))
+        violation = _zchat_forbidden_path(file_path, target_root)
+        if violation:
+            scope_violations.append(violation)
+
+    if scope_violations:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_SCOPE}")
+        report_lines.append("")
+        report_lines.append("### Scope Violations")
+        for v in scope_violations:
+            report_lines.append(f"- {v}")
+        report_lines.append("")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatImportPackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_SCOPE,
+            status="failed",
+            error=f"Scope violations: {len(scope_violations)}",
+            report_path=str(report_path),
+        )
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            checksums_raw = zf.read("checksums.sha256").decode("utf-8-sig")
+    except KeyError:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append(f"\n**Error**: checksums.sha256 not found in ZIP\n")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatImportPackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error="checksums.sha256 not found in ZIP",
+            report_path=str(report_path),
+        )
+
+    expected_checksums: dict[str, str] = {}
+    for line in checksums_raw.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            expected_checksums[parts[1].strip()] = parts[0].strip().lower()
+
+    if not expected_checksums:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append(f"\n**Error**: checksums.sha256 is empty\n")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatImportPackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error="checksums.sha256 is empty",
+            report_path=str(report_path),
+        )
+
+    imported = 0
+    skipped = 0
+    checksum_errors: list[str] = []
+    report_lines.append("### Extracted Files")
+    report_lines.append("")
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for pf in payload_files:
+            file_path = str(pf.get("path", ""))
+            manifest_sha = str(pf.get("sha256", "")).lower()
+            zip_member = "payload/" + file_path.replace("\\", "/")
+
+            if zip_member not in zip_entries:
+                checksum_errors.append(f"File in manifest but missing in ZIP: {file_path}")
+                skipped += 1
+                continue
+
+            file_data = zf.read(zip_member)
+
+            actual_sha = _sha256_hex(file_data)
+            expected_sha = expected_checksums.get(file_path, manifest_sha)
+
+            if expected_sha and actual_sha != expected_sha:
+                checksum_errors.append(
+                    f"Checksum mismatch for {file_path}: expected {expected_sha}, got {actual_sha}"
+                )
+                skipped += 1
+                continue
+
+            if manifest_sha and actual_sha != manifest_sha:
+                checksum_errors.append(
+                    f"Manifest checksum mismatch for {file_path}: expected {manifest_sha}, got {actual_sha}"
+                )
+                skipped += 1
+                continue
+
+            dest_path = target_root / file_path
+            try:
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                dest_path.write_bytes(file_data)
+                report_lines.append(f"- `{file_path}` (sha256: `{actual_sha}`)")
+                imported += 1
+            except OSError as e:
+                checksum_errors.append(f"Failed to write {file_path}: {e}")
+                skipped += 1
+
+    report_lines.append("")
+
+    if checksum_errors:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append("")
+        report_lines.append("### Checksum Errors")
+        for ce in checksum_errors:
+            report_lines.append(f"- {ce}")
+    elif imported == 0:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append(f"\nNo files were imported.\n")
+    else:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_ACCEPTED}")
+        report_lines.append(f"\nAll {imported} file(s) imported successfully.\n")
+
+    report_lines.append("")
+    report_lines.append(f"- **Files imported**: {imported}")
+    report_lines.append(f"- **Files skipped**: {skipped}")
+    report_lines.append("")
+
+    _atomic_write_text(report_path, "\n".join(report_lines))
+
+    verdict = ZCHAT_VERDICT_ACCEPTED if not checksum_errors and imported > 0 else ZCHAT_VERDICT_REJECTED_STRUCTURAL
+    return ZchatImportPackResult(
+        package_id=package_id,
+        verdict=verdict,
+        status="completed" if verdict == ZCHAT_VERDICT_ACCEPTED else "failed",
+        error="; ".join(checksum_errors) if checksum_errors else "",
+        report_path=str(report_path),
+        files_imported=imported,
+        files_skipped=skipped,
+    )
+
+
+def zchat_verify_pack(
+    pack_dir: Path,
+    *,
+    repo_root: Path | None = None,
+) -> ZchatVerifyPackResult:
+    if repo_root is None:
+        repo_root = REPO_ROOT
+    repo_root = repo_root.resolve(strict=True)
+
+    pack_dir = pack_dir.resolve(strict=False)
+    if not pack_dir.exists():
+        return ZchatVerifyPackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error=f"Pack directory not found: {pack_dir}",
+        )
+
+    review_slug = _zchat_slug_id()
+    report_path = ZCHAT_RUNTIME_REVIEWS / review_slug / f"verify_report_{uuid.uuid4().hex[:12]}.md"
+    ZCHAT_RUNTIME_REVIEWS.mkdir(parents=True, exist_ok=True)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+
+    report_lines = [
+        "# Zchat Verify Report",
+        "",
+        f"- **Pack directory**: `{pack_dir}`",
+        f"- **Verification time**: {_utcnow()}",
+        "",
+    ]
+
+    structural_issues: list[str] = []
+    scope_issues: list[str] = []
+    warnings: list[str] = []
+    manifest_data: dict[str, Any] | None = None
+
+    manifest_path = pack_dir / "manifest.json"
+    if not manifest_path.exists():
+        structural_issues.append("manifest.json is missing")
+    else:
+        manifest_data = _read_json_safe(manifest_path)
+        if not isinstance(manifest_data, dict):
+            structural_issues.append("manifest.json is not a valid JSON object")
+        else:
+            mode = str(manifest_data.get("mode", ""))
+            if mode not in ZCHAT_VALID_MODES:
+                structural_issues.append(f"Unknown mode in manifest: {mode}")
+            payload_files = manifest_data.get("payload_files", [])
+            if not isinstance(payload_files, list):
+                structural_issues.append("payload_files is not a list in manifest")
+            else:
+                for pf in payload_files:
+                    if not isinstance(pf, dict):
+                        structural_issues.append(f"Invalid payload_files entry: {pf}")
+                        continue
+                    file_path = str(pf.get("path", ""))
+                    violation = _zchat_forbidden_path(file_path, repo_root)
+                    if violation:
+                        scope_issues.append(violation)
+                    actual_path = pack_dir / "payload" / file_path
+                    if not actual_path.exists():
+                        structural_issues.append(f"File referenced in manifest but missing from payload: {file_path}")
+
+    checksums_path = pack_dir / "checksums.sha256"
+    if not checksums_path.exists():
+        structural_issues.append("checksums.sha256 is missing")
+    else:
+        try:
+            checksums_text = checksums_path.read_text(encoding="utf-8-sig")
+        except OSError:
+            structural_issues.append("checksums.sha256 could not be read")
+            checksums_text = ""
+        if not checksums_text.strip():
+            structural_issues.append("checksums.sha256 is empty")
+        else:
+            expected: dict[str, str] = {}
+            for line in checksums_text.strip().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    expected[parts[1].strip()] = parts[0].strip().lower()
+            for pf in (manifest_data.get("payload_files", []) if isinstance(manifest_data, dict) else []):
+                file_path = str(pf.get("path", ""))
+                manifest_sha = str(pf.get("sha256", "")).lower()
+                expected_sha = expected.get(file_path, "")
+                if expected_sha and manifest_sha and expected_sha != manifest_sha:
+                    structural_issues.append(
+                        f"Checksum mismatch for {file_path}: manifest={manifest_sha}, checksums={expected_sha}"
+                    )
+
+    payload_dir = pack_dir / "payload"
+    if not payload_dir.exists() or not payload_dir.is_dir():
+        structural_issues.append("payload/ directory is missing")
+    else:
+        payload_files_on_disk = set()
+        for f in payload_dir.rglob("*"):
+            if f.is_file():
+                rel = str(f.relative_to(pack_dir)).replace("\\", "/")
+                payload_files_on_disk.add(rel)
+        manifest_files = set()
+        if isinstance(manifest_data, dict):
+            for pf in manifest_data.get("payload_files", []):
+                if isinstance(pf, dict):
+                    manifest_files.add("payload/" + str(pf.get("path", "")).replace("\\", "/"))
+        extra = payload_files_on_disk - manifest_files
+        if extra:
+            warnings.append(f"Files in payload/ but not in manifest: {sorted(extra)}")
+        missing = manifest_files - payload_files_on_disk
+        if missing:
+            structural_issues.append(f"Files in manifest but missing from payload/: {sorted(missing)}")
+
+    if structural_issues:
+        verdict = ZCHAT_VERDICT_REJECTED_STRUCTURAL
+    elif scope_issues:
+        verdict = ZCHAT_VERDICT_REJECTED_SCOPE
+    elif warnings:
+        verdict = ZCHAT_VERDICT_NEEDS_DECISION
+    else:
+        verdict = ZCHAT_VERDICT_ACCEPTED
+
+    report_lines.append(f"## Verdict: {verdict}")
+    report_lines.append("")
+
+    if structural_issues:
+        report_lines.append("### Structural Issues")
+        for issue in structural_issues:
+            report_lines.append(f"- {issue}")
+        report_lines.append("")
+
+    if scope_issues:
+        report_lines.append("### Scope Issues")
+        for issue in scope_issues:
+            report_lines.append(f"- {issue}")
+        report_lines.append("")
+
+    if warnings:
+        report_lines.append("### Warnings")
+        for warning in warnings:
+            report_lines.append(f"- {warning}")
+        report_lines.append("")
+
+    if not structural_issues and not scope_issues and not warnings:
+        report_lines.append("All checks passed.\n")
+
+    report_lines.append("### Summary")
+    report_lines.append(f"- Structural issues: {len(structural_issues)}")
+    report_lines.append(f"- Scope issues: {len(scope_issues)}")
+    report_lines.append(f"- Warnings: {len(warnings)}")
+    report_lines.append("")
+
+    _atomic_write_text(report_path, "\n".join(report_lines))
+
+    return ZchatVerifyPackResult(
+        verdict=verdict,
+        status="completed",
+        error="",
+        report_path=str(report_path),
+    )
+
+
+def zchat_decision_pack(
+    *,
+    subject_id: str,
+    reviewer: str = "codex",
+    verdict: str = "",
+    rationale: str = "",
+    evidence: str = "",
+    decision_id: str = "",
+    branch_info: dict | None = None,
+) -> ZchatDecisionPackResult:
+    if not decision_id:
+        decision_id = _zchat_slug_id()
+    if not verdict:
+        return ZchatDecisionPackResult(
+            decision_id=decision_id,
+            status="failed",
+            error="verdict is required",
+        )
+    if verdict not in ZCHAT_VALID_DECISIONS:
+        return ZchatDecisionPackResult(
+            decision_id=decision_id,
+            status="failed",
+            error=f"Invalid verdict: {verdict}. Must be one of: {sorted(ZCHAT_VALID_DECISIONS)}",
+        )
+
+    if verdict == ZCHAT_DECISION_ACCEPTED:
+        journal_base = ZCHAT_RUNTIME_ACCEPTED / decision_id
+    elif verdict == ZCHAT_DECISION_REJECTED:
+        journal_base = ZCHAT_RUNTIME_REJECTED / decision_id
+    else:
+        journal_base = ZCHAT_RUNTIME_REVIEWS / decision_id
+
+    journal_base.mkdir(parents=True, exist_ok=True)
+    now_utc = _utcnow()
+
+    try:
+        branch_block = ""
+        branch_manifest = {}
+        if branch_info:
+            branch_block = (
+                f"\n## Branch Info\n\n"
+                f"- **slug_id**: {branch_info.get('slug_id', '')}\n"
+                f"- **branch_name**: {branch_info.get('branch_name', '')}\n"
+                f"- **base_branch**: {branch_info.get('base_branch', '')}\n"
+                f"- **created**: {branch_info.get('created', False)}\n"
+                f"- **pushed**: {branch_info.get('pushed', False)}\n"
+                f"- **deleted**: {branch_info.get('deleted', False)}\n"
+            )
+            if branch_info.get("error"):
+                branch_block += f"- **error**: {branch_info['error']}\n"
+            branch_manifest = {
+                "slug_id": branch_info.get("slug_id", ""),
+                "branch_name": branch_info.get("branch_name", ""),
+                "base_branch": branch_info.get("base_branch", ""),
+                "created": branch_info.get("created", False),
+                "pushed": branch_info.get("pushed", False),
+                "deleted": branch_info.get("deleted", False),
+                "error": branch_info.get("error", ""),
+            }
+
+        decision_text = (
+            "# Codex Decision\n\n"
+            f"- **Decision ID**: {decision_id}\n"
+            f"- **Subject ID**: {subject_id}\n"
+            f"- **Reviewer**: {reviewer}\n"
+            f"- **Verdict**: {verdict}\n"
+            f"- **Timestamp**: {now_utc}\n"
+            f"\n## Rationale\n\n{rationale or 'No rationale provided.'}\n"
+            f"\n## Evidence\n\n{evidence or 'No evidence provided.'}\n"
+            f"{branch_block}"
+        )
+        decision_path = journal_base / "codex_decision.md"
+        _atomic_write_text(decision_path, decision_text)
+
+        manifest = {
+            "manifest_version": "1.0",
+            "decision_id": decision_id,
+            "subject_id": subject_id,
+            "reviewer": reviewer,
+            "verdict": verdict,
+            "created_at": now_utc,
+            "mode": ZCHAT_MODE_DECISION_PACK,
+            "rationale": rationale,
+            "evidence": evidence,
+            "branch_info": branch_manifest,
+        }
+        manifest_path = journal_base / "decision_manifest.json"
+        _atomic_write_json(manifest_path, manifest)
+
+        return ZchatDecisionPackResult(
+            decision_id=decision_id,
+            verdict=verdict,
+            status="completed",
+            decision_path=str(decision_path),
+            manifest_path=str(manifest_path),
+            journal_path=str(journal_base),
+        )
+    except Exception as e:
+        return ZchatDecisionPackResult(
+            decision_id=decision_id,
+            verdict=verdict,
+            status="failed",
+            error=f"{type(e).__name__}: {e}",
+            journal_path=str(journal_base),
+        )
+
+
 def run_opencode_job(
     task_text: str,
     *,
@@ -962,7 +1727,7 @@ def run_opencode_job(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run an OpenCode job")
+    parser = argparse.ArgumentParser(description="Run an OpenCode job or Zchat operation")
     parser.add_argument("--task-file", type=str, default=None, help="Path to task file")
     parser.add_argument("--config", type=str, default=None, help="Path to config file")
     parser.add_argument("--directory", type=str, default=None, help="Working directory for the OpenCode task")
@@ -992,6 +1757,88 @@ def main() -> None:
         default=None,
         help="Optional shared OpenCode server URL used for run/attach debug flows",
     )
+    parser.add_argument(
+        "--zchat-prompt-pack",
+        action="store_true",
+        help="Run zchat prompt_pack mode",
+    )
+    parser.add_argument(
+        "--zchat-import-pack",
+        type=str,
+        default=None,
+        help="Path to ZIP file for zchat import_pack mode",
+    )
+    parser.add_argument(
+        "--zchat-verify-pack",
+        type=str,
+        default=None,
+        help="Path to pack directory for zchat verify_pack mode",
+    )
+    parser.add_argument(
+        "--zchat-output-dir",
+        type=str,
+        default=None,
+        help="Output directory for zchat prompt_pack",
+    )
+    parser.add_argument(
+        "--zchat-task",
+        type=str,
+        default=None,
+        help="Task text for zchat prompt_pack (or reads from --task-file)",
+    )
+    parser.add_argument(
+        "--zchat-context",
+        type=str,
+        default="",
+        help="Context text for zchat prompt_pack",
+    )
+    parser.add_argument(
+        "--zchat-constraints",
+        type=str,
+        default="",
+        help="Constraints text for zchat prompt_pack",
+    )
+    parser.add_argument(
+        "--zchat-source-urls",
+        type=str,
+        default=None,
+        help="Comma-separated source URLs for zchat prompt_pack",
+    )
+    parser.add_argument(
+        "--zchat-decision-pack",
+        action="store_true",
+        help="Run zchat decision_pack mode (final Codex decision stage)",
+    )
+    parser.add_argument(
+        "--zchat-subject-id",
+        type=str,
+        default=None,
+        help="Subject/request ID for zchat decision_pack",
+    )
+    parser.add_argument(
+        "--zchat-decision-verdict",
+        type=str,
+        default=None,
+        help="Verdict for zchat decision_pack: accepted / rejected / needs_revision",
+    )
+    parser.add_argument(
+        "--zchat-decision-rationale",
+        type=str,
+        default="",
+        help="Rationale for zchat decision_pack",
+    )
+    parser.add_argument(
+        "--zchat-decision-evidence",
+        type=str,
+        default="",
+        help="Evidence for zchat decision_pack",
+    )
+    parser.add_argument(
+        "--zchat-decision-reviewer",
+        type=str,
+        default="codex",
+        help="Reviewer identity for zchat decision_pack",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config) if args.config else None
@@ -1007,8 +1854,64 @@ def main() -> None:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         sys.exit(EXIT_COMPLETED)
 
+    if args.zchat_prompt_pack:
+        task = args.zchat_task or ""
+        if not task and args.task_file:
+            task_path = Path(args.task_file)
+            if task_path.exists():
+                task = task_path.read_text(encoding="utf-8")
+        if not task:
+            print("Error: zchat_prompt_pack requires --zchat-task or --task-file", file=sys.stderr)
+            sys.exit(EXIT_CONFIG_ERROR)
+        source_urls = None
+        if args.zchat_source_urls:
+            source_urls = [u.strip() for u in args.zchat_source_urls.split(",") if u.strip()]
+        output_dir = Path(args.zchat_output_dir) if args.zchat_output_dir else None
+        result = zchat_prompt_pack(
+            task,
+            output_dir=output_dir,
+            context=args.zchat_context,
+            constraints=args.zchat_constraints,
+            source_urls=source_urls,
+        )
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+        sys.exit(EXIT_COMPLETED if result.status == "completed" else EXIT_FAILED)
+
+    if args.zchat_import_pack:
+        zip_path = Path(args.zchat_import_pack)
+        if not zip_path.exists():
+            print(f"Error: ZIP file not found: {zip_path}", file=sys.stderr)
+            sys.exit(EXIT_CONFIG_ERROR)
+        target_root = Path(args.directory) if args.directory else REPO_ROOT
+        result = zchat_import_pack(zip_path, target_root=target_root)
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+        sys.exit(EXIT_COMPLETED if result.status == "completed" else EXIT_FAILED)
+
+    if args.zchat_verify_pack:
+        pack_dir = Path(args.zchat_verify_pack)
+        result = zchat_verify_pack(pack_dir)
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+        sys.exit(EXIT_COMPLETED if result.status == "completed" else EXIT_FAILED)
+
+    if args.zchat_decision_pack:
+        if not args.zchat_subject_id:
+            print("Error: zchat_decision_pack requires --zchat-subject-id", file=sys.stderr)
+            sys.exit(EXIT_CONFIG_ERROR)
+        if not args.zchat_decision_verdict:
+            print("Error: zchat_decision_pack requires --zchat-decision-verdict", file=sys.stderr)
+            sys.exit(EXIT_CONFIG_ERROR)
+        result = zchat_decision_pack(
+            subject_id=args.zchat_subject_id,
+            reviewer=args.zchat_decision_reviewer,
+            verdict=args.zchat_decision_verdict,
+            rationale=args.zchat_decision_rationale,
+            evidence=args.zchat_decision_evidence,
+        )
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+        sys.exit(EXIT_COMPLETED if result.status == "completed" else EXIT_FAILED)
+
     if not args.task_file:
-        print("Error: --task-file is required unless --cleanup-jobs is used", file=sys.stderr)
+        print("Error: --task-file is required unless --cleanup-jobs or a zchat mode is used", file=sys.stderr)
         sys.exit(EXIT_CONFIG_ERROR)
 
     task_path = Path(args.task_file)

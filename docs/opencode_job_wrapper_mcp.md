@@ -8,13 +8,17 @@
 - [scripts/codex_token_monitor_opencode_adapter.py](</D:/Codex+opencode_new/Proect_C_O/codex-token-monitor/scripts/codex_token_monitor_opencode_adapter.py>)
 - [scripts/codex_token_monitor_opencode_jobs_mcp.py](</D:/Codex+opencode_new/Proect_C_O/codex-token-monitor/scripts/codex_token_monitor_opencode_jobs_mcp.py>)
 
-Он не заменяет существующий `mcp__opencode.*`. Он добавляет отдельный сервер `opencode_jobs` с одним tool:
+Он не заменяет существующий `mcp__opencode.*`. Он добавляет отдельный сервер `opencode_jobs` с tools:
 
 - `opencode_job_run_and_wait`
+- `opencode_zchat_prompt_pack`
+- `opencode_zchat_import_pack`
+- `opencode_zchat_verify_pack`
+- `opencode_zchat_decision_pack`
 
 ## Зачем он нужен
 
-Новый MCP нужен для обычного пути ожидания OpenCode-задачи одним вызовом:
+Новый MCP нужен для обычного пути ожидания OpenCode-задачи одним вызовом, а также для zchat-операций (prompt-pack, import-pack, verify-pack):
 
 ```text
 Codex
@@ -29,6 +33,37 @@ Codex
 
 ```text
 opencode_run -> check -> wait -> conversation -> readback
+```
+
+## Zchat Tools
+
+Zchat tools работают локально без запуска OpenCode CLI:
+
+- `opencode_zchat_prompt_pack`: создаёт prompt.md, prompt_passport.md, request_manifest.json в `.ai/zchat/runtime/<id>/`. Политика: публичные GitHub raw URL приоритетны; временная ветка создаётся только при нехватке публичного контекста.
+- `opencode_zchat_import_pack`: строгий ZIP intake с manifest.json + checksums.sha256 + payload/. Валидация путей, запрет traversal, .git/, .env*, scope-выхода. При успехе применяет payload и пишет import_report.md.
+- `opencode_zchat_verify_pack`: проверка структуры pack-директории с вердиктом accepted_for_review / rejected_structural / rejected_scope / needs_codex_decision.
+- `opencode_zchat_decision_pack`: финальная стадия принятия решения Codex. Создаёт codex_decision.md и decision_manifest.json. Вердикты: accepted / rejected / needs_revision. При accepted пишет в `accepted/<slug>/`, при rejected в `rejected/<slug>/`, при needs_revision в `reviews/<slug>/`.
+
+Подробный контракт ZIP intake описан в `.ai/zchat/docs/zchat_intake_contract.md`.
+
+## Zchat directory structure
+
+```
+.ai/zchat/
+  templates/         # Templates for prompt-pack artifacts
+  schemas/           # JSON schemas for import validation
+  docs/              # Skill contracts and documentation
+  skills/            # OpenCode skill files
+    intake_rules.md  # ZIP intake rules for OpenCode agents
+  runtime/           # Runtime artifacts (gitignored)
+    requests/        # prompt_pack outputs
+    imports/         # import_pack reports
+    reviews/         # verify_pack reports, needs_revision decisions
+    accepted/        # accepted decisions
+    rejected/        # rejected decisions
+    branches/        # branch metadata/passport artifacts
+  navigation.md      # Navigation overview
+  readme.md
 ```
 
 ## Что он возвращает

@@ -353,9 +353,159 @@ class OpenCodeJobsMcpIntegrationTests(unittest.TestCase):
         async def run() -> None:
             async with Client(jobs_mcp.mcp) as client:
                 tools = await client.list_tools()
-            self.assertEqual([tool.name for tool in tools], [jobs_mcp.TOOL_NAME])
+            expected = {
+                jobs_mcp.TOOL_NAME,
+                "opencode_zchat_prompt_pack",
+                "opencode_zchat_import_pack",
+                "opencode_zchat_verify_pack",
+                "opencode_zchat_decision_pack",
+            }
+            self.assertEqual({tool.name for tool in tools}, expected)
 
         asyncio.run(run())
+
+
+class OpenCodeJobsMcpZchatTests(unittest.TestCase):
+
+    async def _call_zchat_tool(self, tool_name: str, arguments: dict) -> dict:
+        async with Client(jobs_mcp.mcp) as client:
+            result = await client.call_tool(tool_name, arguments)
+        return result.data
+
+    def test_zchat_prompt_pack_mcp_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "zchat_output"
+            response = asyncio.run(
+                self._call_zchat_tool(
+                    "opencode_zchat_prompt_pack",
+                    {
+                        "task_text": "Smoke test task",
+                        "context": "Test context",
+                        "output_dir": str(output),
+                    },
+                )
+            )
+            self.assertEqual(response["mode"], jobs.ZCHAT_MODE_PROMPT_PACK)
+            self.assertEqual(response["status"], "completed")
+            self.assertTrue((output / "prompt.md").exists())
+            self.assertTrue((output / "prompt_passport.md").exists())
+            self.assertTrue((output / "request_manifest.json").exists())
+
+    def test_zchat_import_pack_mcp_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir / "target"
+            target.mkdir()
+            zip_path = tmpdir / "test.zip"
+            import zipfile as zf_module
+            content = b"hello"
+            sha = jobs._sha256_hex(content)
+            manifest = {
+                "manifest_version": "1.0",
+                "package_id": "mcp-test",
+                "created_at": "2025-01-01T00:00:00.000Z",
+                "mode": jobs.ZCHAT_MODE_IMPORT_PACK,
+                "payload_files": [{"path": "test.txt", "sha256": sha}],
+            }
+            with zf_module.ZipFile(zip_path, "w", zf_module.ZIP_DEFLATED) as zf:
+                zf.writestr("manifest.json", json.dumps(manifest))
+                zf.writestr("checksums.sha256", f"{sha}  test.txt\n")
+                zf.writestr("payload/test.txt", content)
+            response = asyncio.run(
+                self._call_zchat_tool(
+                    "opencode_zchat_import_pack",
+                    {"zip_path": str(zip_path), "target_root": str(target)},
+                )
+            )
+            self.assertEqual(response["mode"], jobs.ZCHAT_MODE_IMPORT_PACK)
+            self.assertEqual(response["verdict"], jobs.ZCHAT_VERDICT_ACCEPTED)
+            self.assertEqual(response["status"], "completed")
+            self.assertTrue((target / "test.txt").exists())
+
+    def test_zchat_verify_pack_mcp_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            pack_dir = tmpdir / "pack"
+            pack_dir.mkdir()
+            (pack_dir / "payload").mkdir()
+            content = b"verify data"
+            sha = jobs._sha256_hex(content)
+            (pack_dir / "payload" / "f.txt").write_bytes(content)
+            manifest = {
+                "manifest_version": "1.0",
+                "package_id": "mcp-verify",
+                "created_at": "2025-01-01T00:00:00.000Z",
+                "mode": jobs.ZCHAT_MODE_IMPORT_PACK,
+                "payload_files": [{"path": "f.txt", "sha256": sha}],
+            }
+            (pack_dir / "manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            (pack_dir / "checksums.sha256").write_text(f"{sha}  f.txt\n", encoding="utf-8")
+            response = asyncio.run(
+                self._call_zchat_tool(
+                    "opencode_zchat_verify_pack",
+                    {"pack_dir": str(pack_dir)},
+                )
+            )
+            self.assertEqual(response["mode"], jobs.ZCHAT_MODE_VERIFY_PACK)
+            self.assertEqual(response["verdict"], jobs.ZCHAT_VERDICT_ACCEPTED)
+            self.assertEqual(response["status"], "completed")
+
+    def test_zchat_verify_pack_mcp_rejects_missing_dir(self) -> None:
+        response = asyncio.run(
+            self._call_zchat_tool(
+                "opencode_zchat_verify_pack",
+                {"pack_dir": "D:/nonexistent_zchat_pack_xyz"},
+            )
+        )
+        self.assertEqual(response["mode"], jobs.ZCHAT_MODE_VERIFY_PACK)
+        self.assertEqual(response["verdict"], jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL)
+        self.assertEqual(response["status"], "failed")
+
+    def test_zchat_decision_pack_mcp_smoke(self) -> None:
+        response = asyncio.run(
+            self._call_zchat_tool(
+                "opencode_zchat_decision_pack",
+                {
+                    "subject_id": "ZCHAT-20260601-120000-mcptest01",
+                    "verdict": jobs.ZCHAT_DECISION_ACCEPTED,
+                    "rationale": "MCP smoke test rationale.",
+                    "evidence": "MCP smoke test evidence.",
+                },
+            )
+        )
+        self.assertEqual(response["mode"], jobs.ZCHAT_MODE_DECISION_PACK)
+        self.assertEqual(response["verdict"], jobs.ZCHAT_DECISION_ACCEPTED)
+        self.assertEqual(response["status"], "completed")
+        self.assertTrue(response["decision_id"])
+        self.assertTrue(response["decision_path"])
+        self.assertTrue(response["manifest_path"])
+        self.assertTrue(response["journal_path"])
+
+    def test_zchat_decision_pack_mcp_rejected(self) -> None:
+        response = asyncio.run(
+            self._call_zchat_tool(
+                "opencode_zchat_decision_pack",
+                {
+                    "subject_id": "ZCHAT-20260601-120000-mcptest02",
+                    "verdict": jobs.ZCHAT_DECISION_REJECTED,
+                    "rationale": "Violation found.",
+                },
+            )
+        )
+        self.assertEqual(response["verdict"], jobs.ZCHAT_DECISION_REJECTED)
+        self.assertEqual(response["status"], "completed")
+        self.assertIn("rejected", response["journal_path"].replace("\\", "/"))
+
+    def test_zchat_decision_pack_mcp_missing_subject(self) -> None:
+        response = asyncio.run(
+            self._call_zchat_tool(
+                "opencode_zchat_decision_pack",
+                {"verdict": "accepted", "subject_id": ""},
+            )
+        )
+        self.assertEqual(response["status"], "failed")
 
 
 if __name__ == "__main__":

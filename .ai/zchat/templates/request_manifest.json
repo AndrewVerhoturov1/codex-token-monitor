@@ -1,0 +1,11 @@
+{
+  "manifest_version": "1.0",
+  "request_id": "",
+  "created_at": "",
+  "mode": "zchat_prompt_pack",
+  "artifacts": [],
+  "source_policy": "public_github_raw_first",
+  "branch_policy": "temporary_branch_only_if_public_insufficient",
+  "dependencies": [],
+  "metadata": {}
+}
