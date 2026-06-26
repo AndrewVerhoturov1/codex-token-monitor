@@ -7,5 +7,9 @@
   "source_policy": "public_github_raw_first",
   "branch_policy": "temporary_branch_only_if_public_insufficient",
   "dependencies": [],
+  "source_urls": [],
+  "allowed_paths": [],
+  "forbidden_paths": [],
+  "expected_outputs": [],
   "metadata": {}
 }

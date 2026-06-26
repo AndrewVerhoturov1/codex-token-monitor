@@ -1,46 +1,101 @@
-# Zchat v1
+# Zchat
 
-Zchat provides four modes for structured task packaging, importing, verification, and Codex decision-making within the codex-token-monitor repository.
+## What is Zchat
+
+Zchat is a structured protocol for external-to-Codex task delivery. It defines four modes
+for packaging tasks, importing results, verifying deliverables, and making decisions — all
+within the codex-token-monitor repository.
+
+A human launches `/Zchat` explicitly. The human delivers a prompt to an external chat, receives
+a ZIP back, and runs import/verify/decision stages through Codex. The external chat has no
+repo authority and ZIPs are treated as untrusted.
+
+## Why ZIP is Untrusted
+
+- The external chat cannot run git, tests, or access runtime state.
+- Checksums may be fabricated; every file is verified before acceptance.
+- `imported != accepted`: import success means only structural validation passed.
+  Human review and a formal decision are still required.
 
 ## Modes
 
-### zchat_prompt_pack
-Creates a prompt artifact pack: `prompt.md`, `prompt_passport.md`, `request_manifest.json`.
-Uses ZCHAT-style slug IDs (`ZCHAT-YYYYMMDD-HHMMSS-<hex8>`). Outputs to `.ai/zchat/runtime/requests/<slug>/`.
-The passport and manifest encode the logic: use public GitHub raw URLs first; create a temporary branch only if the required context is not available via public files.
+| Mode | What it does | Output dir |
+|---|---|---|
+| `zchat_prompt_pack` | Creates prompt artifacts with policy encoding | `runtime/requests/<slug>/` |
+| `zchat_import_pack` | Validates ZIP and atomically imports payload | `runtime/imports/<slug>/` |
+| `zchat_verify_pack` | Verifies pack directory, produces machine verdict | `runtime/reviews/<slug>/` |
+| `zchat_decision_pack` | Final Codex decision (accepted/rejected/needs_revision) | `runtime/{accepted,rejected,reviews}/<slug>/` |
 
-### zchat_import_pack
-Validates and imports a strict ZIP intake contract: `manifest.json` + `checksums.sha256` + `payload/`.
-Enforces path traversal protection, secret protection, and scope boundaries.
-On success, applies the payload to the working tree and writes `import_report.md` to `.ai/zchat/runtime/imports/<slug>/`.
+## Roles
 
-### zchat_verify_pack
-Verifies a pack directory and produces `verify_report.md` with a machine verdict, written to `.ai/zchat/runtime/reviews/<slug>/`:
-- `accepted_for_review`
-- `rejected_structural`
-- `rejected_scope`
-- `needs_codex_decision`
+- **Human**: launches `/Zchat`, delivers prompt to external chat, receives ZIP, runs import/verify/decision.
+- **External chat**: receives prompt, produces ZIP, has NO repo authority, must not fabricate file contents.
+- **Codex/OpenCode**: runs import (structural + scope + checksum validation), verify (machine verdict), decision (final ruling).
 
-### zchat_decision_pack
-Final Codex decision stage. Produces `codex_decision.md` and `decision_manifest.json`. Verdicts:
-- `accepted` -- journaled to `accepted/<slug>/`
-- `rejected` -- journaled to `rejected/<slug>/`
-- `needs_revision` -- journaled to `reviews/<slug>/`
+## Path Policy
+
+Zchat enforces strict path rules on all imports:
+
+- **Global forbidden** (always applied): `.git/`, `.env*`, `.ai/zchat/`, absolute paths, `..` traversal, paths escaping repo root.
+- **allowed_paths** (manifest-level, optional): if set, every payload file must match at least one prefix.
+- **forbidden_paths** (manifest-level, optional): if set, no payload file may match any prefix.
+- Global rules always override manifest-level policies.
+
+## ZIP Intake Contract
+
+Every import ZIP must contain:
+- `manifest.json` — metadata with `payload_files` list, each entry has `path` and `sha256`.
+- `checksums.sha256` — per-file SHA256 verification digests.
+- `payload/` — directory containing all deliverable files, relative to repo root.
+
+Extra files in `payload/` not listed in manifest are rejected. Import is fully atomic:
+all validation happens in memory first; if any check fails, no file is written to disk.
+
+## Verdicts
+
+Import/Verify verdicts:
+- `accepted_for_review` — all checks passed, ready for human review.
+- `rejected_structural` — ZIP structure, manifest schema, checksum, or extra file failure.
+- `rejected_scope` — path traversal, forbidden path, or policy violation.
+- `needs_codex_decision` — ambiguous case requiring manual decision.
+
+Decision verdicts:
+- `accepted` — final acceptance, journaled to `runtime/accepted/`.
+- `rejected` — final rejection, journaled to `runtime/rejected/`.
+- `needs_revision` — revision needed, journaled to `runtime/reviews/`.
+
+## What the External Chat Must NOT Do
+
+- Claim repo authority or knowledge of repo internals.
+- Fabricate file contents without reading actual sources.
+- Assert it can run git, tests, or access runtime state.
+- Write files directly into the repo (always produce ZIP only).
+- Create branches automatically (managed by the prompt passport logic).
+
+## Usage
+
+### Via MCP
+- `opencode_zchat_prompt_pack(task_text, context, constraints, source_urls, allowed_paths, forbidden_paths, expected_outputs)`
+- `opencode_zchat_import_pack(zip_path, target_root)`
+- `opencode_zchat_verify_pack(pack_dir)`
+- `opencode_zchat_decision_pack(subject_id, verdict, rationale, evidence, reviewer)`
+
+### Via CLI
+```
+python scripts/codex_token_monitor_opencode_jobs.py --zchat-prompt-pack --zchat-task "..." --zchat-allowed-paths "src/,tests/" --zchat-forbidden-paths "secrets/"
+python scripts/codex_token_monitor_opencode_jobs.py --zchat-import-pack <zip>
+python scripts/codex_token_monitor_opencode_jobs.py --zchat-verify-pack <dir>
+python scripts/codex_token_monitor_opencode_jobs.py --zchat-decision-pack --zchat-subject-id <id> --zchat-decision-verdict <verdict>
+```
 
 ## Directory Structure
 
 ```
 .ai/zchat/
   templates/         # Templates for prompt-pack artifacts
-    prompt.md
-    prompt_passport.md
-    request_manifest.json
   schemas/           # JSON schemas for import validation
-    import_manifest_schema.json
-  docs/              # Skill contracts and documentation
-    zchat_intake_contract.md
+  docs/              # Contracts and documentation
   skills/            # OpenCode skill files
-    intake_rules.md  # ZIP intake rules for OpenCode agents
   runtime/           # Runtime artifacts (gitignored)
     requests/        # prompt_pack outputs
     imports/         # import_pack reports
@@ -48,25 +103,8 @@ Final Codex decision stage. Produces `codex_decision.md` and `decision_manifest.
     accepted/        # accepted decisions
     rejected/        # rejected decisions
     branches/        # branch metadata/passport artifacts
-  navigation.md      # Navigation overview
-  readme.md
 ```
 
-## Usage
+## ZCHAT Slug ID
 
-Via MCP tools:
-- `opencode_zchat_prompt_pack`
-- `opencode_zchat_import_pack`
-- `opencode_zchat_verify_pack`
-- `opencode_zchat_decision_pack`
-
-Via CLI:
-- `python scripts/codex_token_monitor_opencode_jobs.py --zchat-prompt-pack ...`
-- `python scripts/codex_token_monitor_opencode_jobs.py --zchat-import-pack ...`
-- `python scripts/codex_token_monitor_opencode_jobs.py --zchat-verify-pack ...`
-- `python scripts/codex_token_monitor_opencode_jobs.py --zchat-decision-pack --zchat-subject-id <id> --zchat-decision-verdict <verdict>`
-
-## ZCHAT Slug ID Format
-
-All zchat operations use ZCHAT-style slug IDs: `ZCHAT-YYYYMMDD-HHMMSS-<sha256hex8>`.
-These are generated by `scripts/git_utils.zchat_slug_id()` and used as directory names in structured runtime subdirectories.
+Format: `ZCHAT-YYYYMMDD-HHMMSS-<sha256hex8>`. Generated by `git_utils.zchat_slug_id()`.

@@ -9,30 +9,33 @@ This skill defines the mandatory intake contract for any OpenCode agent that rec
 ### 1. VALIDATE
 Structural check of ZIP contents:
 - ZIP MUST contain `manifest.json`, `checksums.sha256`, `payload/` directory.
-- `manifest.json` MUST validate against `schemas/import_manifest_schema.json`.
+- `manifest.json` MUST pass schema-like validation (manifest_version==1.0, non-empty package_id, non-empty created_at, mode==zchat_import_pack, non-empty payload_files list, each entry with path and 64-hex sha256).
 - `checksums.sha256` MUST be present and non-empty.
-- Stop condition: missing required files → `rejected_structural`.
+- Stop condition: missing required files or schema violation → `rejected_structural`.
 
 ### 2. SECURITY_SCAN
-Path traversal and scope validation:
-- Forbidden: absolute paths, `..` traversal, `.git/`, `.env*`, paths starting with `.ai/zchat/`, any path escaping repo root.
-- Allowed: only relative paths within the repository scope.
+Path traversal, scope, and policy validation:
+- Global forbidden: absolute paths, `..` traversal, `.git/`, `.env*`, `.ai/zchat/`, paths escaping repo root.
+- **allowed_paths**: if set and non-empty in manifest, every payload file MUST match at least one allowed prefix.
+- **forbidden_paths**: if set in manifest, no payload file MAY match any forbidden prefix.
+- Global forbidden always stronger than manifest policy.
 - Stop condition: any violation → `rejected_scope`.
 
-### 3. EXTRACT_APPLY
-Apply payload to working tree:
-- Extract `payload/` files to repository root.
-- Each file path MUST be listed in `manifest.json.payload_files`.
-- SHA256 of each extracted file MUST match manifest and checksums.
+### 3. EXTRA_FILES_CHECK
+- Any file in `payload/` not listed in `manifest.payload_files` → `rejected_structural`.
+- No silent ignoring of extra payload files.
+
+### 4. CHECKSUMS
+- Every file listed in manifest MUST exist in ZIP `payload/`.
+- SHA256 in manifest and checksums.sha256 MUST match actual file data.
 - Stop condition: checksum mismatch → `rejected_structural`.
 
-### 4. VERIFY_INPUTS
-Verify all inputs are consistent:
-- `manifest.json` and `checksums.sha256` MUST be self-consistent.
-- Every payload file listed in manifest MUST exist after extract.
-- Stop condition: inconsistency → `rejected_structural`.
+### 5. ATOMIC_COMMIT
+- All validation happens in memory first.
+- Files are written to target root ONLY after all checks pass.
+- If any check fails before the commit step, no file is written.
 
-### 5. REPORT
+### 6. REPORT
 Write `import_report.md`:
 - Summary of actions taken.
 - File listing with checksums.
@@ -41,8 +44,8 @@ Write `import_report.md`:
 ## Verdicts
 
 - `accepted_for_review`: All checks passed, ready for human review.
-- `rejected_structural`: ZIP structure, manifest, or checksum failure.
-- `rejected_scope`: Path traversal, forbidden paths, scope violation.
+- `rejected_structural`: ZIP structure, manifest schema, checksum failure, or extra payload files.
+- `rejected_scope`: Path traversal, forbidden paths, scope/policy violation.
 - `needs_codex_decision`: Ambiguous case requiring manual decision.
 
 ## Security Rules
@@ -53,3 +56,6 @@ Write `import_report.md`:
 - No `..` in paths.
 - No `.ai/zchat/` paths.
 - All extracted files MUST be within repository root bounds.
+- Global forbidden paths always override manifest-level allowed_paths.
+- `imported != accepted`: ZIP is untrusted; files are staged for review only.
+- Extra payload files NOT in manifest are always rejected (no silent acceptance).

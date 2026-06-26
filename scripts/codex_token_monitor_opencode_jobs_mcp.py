@@ -329,7 +329,8 @@ def opencode_job_run_and_wait(
     description=(
         "Create a zchat prompt artifact pack: prompt.md, prompt_passport.md, request_manifest.json. "
         "Encodes the policy: use public GitHub raw URLs first; create temporary branch only if "
-        "public context is insufficient."
+        "public context is insufficient. Supports allowed_paths, forbidden_paths, expected_outputs "
+        "as comma-separated strings or plain text."
     ),
 )
 def opencode_zchat_prompt_pack(
@@ -338,6 +339,9 @@ def opencode_zchat_prompt_pack(
     constraints: str | None = None,
     source_urls: str | None = None,
     output_dir: str | None = None,
+    allowed_paths: str | None = None,
+    forbidden_paths: str | None = None,
+    expected_outputs: str | None = None,
 ) -> dict[str, Any]:
     normalized_task = _normalize_text(task_text)
     if normalized_task is None:
@@ -354,6 +358,9 @@ def opencode_zchat_prompt_pack(
         context=_normalize_text(context) or "",
         constraints=_normalize_text(constraints) or "",
         source_urls=url_list,
+        allowed_paths=allowed_paths,
+        forbidden_paths=forbidden_paths,
+        expected_outputs=expected_outputs,
     )
     return zchat_prompt_pack_result_to_mcp_response(result)
 

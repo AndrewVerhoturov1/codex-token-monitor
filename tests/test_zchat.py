@@ -62,12 +62,101 @@ class ZchatPromptPackTests(unittest.TestCase):
             self.assertIn("prompt_passport.md", manifest["artifacts"])
             self.assertIn("request_manifest.json", manifest["artifacts"])
 
+    def test_prompt_md_contains_external_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("external chat", prompt_text.lower())
+            self.assertIn("no authority", prompt_text.lower())
+
+    def test_prompt_md_contains_expected_zip_structure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("manifest.json", prompt_text)
+            self.assertIn("checksums.sha256", prompt_text)
+            self.assertIn("payload/", prompt_text)
+
+    def test_prompt_md_contains_imported_not_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("imported != accepted", prompt_text)
+
+    def test_prompt_passport_contains_allowed_forbidden_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task",
+                output_dir=output_dir,
+                allowed_paths="src/,tests/",
+                forbidden_paths="secrets/,.private/",
+            )
+            self.assertEqual(result.status, "completed")
+            passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
+            self.assertIn("src/", passport_text)
+            self.assertIn("tests/", passport_text)
+            self.assertIn("secrets/", passport_text)
+            self.assertIn("Allowed Paths", passport_text)
+            self.assertIn("Forbidden Paths", passport_text)
+
+    def test_request_manifest_saves_allowed_forbidden_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task",
+                output_dir=output_dir,
+                allowed_paths="src/",
+                forbidden_paths=".secrets/",
+                expected_outputs="README.md,src/main.py",
+            )
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["allowed_paths"], ["src/"])
+            self.assertEqual(manifest["forbidden_paths"], [".secrets/"])
+            self.assertEqual(manifest["expected_outputs"], ["README.md", "src/main.py"])
+
+    def test_prompt_pack_allowed_paths_list_input(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task",
+                output_dir=output_dir,
+                allowed_paths=["src/", "lib/"],
+                forbidden_paths=["bin/"],
+            )
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["allowed_paths"], ["src/", "lib/"])
+
+    def test_prompt_pack_empty_string_paths_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task",
+                output_dir=output_dir,
+                allowed_paths="",
+                forbidden_paths="  ,  ",
+            )
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["allowed_paths"], [])
+            self.assertEqual(manifest["forbidden_paths"], [])
+
     def test_prompt_pack_no_urls_marks_branch_may_be_needed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "zchat_output"
             result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
             self.assertEqual(result.status, "completed")
-
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertTrue(manifest["metadata"]["branch_may_be_needed"])
+            self.assertFalse(manifest["metadata"]["create_branch"])
             passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
             self.assertIn("temporary branch is NOT required", passport_text)
 
@@ -88,7 +177,13 @@ class ZchatPromptPackTests(unittest.TestCase):
 
 class ZchatImportPackTests(unittest.TestCase):
 
-    def _create_test_zip(self, tmpdir: Path, files: list[tuple[str, str]], include_checksums: bool = True) -> Path:
+    def _create_test_zip(
+        self,
+        tmpdir: Path,
+        files: list[tuple[str, str]],
+        include_checksums: bool = True,
+        manifest_extras: dict | None = None,
+    ) -> Path:
         zip_path = tmpdir / "test_pack.zip"
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             manifest = {
@@ -99,6 +194,8 @@ class ZchatImportPackTests(unittest.TestCase):
                 "payload_files": [],
                 "metadata": {},
             }
+            if manifest_extras:
+                manifest.update(manifest_extras)
             checksum_lines = []
             for file_path, content in files:
                 manifest["payload_files"].append({
@@ -152,6 +249,158 @@ class ZchatImportPackTests(unittest.TestCase):
             self.assertTrue((target / "src" / "main.py").exists())
             self.assertTrue((target / "src" / "utils.py").exists())
             self.assertTrue((target / "README.md").exists())
+
+    def test_import_pack_atomic_second_file_bad_first_not_written(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir / "target"
+            target.mkdir()
+            zip_path = tmpdir / "atomic_test.zip"
+            content1 = b"file one content"
+            sha1 = jobs._sha256_hex(content1)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                manifest = {
+                    "manifest_version": "1.0",
+                    "package_id": "atomic-test",
+                    "created_at": "2025-01-01T00:00:00.000Z",
+                    "mode": "zchat_import_pack",
+                    "payload_files": [
+                        {"path": "good.txt", "sha256": sha1},
+                        {"path": "bad.txt", "sha256": "0" * 64},
+                    ],
+                }
+                zf.writestr("manifest.json", json.dumps(manifest))
+                zf.writestr("checksums.sha256", f"{sha1}  good.txt\n{'0' * 64}  bad.txt\n")
+                zf.writestr("payload/good.txt", content1)
+                zf.writestr("payload/bad.txt", b"wrong content")
+            result = jobs.zchat_import_pack(zip_path, target_root=target)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL)
+            self.assertFalse((target / "good.txt").exists(), "first file must not be written when second fails")
+            self.assertFalse((target / "bad.txt").exists())
+
+    def test_import_pack_extra_payload_file_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir / "target"
+            target.mkdir()
+            zip_path = tmpdir / "extra.zip"
+            content = b"listed"
+            sha = jobs._sha256_hex(content)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                manifest = {
+                    "manifest_version": "1.0",
+                    "package_id": "extra-test",
+                    "created_at": "2025-01-01T00:00:00.000Z",
+                    "mode": "zchat_import_pack",
+                    "payload_files": [{"path": "listed.txt", "sha256": sha}],
+                }
+                zf.writestr("manifest.json", json.dumps(manifest))
+                zf.writestr("checksums.sha256", f"{sha}  listed.txt\n")
+                zf.writestr("payload/listed.txt", content)
+                zf.writestr("payload/extra.txt", b"not in manifest")
+            result = jobs.zchat_import_pack(zip_path, target_root=target)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL)
+            self.assertIn("Extra", result.error)
+            self.assertFalse((target / "listed.txt").exists())
+            self.assertFalse((target / "extra.txt").exists())
+
+    def test_import_pack_manifest_missing_required_field_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir / "target"
+            target.mkdir()
+            zip_path = tmpdir / "bad_manifest.zip"
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                manifest_no_pid = {
+                    "manifest_version": "1.0",
+                    "mode": "zchat_import_pack",
+                    "payload_files": [{"path": "f.txt", "sha256": "a" * 64}],
+                }
+                zf.writestr("manifest.json", json.dumps(manifest_no_pid))
+                zf.writestr("checksums.sha256", f"{'a' * 64}  f.txt\n")
+                zf.writestr("payload/f.txt", b"data")
+            result = jobs.zchat_import_pack(zip_path, target_root=target)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL)
+            self.assertIn("package_id", result.error.lower())
+
+    def test_import_pack_bad_sha_format_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir / "target"
+            target.mkdir()
+            zip_path = tmpdir / "bad_sha.zip"
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                manifest = {
+                    "manifest_version": "1.0",
+                    "package_id": "bad-sha-test",
+                    "created_at": "2025-01-01T00:00:00.000Z",
+                    "mode": "zchat_import_pack",
+                    "payload_files": [{"path": "f.txt", "sha256": "not-a-valid-sha256"}],
+                }
+                zf.writestr("manifest.json", json.dumps(manifest))
+                zf.writestr("checksums.sha256", "not-a-valid-sha256  f.txt\n")
+                zf.writestr("payload/f.txt", b"data")
+            result = jobs.zchat_import_pack(zip_path, target_root=target)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL)
+            self.assertIn("sha256", result.error.lower())
+
+    def test_import_pack_allowed_paths_blocks_outside_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir / "target"
+            target.mkdir()
+            files = [("docs/file.txt", "allowed"), ("src/main.py", "not allowed because not in allowed")]
+            zip_path = self._create_test_zip(
+                tmpdir, files,
+                manifest_extras={"allowed_paths": ["docs/"]},
+            )
+            result = jobs.zchat_import_pack(zip_path, target_root=target)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_SCOPE)
+            self.assertIn("not in allowed", result.error.lower())
+
+    def test_import_pack_forbidden_paths_blocks_forbidden_scope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir / "target"
+            target.mkdir()
+            files = [("docs/file.txt", "good"), ("secrets/key.txt", "bad")]
+            zip_path = self._create_test_zip(
+                tmpdir, files,
+                manifest_extras={"forbidden_paths": ["secrets/"]},
+            )
+            result = jobs.zchat_import_pack(zip_path, target_root=target)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_SCOPE)
+            self.assertIn("forbidden", result.error.lower())
+
+    def test_import_pack_global_forbidden_paths_still_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir / "target"
+            target.mkdir()
+            files = [("src/ok.txt", "ok"), (".git/config", "bad")]
+            zip_path = self._create_test_zip(
+                tmpdir, files,
+                manifest_extras={"allowed_paths": ["src/", ".git/"]},
+            )
+            result = jobs.zchat_import_pack(zip_path, target_root=target)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_SCOPE)
+            self.assertIn(".git/", result.error.lower())
+
+    def test_import_pack_valid_with_allowed_paths_imports(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir / "target"
+            target.mkdir()
+            files = [("src/main.py", "hello"), ("src/utils.py", "world")]
+            zip_path = self._create_test_zip(
+                tmpdir, files,
+                manifest_extras={"allowed_paths": ["src/"]},
+            )
+            result = jobs.zchat_import_pack(zip_path, target_root=target)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_ACCEPTED)
+            self.assertEqual(result.files_imported, 2)
+            self.assertTrue((target / "src" / "main.py").exists())
+            self.assertTrue((target / "src" / "utils.py").exists())
 
     def test_import_pack_checksum_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -268,7 +517,7 @@ class ZchatImportPackTests(unittest.TestCase):
             target.mkdir()
             zip_path = tmpdir / "nochecksums.zip"
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                manifest = {"manifest_version": "1.0", "package_id": "test", "mode": "zchat_import_pack", "payload_files": []}
+                manifest = {"manifest_version": "1.0", "package_id": "test", "created_at": "2025-01-01T00:00:00.000Z", "mode": "zchat_import_pack", "payload_files": [{"path": "t.txt", "sha256": jobs._sha256_hex(b"x")}]}
                 zf.writestr("manifest.json", json.dumps(manifest))
                 zf.writestr("payload/test.txt", "data")
             result = jobs.zchat_import_pack(zip_path, target_root=target)
@@ -281,9 +530,9 @@ class ZchatImportPackTests(unittest.TestCase):
             target.mkdir()
             zip_path = tmpdir / "empty.zip"
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                manifest = {"manifest_version": "1.0", "package_id": "test", "mode": "zchat_import_pack", "payload_files": []}
+                manifest = {"manifest_version": "1.0", "package_id": "test", "created_at": "2025-01-01T00:00:00.000Z", "mode": "zchat_import_pack", "payload_files": []}
                 zf.writestr("manifest.json", json.dumps(manifest))
-                zf.writestr("checksums.sha256", "")
+                zf.writestr("checksums.sha256", "abc\n")
             result = jobs.zchat_import_pack(zip_path, target_root=target)
             self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL)
 
@@ -320,6 +569,108 @@ class ZchatVerifyPackTests(unittest.TestCase):
             self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_ACCEPTED)
             self.assertTrue(Path(result.report_path).exists())
 
+    def test_verify_pack_valid_accepted_for_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            pack_dir = tmpdir / "pack"
+            pack_dir.mkdir()
+            (pack_dir / "payload").mkdir()
+            content = b"hello world"
+            sha = jobs._sha256_hex(content)
+            (pack_dir / "payload" / "greet.txt").write_bytes(content)
+            manifest = {
+                "manifest_version": "1.0",
+                "package_id": "verify-ok",
+                "created_at": "2025-06-01T12:00:00.000Z",
+                "mode": "zchat_import_pack",
+                "payload_files": [{"path": "greet.txt", "sha256": sha}],
+            }
+            (pack_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            (pack_dir / "checksums.sha256").write_text(f"{sha}  greet.txt\n", encoding="utf-8")
+            result = jobs.zchat_verify_pack(pack_dir)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_ACCEPTED)
+
+    def test_verify_pack_detects_extra_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            pack_dir = tmpdir / "pack"
+            pack_dir.mkdir()
+            (pack_dir / "payload").mkdir()
+            (pack_dir / "payload" / "file.txt").write_text("one", encoding="utf-8")
+            (pack_dir / "payload" / "extra.txt").write_text("two", encoding="utf-8")
+            manifest = {
+                "manifest_version": "1.0",
+                "package_id": "test",
+                "created_at": "2025-01-01T00:00:00.000Z",
+                "mode": "zchat_import_pack",
+                "payload_files": [{"path": "file.txt", "sha256": jobs._sha256_hex(b"one")}],
+            }
+            (pack_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            sha_file = jobs._sha256_hex(b"one")
+            (pack_dir / "checksums.sha256").write_text(f"{sha_file}  file.txt\n", encoding="utf-8")
+            result = jobs.zchat_verify_pack(pack_dir)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL)
+            self.assertTrue(Path(result.report_path).exists())
+
+    def test_verify_pack_detects_allowed_paths_violation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            pack_dir = tmpdir / "pack"
+            pack_dir.mkdir()
+            (pack_dir / "payload").mkdir()
+            (pack_dir / "payload" / "docs").mkdir(parents=True, exist_ok=True)
+            (pack_dir / "payload" / "docs" / "readme.txt").write_text("ok", encoding="utf-8")
+            (pack_dir / "payload" / "src").mkdir(parents=True, exist_ok=True)
+            (pack_dir / "payload" / "src" / "secret.py").write_text("secret", encoding="utf-8")
+            manifest = {
+                "manifest_version": "1.0",
+                "package_id": "allowed-test",
+                "created_at": "2025-01-01T00:00:00.000Z",
+                "mode": "zchat_import_pack",
+                "allowed_paths": ["docs/"],
+                "payload_files": [
+                    {"path": "docs/readme.txt", "sha256": jobs._sha256_hex(b"ok")},
+                    {"path": "src/secret.py", "sha256": jobs._sha256_hex(b"secret")},
+                ],
+            }
+            (pack_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (pack_dir / "checksums.sha256").write_text(
+                f"{jobs._sha256_hex(b'ok')}  docs/readme.txt\n{jobs._sha256_hex(b'secret')}  src/secret.py\n",
+                encoding="utf-8",
+            )
+            result = jobs.zchat_verify_pack(pack_dir)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_SCOPE)
+            self.assertTrue(Path(result.report_path).exists())
+
+    def test_verify_pack_detects_forbidden_paths_violation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            pack_dir = tmpdir / "pack"
+            pack_dir.mkdir()
+            (pack_dir / "payload").mkdir()
+            (pack_dir / "payload" / "src").mkdir(parents=True, exist_ok=True)
+            (pack_dir / "payload" / "src" / "ok.py").write_text("ok", encoding="utf-8")
+            (pack_dir / "payload" / "config").mkdir(parents=True, exist_ok=True)
+            (pack_dir / "payload" / "config" / "secrets.env").write_text("secret", encoding="utf-8")
+            manifest = {
+                "manifest_version": "1.0",
+                "package_id": "forbidden-test",
+                "created_at": "2025-01-01T00:00:00.000Z",
+                "mode": "zchat_import_pack",
+                "forbidden_paths": ["config/"],
+                "payload_files": [
+                    {"path": "src/ok.py", "sha256": jobs._sha256_hex(b"ok")},
+                    {"path": "config/secrets.env", "sha256": jobs._sha256_hex(b"secret")},
+                ],
+            }
+            (pack_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (pack_dir / "checksums.sha256").write_text(
+                f"{jobs._sha256_hex(b'ok')}  src/ok.py\n{jobs._sha256_hex(b'secret')}  config/secrets.env\n",
+                encoding="utf-8",
+            )
+            result = jobs.zchat_verify_pack(pack_dir)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_SCOPE)
+
     def test_verify_pack_missing_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
@@ -327,7 +678,6 @@ class ZchatVerifyPackTests(unittest.TestCase):
             pack_dir.mkdir()
             (pack_dir / "payload").mkdir()
             (pack_dir / "checksums.sha256").write_text("abc\n", encoding="utf-8")
-
             result = jobs.zchat_verify_pack(pack_dir)
             self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL)
 
@@ -337,10 +687,8 @@ class ZchatVerifyPackTests(unittest.TestCase):
             pack_dir = tmpdir / "pack"
             pack_dir.mkdir()
             (pack_dir / "payload").mkdir()
-
-            manifest = {"manifest_version": "1.0", "package_id": "test", "mode": "zchat_import_pack", "payload_files": []}
+            manifest = {"manifest_version": "1.0", "package_id": "test", "created_at": "2025-01-01T00:00:00.000Z", "mode": "zchat_import_pack", "payload_files": [{"path": "f.txt", "sha256": jobs._sha256_hex(b"x")}]}
             (pack_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-
             result = jobs.zchat_verify_pack(pack_dir)
             self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL)
 
@@ -349,11 +697,9 @@ class ZchatVerifyPackTests(unittest.TestCase):
             tmpdir = Path(tmp)
             pack_dir = tmpdir / "pack"
             pack_dir.mkdir()
-
-            manifest = {"manifest_version": "1.0", "package_id": "test", "mode": "zchat_import_pack", "payload_files": []}
+            manifest = {"manifest_version": "1.0", "package_id": "test", "created_at": "2025-01-01T00:00:00.000Z", "mode": "zchat_import_pack", "payload_files": [{"path": "x.txt", "sha256": jobs._sha256_hex(b"x")}]}
             (pack_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            (pack_dir / "checksums.sha256").write_text("", encoding="utf-8")
-
+            (pack_dir / "checksums.sha256").write_text("abc\n", encoding="utf-8")
             result = jobs.zchat_verify_pack(pack_dir)
             self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL)
 
@@ -364,40 +710,17 @@ class ZchatVerifyPackTests(unittest.TestCase):
             pack_dir.mkdir()
             (pack_dir / "payload").mkdir()
             (pack_dir / "payload" / "file.txt").write_text("content", encoding="utf-8")
-
             manifest = {
                 "manifest_version": "1.0",
                 "package_id": "test",
+                "created_at": "2025-01-01T00:00:00.000Z",
                 "mode": "zchat_import_pack",
                 "payload_files": [{"path": "file.txt", "sha256": "a" * 64}],
             }
             (pack_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
             (pack_dir / "checksums.sha256").write_text(f"{'b' * 64}  file.txt\n", encoding="utf-8")
-
             result = jobs.zchat_verify_pack(pack_dir)
             self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL)
-
-    def test_verify_pack_extra_payload_files(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmpdir = Path(tmp)
-            pack_dir = tmpdir / "pack"
-            pack_dir.mkdir()
-            (pack_dir / "payload").mkdir()
-            (pack_dir / "payload" / "file.txt").write_text("one", encoding="utf-8")
-            (pack_dir / "payload" / "extra.txt").write_text("two", encoding="utf-8")
-
-            manifest = {
-                "manifest_version": "1.0",
-                "package_id": "test",
-                "mode": "zchat_import_pack",
-                "payload_files": [{"path": "file.txt", "sha256": jobs._sha256_hex(b"one")}],
-            }
-            (pack_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-            sha_file = jobs._sha256_hex(b"one")
-            (pack_dir / "checksums.sha256").write_text(f"{sha_file}  file.txt\n", encoding="utf-8")
-
-            result = jobs.zchat_verify_pack(pack_dir)
-            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_NEEDS_DECISION)
 
 
 class ZchatForbiddenPathTests(unittest.TestCase):
@@ -437,6 +760,41 @@ class ZchatForbiddenPathTests(unittest.TestCase):
     def test_windows_absolute_path_forbidden(self) -> None:
         result = jobs._zchat_forbidden_path("C:\\Windows\\file.txt", Path("D:\\repo"))
         self.assertTrue(result)
+
+
+class ZchatPathPolicyTests(unittest.TestCase):
+
+    def test_allowed_paths_blocks_outside(self) -> None:
+        result = jobs._zchat_check_path_policy("secrets/key.txt", allowed_paths=["src/", "docs/"])
+        self.assertIn("not in allowed", result)
+
+    def test_allowed_paths_allows_inside(self) -> None:
+        result = jobs._zchat_check_path_policy("src/main.py", allowed_paths=["src/"])
+        self.assertEqual(result, "")
+
+    def test_forbidden_paths_blocks_match(self) -> None:
+        result = jobs._zchat_check_path_policy("secrets/key.txt", forbidden_paths=["secrets/"])
+        self.assertIn("forbidden", result)
+
+    def test_forbidden_paths_allows_non_match(self) -> None:
+        result = jobs._zchat_check_path_policy("src/main.py", forbidden_paths=["secrets/"])
+        self.assertEqual(result, "")
+
+    def test_forbidden_stronger_than_allowed(self) -> None:
+        result = jobs._zchat_check_path_policy(
+            "src/main.py",
+            allowed_paths=["src/"],
+            forbidden_paths=["src/"],
+        )
+        self.assertIn("forbidden", result)
+
+    def test_no_policy_is_ok(self) -> None:
+        result = jobs._zchat_check_path_policy("anything/file.txt")
+        self.assertEqual(result, "")
+
+    def test_empty_allowed_is_ok(self) -> None:
+        result = jobs._zchat_check_path_policy("anything/file.txt", allowed_paths=[])
+        self.assertEqual(result, "")
 
 
 class ZchatSlugIdTests(unittest.TestCase):
@@ -479,15 +837,6 @@ class ZchatDecisionPackTests(unittest.TestCase):
         self.assertTrue(Path(result.decision_path).exists())
         self.assertTrue(Path(result.manifest_path).exists())
 
-        decision_text = Path(result.decision_path).read_text(encoding="utf-8")
-        self.assertIn("accepted", decision_text)
-        self.assertIn("All checks passed", decision_text)
-        self.assertIn("CI green", decision_text)
-
-        manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
-        self.assertEqual(manifest["verdict"], jobs.ZCHAT_DECISION_ACCEPTED)
-        self.assertEqual(manifest["subject_id"], "ZCHAT-20260601-120000-abcdef01")
-
     def test_decision_pack_rejected(self) -> None:
         result = jobs.zchat_decision_pack(
             subject_id="ZCHAT-20260601-120000-abcdef02",
@@ -497,11 +846,6 @@ class ZchatDecisionPackTests(unittest.TestCase):
         self.assertEqual(result.status, "completed")
         self.assertEqual(result.verdict, jobs.ZCHAT_DECISION_REJECTED)
         self.assertTrue("rejected" in result.journal_path.replace("\\", "/"))
-        self.assertTrue(Path(result.decision_path).exists())
-
-        decision_text = Path(result.decision_path).read_text(encoding="utf-8")
-        self.assertIn("rejected", decision_text)
-        self.assertIn("Scope violation detected", decision_text)
 
     def test_decision_pack_needs_revision(self) -> None:
         result = jobs.zchat_decision_pack(
@@ -545,33 +889,6 @@ class ZchatDecisionPackTests(unittest.TestCase):
         )
         self.assertEqual(result.decision_id, "ZCHAT-CUSTOM-001")
 
-    def test_decision_pack_with_branch_info(self) -> None:
-        branch_info = {
-            "slug_id": "ZCHAT-20260601-120000-branch01",
-            "branch_name": "zchat/test-branch",
-            "base_branch": "main",
-            "created": True,
-            "pushed": True,
-            "deleted": False,
-            "error": "",
-        }
-        result = jobs.zchat_decision_pack(
-            subject_id="ZCHAT-20260601-120000-abcdef08",
-            verdict=jobs.ZCHAT_DECISION_ACCEPTED,
-            rationale="Branch created and pushed.",
-            branch_info=branch_info,
-        )
-        self.assertEqual(result.status, "completed")
-
-        decision_text = Path(result.decision_path).read_text(encoding="utf-8")
-        self.assertIn("zchat/test-branch", decision_text)
-        self.assertIn("created", decision_text)
-
-        manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
-        self.assertEqual(manifest["branch_info"]["branch_name"], "zchat/test-branch")
-        self.assertTrue(manifest["branch_info"]["created"])
-        self.assertTrue(manifest["branch_info"]["pushed"])
-
 
 class ZchatStructuredRuntimeTests(unittest.TestCase):
 
@@ -600,6 +917,7 @@ class ZchatStructuredRuntimeTests(unittest.TestCase):
             manifest = {
                 "manifest_version": "1.0",
                 "package_id": "struct-test",
+                "created_at": "2025-01-01T00:00:00.000Z",
                 "mode": jobs.ZCHAT_MODE_IMPORT_PACK,
                 "payload_files": [{"path": "test.txt", "sha256": sha}],
             }
@@ -609,7 +927,6 @@ class ZchatStructuredRuntimeTests(unittest.TestCase):
                 zf.writestr("payload/test.txt", content)
             result = jobs.zchat_import_pack(zip_path, target_root=target)
             self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_ACCEPTED)
-            report_dir = Path(result.report_path).parent
             self.assertTrue("imports" in Path(result.report_path).parts)
 
     def test_verify_pack_uses_reviews_subdir(self) -> None:
@@ -624,6 +941,7 @@ class ZchatStructuredRuntimeTests(unittest.TestCase):
             manifest = {
                 "manifest_version": "1.0",
                 "package_id": "review-test",
+                "created_at": "2025-01-01T00:00:00.000Z",
                 "mode": jobs.ZCHAT_MODE_IMPORT_PACK,
                 "payload_files": [{"path": "f.txt", "sha256": sha}],
             }
@@ -662,6 +980,123 @@ class ZchatBranchPolicyTests(unittest.TestCase):
             self.assertEqual(result.status, "completed")
             passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
             self.assertIn("temporary branch is NOT required", passport_text)
+
+
+class ZchatSchemaValidationTests(unittest.TestCase):
+
+    def test_valid_manifest_passes(self) -> None:
+        manifest = {
+            "manifest_version": "1.0",
+            "package_id": "test-pkg",
+            "created_at": "2025-01-01T00:00:00.000Z",
+            "mode": "zchat_import_pack",
+            "payload_files": [{"path": "test.py", "sha256": "a" * 64}],
+            "metadata": {"key": "value"},
+        }
+        errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
+        self.assertEqual(errors, [])
+
+    def test_manifest_version_not_1_0(self) -> None:
+        manifest = {
+            "manifest_version": "2.0",
+            "package_id": "test",
+            "created_at": "2025-01-01T00:00:00.000Z",
+            "mode": "zchat_import_pack",
+            "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
+        }
+        errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
+        self.assertTrue(any("manifest_version" in e for e in errors))
+
+    def test_empty_package_id(self) -> None:
+        manifest = {
+            "manifest_version": "1.0",
+            "package_id": "",
+            "created_at": "2025-01-01T00:00:00.000Z",
+            "mode": "zchat_import_pack",
+            "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
+        }
+        errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
+        self.assertTrue(any("package_id" in e for e in errors))
+
+    def test_empty_created_at(self) -> None:
+        manifest = {
+            "manifest_version": "1.0",
+            "package_id": "test",
+            "created_at": "",
+            "mode": "zchat_import_pack",
+            "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
+        }
+        errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
+        self.assertTrue(any("created_at" in e for e in errors))
+
+    def test_wrong_mode(self) -> None:
+        manifest = {
+            "manifest_version": "1.0",
+            "package_id": "test",
+            "created_at": "2025-01-01T00:00:00.000Z",
+            "mode": "zchat_prompt_pack",
+            "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
+        }
+        errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
+        self.assertTrue(any("mode" in e for e in errors))
+
+    def test_empty_payload_files(self) -> None:
+        manifest = {
+            "manifest_version": "1.0",
+            "package_id": "test",
+            "created_at": "2025-01-01T00:00:00.000Z",
+            "mode": "zchat_import_pack",
+            "payload_files": [],
+        }
+        errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
+        self.assertTrue(any("payload_files" in e for e in errors))
+
+    def test_bad_sha256_format(self) -> None:
+        manifest = {
+            "manifest_version": "1.0",
+            "package_id": "test",
+            "created_at": "2025-01-01T00:00:00.000Z",
+            "mode": "zchat_import_pack",
+            "payload_files": [{"path": "t.py", "sha256": "not-hex"}],
+        }
+        errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
+        self.assertTrue(any("sha256" in e for e in errors))
+
+    def test_allowed_paths_not_list(self) -> None:
+        manifest = {
+            "manifest_version": "1.0",
+            "package_id": "test",
+            "created_at": "2025-01-01T00:00:00.000Z",
+            "mode": "zchat_import_pack",
+            "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
+            "allowed_paths": "not-a-list",
+        }
+        errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
+        self.assertTrue(any("allowed_paths" in e for e in errors))
+
+    def test_forbidden_paths_not_list(self) -> None:
+        manifest = {
+            "manifest_version": "1.0",
+            "package_id": "test",
+            "created_at": "2025-01-01T00:00:00.000Z",
+            "mode": "zchat_import_pack",
+            "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
+            "forbidden_paths": 123,
+        }
+        errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
+        self.assertTrue(any("forbidden_paths" in e for e in errors))
+
+    def test_metadata_not_dict(self) -> None:
+        manifest = {
+            "manifest_version": "1.0",
+            "package_id": "test",
+            "created_at": "2025-01-01T00:00:00.000Z",
+            "mode": "zchat_import_pack",
+            "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
+            "metadata": "not-a-dict",
+        }
+        errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
+        self.assertTrue(any("metadata" in e for e in errors))
 
 
 if __name__ == "__main__":

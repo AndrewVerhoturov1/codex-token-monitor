@@ -6,7 +6,7 @@
 |---|---|---|
 | Templates | `.ai/zchat/templates/` | Prompt-pack artifact templates |
 | Schemas | `.ai/zchat/schemas/` | JSON schemas for import validation |
-| Docs | `.ai/zchat/docs/` | Skill contracts and documentation |
+| Docs | `.ai/zchat/docs/` | Skill contracts, v1 created doc, and documentation |
 | Skills | `.ai/zchat/skills/` | OpenCode skill files for Zchat operations |
 | Runtime | `.ai/zchat/runtime/` | Runtime artifacts (gitignored) |
 
