@@ -81,10 +81,23 @@ Write `import_report.md` (legacy) or `receive_report.md` (v2):
 - `context_readback`: path to context readback file, or via `metadata.context_readback`
 
 ### v2 optional fields:
-- `verification_files`: list of file paths inside payload/ for safety inspection
+- `verification_files`: list of repo-relative file paths (without `payload/` prefix) for safety inspection
 
 ### v2 required payload:
-- `payload/context_readback.md`: with Confirmed/Inferred/Not verified/Needs local verification sections
+- `payload/context_readback.md`: with Confirmed/Inferred/Not verified/Needs local verification sections (physical ZIP path)
+
+### Path Rule (v2 critical)
+
+Files are stored in the ZIP as `payload/<repo-relative-path>` (physical path).
+Manifest and checksum paths MUST be repo-relative WITHOUT the `payload/` prefix.
+
+| Item | Physical ZIP | Manifest/Checksum path |
+|---|---|---|
+| Deliverable file | `payload/<path>` | `<path>` |
+| checksums.sha256 entry | N/A | `<sha256>  <path>` |
+| context_readback field | `payload/<path>` | `<path>` |
+
+Example: a file physically at `payload/docs/result.md` appears as `docs/result.md` in `payload_files[].path` and `checksums.sha256`.
 
 ### v2 operations:
 - `zchat_receive_pack`: extracts to quarantine only, never to repo

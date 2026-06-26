@@ -78,7 +78,7 @@ payload/               - Directory containing all deliverable files
   "mode": "zchat_import_pack",
   "zchat_result_type": "advice|review|package",
   "run_policy": "never_auto_run",
-  "context_readback": "payload/context_readback.md",
+  "context_readback": "context_readback.md",
   "payload_files": [
     {"path": "<relative path>", "sha256": "<64-char hex sha256>"}
   ],
@@ -86,7 +86,7 @@ payload/               - Directory containing all deliverable files
   "allowed_paths": ["<prefix>", ...],
   "forbidden_paths": ["<prefix>", ...],
   "metadata": {
-    "context_readback": "payload/context_readback.md"
+    "context_readback": "context_readback.md"
   }
 }
 ```
@@ -97,7 +97,22 @@ Required v2 fields:
 - `context_readback`: path to context readback file, OR provided via `metadata.context_readback`
 
 Optional v2 fields:
-- `verification_files`: list of file paths inside payload/ that should be inspected before application
+- `verification_files`: list of file paths to scripts inside payload/ that should be inspected before application
+
+### PATH RULE (critical)
+
+Deliverable files inside the ZIP MUST be stored as `payload/<repo-relative-path>` (physical ZIP path).
+But manifest.json paths MUST be repo-relative WITHOUT the `payload/` prefix:
+
+| Field | Format | Example |
+|---|---|---|
+| `payload_files[].path` | repo-relative (no `payload/`) | `"docs/result.md"` |
+| `checksums.sha256` paths | repo-relative (no `payload/`) | `<sha256>  docs/result.md` |
+| `context_readback` | repo-relative (no `payload/`) | `"docs/context_readback.md"` |
+| `verification_files[]` | repo-relative (no `payload/`) | `"docs/check.py"` |
+| `metadata.context_readback` | repo-relative (no `payload/`) | `"docs/context_readback.md"` |
+
+**Never include `payload/` in manifest `payload_files[].path`, `context_readback`, `verification_files`, `metadata.context_readback`, or `checksums.sha256`.**
 
 ### checksums.sha256 format
 

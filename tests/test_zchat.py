@@ -1214,7 +1214,7 @@ class ZchatManifestV2Tests(unittest.TestCase):
             "mode": "zchat_import_pack",
             "zchat_result_type": "advice",
             "run_policy": "never_auto_run",
-            "context_readback": "payload/context_readback.md",
+            "context_readback": "context_readback.md",
             "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
         }
         errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
@@ -1227,7 +1227,7 @@ class ZchatManifestV2Tests(unittest.TestCase):
             "created_at": "2025-01-01T00:00:00.000Z",
             "mode": "zchat_import_pack",
             "run_policy": "never_auto_run",
-            "context_readback": "payload/cr.md",
+            "context_readback": "cr.md",
             "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
         }
         errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
@@ -1241,7 +1241,7 @@ class ZchatManifestV2Tests(unittest.TestCase):
             "mode": "zchat_import_pack",
             "zchat_result_type": "invalid_type",
             "run_policy": "never_auto_run",
-            "context_readback": "payload/cr.md",
+            "context_readback": "cr.md",
             "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
         }
         errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
@@ -1254,7 +1254,7 @@ class ZchatManifestV2Tests(unittest.TestCase):
             "created_at": "2025-01-01T00:00:00.000Z",
             "mode": "zchat_import_pack",
             "zchat_result_type": "advice",
-            "context_readback": "payload/cr.md",
+            "context_readback": "cr.md",
             "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
         }
         errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
@@ -1282,7 +1282,7 @@ class ZchatManifestV2Tests(unittest.TestCase):
             "zchat_result_type": "advice",
             "run_policy": "never_auto_run",
             "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
-            "metadata": {"context_readback": "payload/cr.md"},
+            "metadata": {"context_readback": "cr.md"},
         }
         errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
         self.assertEqual(errors, [])
@@ -1295,7 +1295,7 @@ class ZchatManifestV2Tests(unittest.TestCase):
             "mode": "zchat_import_pack",
             "zchat_result_type": "package",
             "run_policy": "never_auto_run",
-            "context_readback": "payload/cr.md",
+            "context_readback": "cr.md",
             "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
         }
         errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
@@ -1309,7 +1309,7 @@ class ZchatManifestV2Tests(unittest.TestCase):
             "mode": "zchat_import_pack",
             "zchat_result_type": "review",
             "run_policy": "never_auto_run",
-            "context_readback": "payload/cr.md",
+            "context_readback": "cr.md",
             "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
         }
         errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
@@ -1323,7 +1323,7 @@ class ZchatManifestV2Tests(unittest.TestCase):
             "mode": "zchat_import_pack",
             "zchat_result_type": "advice",
             "run_policy": "never_auto_run",
-            "context_readback": "payload/cr.md",
+            "context_readback": "cr.md",
             "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
         }
         errors = jobs._validate_zchat_import_manifest_schema_like(manifest)
@@ -1337,7 +1337,7 @@ class ZchatManifestV2Tests(unittest.TestCase):
             "mode": "zchat_import_pack",
             "zchat_result_type": "advice",
             "run_policy": "never_auto_run",
-            "context_readback": "payload/cr.md",
+            "context_readback": "cr.md",
             "payload_files": [{"path": "t.py", "sha256": "a" * 64}],
             "verification_files": ["test_runner.py"],
         }
@@ -1363,7 +1363,7 @@ class ZchatReceivePackTests(unittest.TestCase):
                 "mode": "zchat_import_pack",
                 "zchat_result_type": "advice",
                 "run_policy": "never_auto_run",
-                "context_readback": "payload/context_readback.md",
+                "context_readback": "context_readback.md",
                 "payload_files": [],
                 "metadata": {},
             }
@@ -1421,7 +1421,7 @@ class ZchatReceivePackTests(unittest.TestCase):
                 "mode": "zchat_import_pack",
                 "zchat_result_type": "advice",
                 "run_policy": "never_auto_run",
-                "context_readback": "payload/cr.md",
+                "context_readback": "cr.md",
                 "payload_files": [{"path": "listed.txt", "sha256": sha}],
             }
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -1446,7 +1446,7 @@ class ZchatReceivePackTests(unittest.TestCase):
                 "mode": "zchat_import_pack",
                 "zchat_result_type": "advice",
                 "run_policy": "never_auto_run",
-                "context_readback": "payload/cr.md",
+                "context_readback": "cr.md",
                 "payload_files": [{"path": "file.txt", "sha256": "a" * 64}],
             }
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -1537,7 +1537,7 @@ class ZchatInspectVerificationPackTests(unittest.TestCase):
             "mode": "zchat_import_pack",
             "zchat_result_type": "advice",
             "run_policy": "never_auto_run",
-            "context_readback": "payload/cr.md",
+            "context_readback": "cr.md",
             "payload_files": [],
             "verification_files": [],
         }
@@ -1667,6 +1667,133 @@ class ZchatInspectVerificationPackTests(unittest.TestCase):
             result = jobs.zchat_inspect_verification_pack(quarantine)
             self.assertEqual(result.verdict, jobs.ZCHAT_INSPECT_UNSAFE)
 
+
+class ZchatManifestV2PathContractTests(unittest.TestCase):
+    """Validate that manifest v2 fields never contain payload/ prefix."""
+
+    def _make_v2_manifest(self, **overrides) -> dict:
+        manifest = {
+            "manifest_version": "2.0",
+            "package_id": "path-contract-test",
+            "created_at": "2025-01-01T00:00:00.000Z",
+            "mode": "zchat_import_pack",
+            "zchat_result_type": "package",
+            "run_policy": "never_auto_run",
+            "context_readback": "docs/context_readback.md",
+            "payload_files": [
+                {"path": "docs/result.md", "sha256": "a" * 64},
+                {"path": "docs/context_readback.md", "sha256": "b" * 64},
+                {"path": "docs/verification/check.py", "sha256": "c" * 64},
+            ],
+            "verification_files": ["docs/verification/check.py"],
+            "allowed_paths": ["docs/"],
+            "forbidden_paths": ["scripts/"],
+            "metadata": {
+                "context_readback": "docs/context_readback.md",
+            },
+        }
+        manifest.update(overrides)
+        return manifest
+
+    def _assert_no_payload_prefix(self, value: str, field_name: str) -> None:
+        self.assertNotIn("payload/", value,
+            f"{field_name} must not contain 'payload/' prefix, got: {value}")
+
+    def test_payload_files_paths_no_payload_prefix(self) -> None:
+        manifest = self._make_v2_manifest()
+        for i, pf in enumerate(manifest["payload_files"]):
+            self._assert_no_payload_prefix(pf["path"], f"payload_files[{i}].path")
+
+    def test_context_readback_no_payload_prefix(self) -> None:
+        manifest = self._make_v2_manifest()
+        self._assert_no_payload_prefix(
+            manifest["context_readback"], "context_readback")
+
+    def test_verification_files_no_payload_prefix(self) -> None:
+        manifest = self._make_v2_manifest()
+        for i, vf_path in enumerate(manifest["verification_files"]):
+            self._assert_no_payload_prefix(
+                vf_path, f"verification_files[{i}]")
+
+    def test_metadata_context_readback_no_payload_prefix(self) -> None:
+        manifest = self._make_v2_manifest()
+        self._assert_no_payload_prefix(
+            manifest["metadata"]["context_readback"],
+            "metadata.context_readback")
+
+    def test_checksums_sha256_no_payload_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            zip_path = tmpdir / "contract_test.zip"
+            manifest = {
+                "manifest_version": "2.0",
+                "package_id": "checksum-path-test",
+                "created_at": "2025-01-01T00:00:00.000Z",
+                "mode": "zchat_import_pack",
+                "zchat_result_type": "package",
+                "run_policy": "never_auto_run",
+                "context_readback": "docs/cr.md",
+                "payload_files": [
+                    {"path": "docs/src/app.py",
+                     "sha256": jobs._sha256_hex(b"app")},
+                ],
+            }
+            content = b"app"
+            sha = jobs._sha256_hex(content)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("manifest.json",
+                            json.dumps(manifest, ensure_ascii=False))
+                zf.writestr("checksums.sha256",
+                            f"{sha}  docs/src/app.py\n")
+                zf.writestr("payload/docs/src/app.py", content)
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                checksums_raw = zf.read("checksums.sha256").decode("utf-8-sig")
+            for line in checksums_raw.strip().splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split(None, 1)
+                if len(parts) == 2:
+                    path_in_checksums = parts[1].strip()
+                    self._assert_no_payload_prefix(
+                        path_in_checksums,
+                        f"checksums.sha256 path: {path_in_checksums}")
+
+    def test_zip_entries_under_payload_physical(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            zip_path = tmpdir / "physical_test.zip"
+            manifest = {
+                "manifest_version": "2.0",
+                "package_id": "physical-path-test",
+                "created_at": "2025-01-01T00:00:00.000Z",
+                "mode": "zchat_import_pack",
+                "zchat_result_type": "package",
+                "run_policy": "never_auto_run",
+                "context_readback": "docs/r.md",
+                "payload_files": [
+                    {"path": "docs/sub/f.py",
+                     "sha256": jobs._sha256_hex(b"data")},
+                ],
+            }
+            content = b"data"
+            sha = jobs._sha256_hex(content)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("manifest.json",
+                            json.dumps(manifest, ensure_ascii=False))
+                zf.writestr("checksums.sha256",
+                            f"{sha}  docs/sub/f.py\n")
+                zf.writestr("payload/docs/sub/f.py", content)
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zip_entries = [info.filename.replace("\\", "/")
+                               for info in zf.infolist()]
+            payload_entries = [e for e in zip_entries
+                               if e.startswith("payload/") and not e.endswith("/")]
+            self.assertGreater(len(payload_entries), 0,
+                "ZIP must have files under payload/ directory")
+            for entry in payload_entries:
+                self.assertTrue(entry.startswith("payload/"),
+                    f"Physical payload file must be under payload/: {entry}")
 
 if __name__ == "__main__":
     unittest.main()

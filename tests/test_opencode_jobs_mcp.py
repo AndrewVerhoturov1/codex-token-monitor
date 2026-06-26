@@ -533,7 +533,7 @@ class OpenCodeJobsMcpZchatV2Tests(unittest.TestCase):
                 "mode": jobs.ZCHAT_MODE_IMPORT_PACK,
                 "zchat_result_type": "advice",
                 "run_policy": "never_auto_run",
-                "context_readback": "payload/cr.md",
+                "context_readback": "cr.md",
                 "payload_files": [{"path": "test.txt", "sha256": sha}],
             }
             cr_content = "# Readback\n\n**Confirmed**: file exists."
@@ -576,7 +576,7 @@ class OpenCodeJobsMcpZchatV2Tests(unittest.TestCase):
                 "mode": jobs.ZCHAT_MODE_IMPORT_PACK,
                 "zchat_result_type": "advice",
                 "run_policy": "never_auto_run",
-                "context_readback": "payload/cr.md",
+                "context_readback": "cr.md",
                 "verification_files": ["check.py"],
                 "payload_files": [{"path": "check.py", "sha256": jobs._sha256_hex(b"print('hello')")}],
             }
@@ -604,7 +604,7 @@ class OpenCodeJobsMcpZchatV2Tests(unittest.TestCase):
                 "mode": jobs.ZCHAT_MODE_IMPORT_PACK,
                 "zchat_result_type": "advice",
                 "run_policy": "never_auto_run",
-                "context_readback": "payload/cr.md",
+                "context_readback": "cr.md",
                 "verification_files": ["bad.py"],
                 "payload_files": [{"path": "bad.py", "sha256": jobs._sha256_hex(b"import subprocess\nsubprocess.run(['rm','-rf','/'])")}],
             }

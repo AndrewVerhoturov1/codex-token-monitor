@@ -29,13 +29,13 @@ This document defines the unified ZIP-first contract for the Zchat system v2. It
   "mode": "zchat_import_pack",
   "zchat_result_type": "advice|review|package",
   "run_policy": "never_auto_run",
-  "context_readback": "payload/context_readback.md",
+  "context_readback": "context_readback.md",
   "payload_files": [{"path": "...", "sha256": "<64-hex>"}],
   "verification_files": ["<relative path>"],
   "allowed_paths": ["..."],
   "forbidden_paths": ["..."],
   "metadata": {
-    "context_readback": "payload/context_readback.md"
+    "context_readback": "context_readback.md"
   }
 }
 ```
@@ -46,13 +46,13 @@ This document defines the unified ZIP-first contract for the Zchat system v2. It
 |---|---|---|---|
 | `zchat_result_type` | string | `advice`, `review`, `package` | Type of external chat deliverable |
 | `run_policy` | string | `never_auto_run` | Must never auto-run verification or apply |
-| `context_readback` | string | path or empty | Path to context readback file; if empty, must be in `metadata.context_readback` |
+| `context_readback` | string | relative path or empty | Repo-relative path (without `payload/`) to context readback file; if empty, must be in `metadata.context_readback` |
 
 ## v2 Optional Fields
 
 | Field | Type | Description |
 |---|---|---|
-| `verification_files` | list[str] | Files inside payload/ to inspect before application |
+| `verification_files` | list[str] | Files relative to payload/ (repo-relative, without `payload/` prefix) to inspect before application |
 
 ## Context Readback Contract
 
@@ -69,6 +69,21 @@ Claims believed true but unconfirmable from provided sources. Flag these clearly
 
 ### Needs local verification
 Statements requiring repo-local access (running tests, checking git state, reading non-provided files). NEVER fabricate these results.
+
+## Path Rule (v2 Critical)
+
+Deliverable files inside the ZIP MUST be stored as `payload/<repo-relative-path>` (physical ZIP path).
+Manifest and checksum paths MUST be repo-relative WITHOUT the `payload/` prefix:
+
+| Field | Physical ZIP path | Manifest/Checksum path |
+|---|---|---|
+| `payload_files[].path` | `payload/<path>` | `<path>` (repo-relative) |
+| `checksums.sha256` | N/A | `<sha256>  <path>` (repo-relative) |
+| `context_readback` | `payload/<path>` | `<path>` (repo-relative) |
+| `verification_files[]` | `payload/<path>` | `<path>` (repo-relative) |
+| `metadata.context_readback` | `payload/<path>` | `<path>` (repo-relative) |
+
+**Never include `payload/` in manifest `payload_files[].path`, `context_readback`, `verification_files`, `metadata.context_readback`, or `checksums.sha256`.**
 
 ## Trust Chain
 
