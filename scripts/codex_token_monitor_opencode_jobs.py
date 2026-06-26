@@ -896,20 +896,29 @@ def zchat_prompt_pack(
         prompt_content = prompt_content.replace("{task}", task)
         prompt_content = prompt_content.replace("{context}", context or "No additional context provided.")
         prompt_content = prompt_content.replace("{constraints}", constraints or "Follow repository conventions.")
+
+        source_urls_block = "\n".join(f"- {url}" for url in resolved_urls) if resolved_urls else "No source_urls provided."
+        allowed_block = "\n".join(f"- {p}" for p in normalized_allowed) if normalized_allowed else "No explicit allowed_paths provided."
+        forbidden_block = "\n".join(f"- {p}" for p in normalized_forbidden) if normalized_forbidden else "No explicit forbidden_paths provided."
+        expected_block = "\n".join(f"- {o}" for o in normalized_expected) if normalized_expected else "No explicit expected_outputs provided."
+        prompt_content = prompt_content.replace("{source_urls}", source_urls_block)
+        prompt_content = prompt_content.replace("{allowed_paths}", allowed_block)
+        prompt_content = prompt_content.replace("{forbidden_paths}", forbidden_block)
+        prompt_content = prompt_content.replace("{expected_outputs}", expected_block)
         prompt_path = output_dir / "prompt.md"
         _atomic_write_text(prompt_path, prompt_content)
         artifacts.append("prompt.md")
 
-        sources_block = "\n".join(f"- {url}" for url in resolved_urls) if resolved_urls else "- No external sources resolved."
+        sources_block = "\n".join(f"- {url}" for url in resolved_urls) if resolved_urls else "- No source_urls provided."
         branch_decision_info = _git_utils.resolve_branch_decision(source_urls=resolved_urls)
         branch_decision = (
             "Use public GitHub raw URLs only; temporary branch is NOT required."
             if not branch_decision_info["create_branch"]
             else "Public GitHub context insufficient; a temporary branch MAY be created."
         )
-        allowed_block = "\n".join(f"- {p}" for p in normalized_allowed) if normalized_allowed else "- No explicit allowed_paths set."
-        forbidden_block = "\n".join(f"- {p}" for p in normalized_forbidden) if normalized_forbidden else "- No explicit forbidden_paths set."
-        expected_block = "\n".join(f"- {o}" for o in normalized_expected) if normalized_expected else "- No explicit expected_outputs set."
+        allowed_block = "\n".join(f"- {p}" for p in normalized_allowed) if normalized_allowed else "- No explicit allowed_paths provided."
+        forbidden_block = "\n".join(f"- {p}" for p in normalized_forbidden) if normalized_forbidden else "- No explicit forbidden_paths provided."
+        expected_block = "\n".join(f"- {o}" for o in normalized_expected) if normalized_expected else "- No explicit expected_outputs provided."
 
         passport_content = (ZCHAT_TEMPLATE_DIR / "prompt_passport.md").read_text(encoding="utf-8")
         passport_content = passport_content.replace("{request_id}", request_id)
@@ -1027,7 +1036,7 @@ def _zchat_validate_import_common(
     schema_errors = _validate_zchat_import_manifest_schema_like(manifest)
     if schema_errors:
         details = "; ".join(schema_errors[:3])
-        return ZCHAT_VERDICT_REJECTED_STRUCTURAL, manifest, schema_errors, f"Manifest schema validation failed: {details}"
+        return ZCHAT_VERDICT_REJECTED_STRUCTURAL, manifest, schema_errors, f"Manifest schema-like validation failed: {details}"
 
     payload_files = manifest.get("payload_files", [])
     if not isinstance(payload_files, list) or not payload_files:
@@ -1234,6 +1243,8 @@ def zchat_import_pack(
 
     imported = 0
     skipped = 0
+    write_errors: list[str] = []
+    written_paths: list[Path] = []
     report_lines.append("### Extracted Files")
     report_lines.append("")
 
@@ -1241,24 +1252,45 @@ def zchat_import_pack(
         try:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
             dest_path.write_bytes(file_data)
+            written_paths.append(dest_path)
             report_lines.append(f"- `{file_path}` (sha256: `{actual_sha}`)")
             imported += 1
         except OSError as e:
-            checksum_errors.append(f"Failed to write {file_path}: {e}")
-            skipped += 1
+            write_errors.append(f"Failed to write {file_path}: {e}")
+            break
 
-    report_lines.append("")
-
-    if checksum_errors:
+    if write_errors:
+        for wp in written_paths:
+            try:
+                wp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        report_lines.append("")
         report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
         report_lines.append("")
         report_lines.append("### Write Errors")
-        for ce in checksum_errors:
-            report_lines.append(f"- {ce}")
-    else:
-        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_ACCEPTED}")
-        report_lines.append(f"\nAll {imported} file(s) imported successfully.\n")
+        for we in write_errors:
+            report_lines.append(f"- {we}")
+        if written_paths:
+            report_lines.append(f"\nRolled back {len(written_paths)} previously written file(s) on write failure.\n")
+        report_lines.append("")
+        report_lines.append(f"- **Files imported**: 0")
+        report_lines.append(f"- **Files skipped**: {len(commit_ops)}")
+        report_lines.append("")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatImportPackResult(
+            package_id=package_id,
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error="; ".join(write_errors),
+            report_path=str(report_path),
+            files_imported=0,
+            files_skipped=len(commit_ops),
+        )
 
+    report_lines.append("")
+    report_lines.append(f"## Verdict: {ZCHAT_VERDICT_ACCEPTED}")
+    report_lines.append(f"\nAll {imported} file(s) imported successfully.\n")
     report_lines.append("")
     report_lines.append(f"- **Files imported**: {imported}")
     report_lines.append(f"- **Files skipped**: {skipped}")
@@ -1266,12 +1298,11 @@ def zchat_import_pack(
 
     _atomic_write_text(report_path, "\n".join(report_lines))
 
-    verdict = ZCHAT_VERDICT_ACCEPTED if not checksum_errors and imported > 0 else ZCHAT_VERDICT_REJECTED_STRUCTURAL
     return ZchatImportPackResult(
         package_id=package_id,
-        verdict=verdict,
-        status="completed" if verdict == ZCHAT_VERDICT_ACCEPTED else "failed",
-        error="; ".join(checksum_errors) if checksum_errors else "",
+        verdict=ZCHAT_VERDICT_ACCEPTED,
+        status="completed",
+        error="",
         report_path=str(report_path),
         files_imported=imported,
         files_skipped=skipped,

@@ -20,6 +20,22 @@ You are an **external chat** (not Codex, not OpenCode). You have **no authority*
 
 {constraints}
 
+## Source URLs
+
+{source_urls}
+
+## Allowed Paths
+
+{allowed_paths}
+
+## Forbidden Paths
+
+{forbidden_paths}
+
+## Expected Outputs
+
+{expected_outputs}
+
 ## Expected ZIP Contract
 
 You MUST produce a ZIP intake package with this structure:

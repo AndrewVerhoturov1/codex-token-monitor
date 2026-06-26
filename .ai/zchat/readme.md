@@ -55,7 +55,7 @@ all validation happens in memory first; if any check fails, no file is written t
 
 Import/Verify verdicts:
 - `accepted_for_review` — all checks passed, ready for human review.
-- `rejected_structural` — ZIP structure, manifest schema, checksum, or extra file failure.
+- `rejected_structural` — ZIP structure, manifest schema-like validation, checksum, or extra file failure.
 - `rejected_scope` — path traversal, forbidden path, or policy violation.
 - `needs_codex_decision` — ambiguous case requiring manual decision.
 
@@ -93,7 +93,7 @@ python scripts/codex_token_monitor_opencode_jobs.py --zchat-decision-pack --zcha
 ```
 .ai/zchat/
   templates/         # Templates for prompt-pack artifacts
-  schemas/           # JSON schemas for import validation
+  schemas/           # JSON schema definitions for manifest validation
   docs/              # Contracts and documentation
   skills/            # OpenCode skill files
   runtime/           # Runtime artifacts (gitignored)

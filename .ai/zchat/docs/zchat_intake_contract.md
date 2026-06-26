@@ -4,9 +4,9 @@
 
 1. **VALIDATE**: Structural check of ZIP contents.
    - ZIP must contain `manifest.json`, `checksums.sha256`, `payload/` directory.
-   - `manifest.json` must pass schema-like validation (manifest_version==1.0, non-empty package_id, non-empty created_at, mode==zchat_import_pack, non-empty payload_files list, each with path and 64-hex sha256).
+   - `manifest.json` must pass schema-like manifest validation (manifest_version==1.0, non-empty package_id, non-empty created_at, mode==zchat_import_pack, non-empty payload_files list, each with path and 64-hex sha256).
    - `checksums.sha256` must be present and non-empty.
-   - Stop condition: missing required files or schema violation → `rejected_structural`.
+   - Stop condition: missing required files or manifest schema violation → `rejected_structural`.
 
 2. **SECURITY_SCAN**: Path traversal, scope, and policy validation.
    - **Global forbidden** (always enforced): absolute paths, `..` traversal, `.git/`, `.env*`, `.ai/zchat/`, paths escaping repo root.

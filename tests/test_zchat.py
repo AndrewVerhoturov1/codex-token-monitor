@@ -174,6 +174,74 @@ class ZchatPromptPackTests(unittest.TestCase):
             result = jobs.zchat_prompt_pack("Task", output_dir=output_dir, request_id="req-123")
             self.assertEqual(result.request_id, "req-123")
 
+    def test_prompt_md_contains_source_urls_section(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                source_urls=["https://example.com/a.py", "https://example.com/b.py"],
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("Source URLs", prompt_text)
+            self.assertIn("https://example.com/a.py", prompt_text)
+            self.assertIn("https://example.com/b.py", prompt_text)
+            self.assertNotIn("No source_urls provided.", prompt_text)
+
+    def test_prompt_md_contains_allowed_forbidden_expected_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                allowed_paths="src/,tests/",
+                forbidden_paths="secrets/",
+                expected_outputs=["README.md", "src/main.py"],
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("Allowed Paths", prompt_text)
+            self.assertIn("Forbidden Paths", prompt_text)
+            self.assertIn("Expected Outputs", prompt_text)
+            self.assertIn("src/", prompt_text)
+            self.assertIn("tests/", prompt_text)
+            self.assertIn("secrets/", prompt_text)
+            self.assertIn("README.md", prompt_text)
+            self.assertIn("src/main.py", prompt_text)
+
+    def test_prompt_md_empty_lists_show_fallback_phrases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("No source_urls provided.", prompt_text)
+            self.assertIn("No explicit allowed_paths provided.", prompt_text)
+            self.assertIn("No explicit forbidden_paths provided.", prompt_text)
+            self.assertIn("No explicit expected_outputs provided.", prompt_text)
+
+    def test_prompt_md_with_urls_hides_no_urls_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                source_urls=["https://example.com/file.py"],
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertNotIn("No source_urls provided.", prompt_text)
+            self.assertIn("https://example.com/file.py", prompt_text)
+
+    def test_passport_empty_lists_show_fallback_phrases(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
+            self.assertIn("- No source_urls provided.", passport_text)
+            self.assertIn("- No explicit allowed_paths provided.", passport_text)
+            self.assertIn("- No explicit forbidden_paths provided.", passport_text)
+            self.assertIn("- No explicit expected_outputs provided.", passport_text)
+
 
 class ZchatImportPackTests(unittest.TestCase):
 
@@ -487,6 +555,43 @@ class ZchatImportPackTests(unittest.TestCase):
             zip_path = self._create_test_zip(tmpdir, [(f"../../{outside.name}/escape.txt", "bad")])
             result = jobs.zchat_import_pack(zip_path, target_root=target)
             self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_SCOPE)
+
+    def test_import_pack_atomic_rollback_on_write_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir / "target"
+            target.mkdir()
+            zip_path = tmpdir / "rollback.zip"
+            content1 = b"first file"
+            content2 = b"second file"
+            sha1 = jobs._sha256_hex(content1)
+            sha2 = jobs._sha256_hex(content2)
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                manifest = {
+                    "manifest_version": "1.0",
+                    "package_id": "rollback-test",
+                    "created_at": "2025-01-01T00:00:00.000Z",
+                    "mode": "zchat_import_pack",
+                    "payload_files": [
+                        {"path": "good.txt", "sha256": sha1},
+                        {"path": "subdir/bad.txt", "sha256": sha2},
+                    ],
+                }
+                zf.writestr("manifest.json", json.dumps(manifest))
+                zf.writestr("checksums.sha256",
+                    f"{sha1}  good.txt\n{sha2}  subdir/bad.txt\n")
+                zf.writestr("payload/good.txt", content1)
+                zf.writestr("payload/subdir/bad.txt", content2)
+            (target / "subdir").write_text("i am a file, not a directory", encoding="utf-8")
+            result = jobs.zchat_import_pack(zip_path, target_root=target)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL)
+            self.assertEqual(result.status, "failed")
+            self.assertEqual(result.files_imported, 0)
+            self.assertFalse((target / "good.txt").exists(),
+                "good.txt must be rolled back when write error occurs")
+            self.assertFalse((target / "subdir" / "bad.txt").exists())
+            self.assertTrue((target / "subdir").exists() and (target / "subdir").is_file(),
+                "pre-existing file must not be deleted")
 
     def test_import_pack_nested_directories_created(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

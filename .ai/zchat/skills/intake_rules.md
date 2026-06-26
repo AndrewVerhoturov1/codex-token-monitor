@@ -9,9 +9,9 @@ This skill defines the mandatory intake contract for any OpenCode agent that rec
 ### 1. VALIDATE
 Structural check of ZIP contents:
 - ZIP MUST contain `manifest.json`, `checksums.sha256`, `payload/` directory.
-- `manifest.json` MUST pass schema-like validation (manifest_version==1.0, non-empty package_id, non-empty created_at, mode==zchat_import_pack, non-empty payload_files list, each entry with path and 64-hex sha256).
+- `manifest.json` MUST pass schema-like manifest validation (manifest_version==1.0, non-empty package_id, non-empty created_at, mode==zchat_import_pack, non-empty payload_files list, each entry with path and 64-hex sha256).
 - `checksums.sha256` MUST be present and non-empty.
-- Stop condition: missing required files or schema violation → `rejected_structural`.
+- Stop condition: missing required files or manifest schema violation → `rejected_structural`.
 
 ### 2. SECURITY_SCAN
 Path traversal, scope, and policy validation:
