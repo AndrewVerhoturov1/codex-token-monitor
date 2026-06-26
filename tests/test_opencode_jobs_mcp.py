@@ -359,6 +359,8 @@ class OpenCodeJobsMcpIntegrationTests(unittest.TestCase):
                 "opencode_zchat_import_pack",
                 "opencode_zchat_verify_pack",
                 "opencode_zchat_decision_pack",
+                "opencode_zchat_receive_pack",
+                "opencode_zchat_inspect_verification_pack",
             }
             self.assertEqual({tool.name for tool in tools}, expected)
 
@@ -506,6 +508,126 @@ class OpenCodeJobsMcpZchatTests(unittest.TestCase):
             )
         )
         self.assertEqual(response["status"], "failed")
+
+
+class OpenCodeJobsMcpZchatV2Tests(unittest.TestCase):
+
+    async def _call_zchat_tool(self, tool_name: str, arguments: dict) -> dict:
+        async with Client(jobs_mcp.mcp) as client:
+            result = await client.call_tool(tool_name, arguments)
+        return result.data
+
+    def test_zchat_receive_pack_mcp_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir / "target"
+            target.mkdir()
+            zip_path = tmpdir / "test.zip"
+            import zipfile as zf_module
+            content = b"hello v2"
+            sha = jobs._sha256_hex(content)
+            manifest = {
+                "manifest_version": "2.0",
+                "package_id": "mcp-receive-test",
+                "created_at": "2025-01-01T00:00:00.000Z",
+                "mode": jobs.ZCHAT_MODE_IMPORT_PACK,
+                "zchat_result_type": "advice",
+                "run_policy": "never_auto_run",
+                "context_readback": "payload/cr.md",
+                "payload_files": [{"path": "test.txt", "sha256": sha}],
+            }
+            cr_content = "# Readback\n\n**Confirmed**: file exists."
+            with zf_module.ZipFile(zip_path, "w", zf_module.ZIP_DEFLATED) as zf:
+                zf.writestr("manifest.json", json.dumps(manifest))
+                zf.writestr("checksums.sha256", f"{sha}  test.txt\n")
+                zf.writestr("payload/test.txt", content)
+            response = asyncio.run(
+                self._call_zchat_tool(
+                    "opencode_zchat_receive_pack",
+                    {"zip_path": str(zip_path), "target_root": str(target)},
+                )
+            )
+            self.assertEqual(response["mode"], jobs.ZCHAT_MODE_RECEIVE_PACK)
+            self.assertEqual(response["verdict"], jobs.ZCHAT_VERDICT_ACCEPTED)
+            self.assertEqual(response["status"], "completed")
+            self.assertGreater(response["files_received"], 0)
+            self.assertTrue(response["quarantine_dir"])
+            self.assertFalse((target / "test.txt").exists())
+
+    def test_zchat_receive_pack_mcp_missing_zip(self) -> None:
+        response = asyncio.run(
+            self._call_zchat_tool(
+                "opencode_zchat_receive_pack",
+                {"zip_path": "D:/nonexistent_zip_file_xyz.zip"},
+            )
+        )
+        self.assertEqual(response["mode"], jobs.ZCHAT_MODE_RECEIVE_PACK)
+        self.assertEqual(response["verdict"], jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL)
+
+    def test_zchat_inspect_verification_pack_mcp_smoke(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            quarantine = tmpdir / "quarantine"
+            (quarantine / "payload").mkdir(parents=True, exist_ok=True)
+            manifest = {
+                "manifest_version": "2.0",
+                "package_id": "mcp-inspect-test",
+                "created_at": "2025-01-01T00:00:00.000Z",
+                "mode": jobs.ZCHAT_MODE_IMPORT_PACK,
+                "zchat_result_type": "advice",
+                "run_policy": "never_auto_run",
+                "context_readback": "payload/cr.md",
+                "verification_files": ["check.py"],
+                "payload_files": [{"path": "check.py", "sha256": jobs._sha256_hex(b"print('hello')")}],
+            }
+            (quarantine / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            (quarantine / "payload" / "check.py").write_text("print('hello')", encoding="utf-8")
+            response = asyncio.run(
+                self._call_zchat_tool(
+                    "opencode_zchat_inspect_verification_pack",
+                    {"quarantine_dir": str(quarantine)},
+                )
+            )
+            self.assertEqual(response["mode"], jobs.ZCHAT_MODE_INSPECT_VERIFICATION_PACK)
+            self.assertEqual(response["verdict"], jobs.ZCHAT_INSPECT_SAFE)
+            self.assertEqual(response["status"], "completed")
+
+    def test_zchat_inspect_verification_pack_mcp_unsafe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            quarantine = tmpdir / "quarantine"
+            (quarantine / "payload").mkdir(parents=True, exist_ok=True)
+            manifest = {
+                "manifest_version": "2.0",
+                "package_id": "mcp-unsafe-test",
+                "created_at": "2025-01-01T00:00:00.000Z",
+                "mode": jobs.ZCHAT_MODE_IMPORT_PACK,
+                "zchat_result_type": "advice",
+                "run_policy": "never_auto_run",
+                "context_readback": "payload/cr.md",
+                "verification_files": ["bad.py"],
+                "payload_files": [{"path": "bad.py", "sha256": jobs._sha256_hex(b"import subprocess\nsubprocess.run(['rm','-rf','/'])")}],
+            }
+            (quarantine / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            (quarantine / "payload" / "bad.py").write_text("import subprocess\nsubprocess.run(['rm','-rf','/'])", encoding="utf-8")
+            response = asyncio.run(
+                self._call_zchat_tool(
+                    "opencode_zchat_inspect_verification_pack",
+                    {"quarantine_dir": str(quarantine)},
+                )
+            )
+            self.assertEqual(response["mode"], jobs.ZCHAT_MODE_INSPECT_VERIFICATION_PACK)
+            self.assertEqual(response["verdict"], jobs.ZCHAT_INSPECT_UNSAFE)
+
+    def test_zchat_inspect_verification_pack_mcp_not_present(self) -> None:
+        response = asyncio.run(
+            self._call_zchat_tool(
+                "opencode_zchat_inspect_verification_pack",
+                {"quarantine_dir": "D:/nonexistent_quarantine_xyz"},
+            )
+        )
+        self.assertEqual(response["mode"], jobs.ZCHAT_MODE_INSPECT_VERIFICATION_PACK)
+        self.assertEqual(response["verdict"], jobs.ZCHAT_INSPECT_NOT_PRESENT)
 
 
 if __name__ == "__main__":

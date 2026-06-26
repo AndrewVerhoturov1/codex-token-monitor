@@ -191,6 +191,30 @@ def zchat_decision_pack_result_to_mcp_response(result: jobs.ZchatDecisionPackRes
     }
 
 
+def zchat_receive_pack_result_to_mcp_response(result: jobs.ZchatReceivePackResult) -> dict[str, Any]:
+    return {
+        "mode": result.mode,
+        "package_id": result.package_id,
+        "verdict": result.verdict,
+        "status": result.status,
+        "error": result.error,
+        "report_path": str(Path(result.report_path).resolve(strict=False)) if result.report_path else "",
+        "quarantine_dir": str(Path(result.quarantine_dir).resolve(strict=False)) if result.quarantine_dir else "",
+        "files_received": result.files_received,
+    }
+
+
+def zchat_inspect_verification_pack_result_to_mcp_response(result: jobs.ZchatInspectVerificationPackResult) -> dict[str, Any]:
+    return {
+        "mode": result.mode,
+        "verdict": result.verdict,
+        "status": result.status,
+        "error": result.error,
+        "report_path": str(Path(result.report_path).resolve(strict=False)) if result.report_path else "",
+        "findings": result.findings,
+    }
+
+
 def build_effective_job_config(
     *,
     timeout_seconds: Any = None,
@@ -437,6 +461,51 @@ def opencode_zchat_decision_pack(
         evidence=_normalize_text(evidence) or "",
     )
     return zchat_decision_pack_result_to_mcp_response(result)
+
+
+@mcp.tool(
+    name="opencode_zchat_receive_pack",
+    description=(
+        "Receive a zchat ZIP intake package (v2). Extracts to quarantine runtime inbox ONLY, "
+        "NEVER writes payload to repo. Performs structural/checksum/path-policy validation, "
+        "writes receive_report.md, returns machine-readable verdict. "
+        "Planned pipeline: receive -> inspect_verification -> decision -> apply (apply not yet implemented)."
+    ),
+)
+def opencode_zchat_receive_pack(
+    zip_path: str,
+    target_root: str | None = None,
+) -> dict[str, Any]:
+    normalized_zip = _normalize_text(zip_path)
+    if normalized_zip is None:
+        return {"mode": jobs.ZCHAT_MODE_RECEIVE_PACK, "status": "failed", "verdict": jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL, "error": "zip_path is required"}
+    zip_file = Path(normalized_zip)
+    if not zip_file.exists():
+        return {"mode": jobs.ZCHAT_MODE_RECEIVE_PACK, "status": "failed", "verdict": jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL, "error": f"ZIP file not found: {zip_file}"}
+    root = Path(target_root) if target_root else jobs.REPO_ROOT
+    result = jobs.zchat_receive_pack(zip_file, target_root=root)
+    return zchat_receive_pack_result_to_mcp_response(result)
+
+
+@mcp.tool(
+    name="opencode_zchat_inspect_verification_pack",
+    description=(
+        "Read verification_files as text from a quarantine directory, do NOT execute them. "
+        "Scans for dangerous patterns: deletion, writes outside scope, .env/secrets access, "
+        "git commit/push, network/install/download, shell/subprocess/os.system, config mutation, "
+        ".git access, absolute paths, path traversal. "
+        "Returns verdict: safe_to_run / unsafe / needs_human_decision / not_present and report."
+    ),
+)
+def opencode_zchat_inspect_verification_pack(
+    quarantine_dir: str,
+) -> dict[str, Any]:
+    normalized_dir = _normalize_text(quarantine_dir)
+    if normalized_dir is None:
+        return {"mode": jobs.ZCHAT_MODE_INSPECT_VERIFICATION_PACK, "status": "failed", "verdict": jobs.ZCHAT_INSPECT_NOT_PRESENT, "error": "quarantine_dir is required"}
+    dir_path = Path(normalized_dir)
+    result = jobs.zchat_inspect_verification_pack(dir_path)
+    return zchat_inspect_verification_pack_result_to_mcp_response(result)
 
 
 def main() -> None:

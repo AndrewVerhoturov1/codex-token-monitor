@@ -57,12 +57,74 @@ ZCHAT_MODE_PROMPT_PACK = "zchat_prompt_pack"
 ZCHAT_MODE_IMPORT_PACK = "zchat_import_pack"
 ZCHAT_MODE_VERIFY_PACK = "zchat_verify_pack"
 ZCHAT_MODE_DECISION_PACK = "zchat_decision_pack"
+ZCHAT_MODE_RECEIVE_PACK = "zchat_receive_pack"
+ZCHAT_MODE_INSPECT_VERIFICATION_PACK = "zchat_inspect_verification_pack"
 ZCHAT_VALID_MODES = frozenset({
     ZCHAT_MODE_PROMPT_PACK,
     ZCHAT_MODE_IMPORT_PACK,
     ZCHAT_MODE_VERIFY_PACK,
     ZCHAT_MODE_DECISION_PACK,
+    ZCHAT_MODE_RECEIVE_PACK,
+    ZCHAT_MODE_INSPECT_VERIFICATION_PACK,
 })
+
+ZCHAT_RESULT_TYPE_ADVICE = "advice"
+ZCHAT_RESULT_TYPE_REVIEW = "review"
+ZCHAT_RESULT_TYPE_PACKAGE = "package"
+ZCHAT_VALID_RESULT_TYPES = frozenset({
+    ZCHAT_RESULT_TYPE_ADVICE,
+    ZCHAT_RESULT_TYPE_REVIEW,
+    ZCHAT_RESULT_TYPE_PACKAGE,
+})
+
+ZCHAT_RUN_POLICY_NEVER_AUTO_RUN = "never_auto_run"
+ZCHAT_VALID_RUN_POLICIES = frozenset({
+    ZCHAT_RUN_POLICY_NEVER_AUTO_RUN,
+})
+
+ZCHAT_INSPECT_SAFE = "safe_to_run"
+ZCHAT_INSPECT_UNSAFE = "unsafe"
+ZCHAT_INSPECT_NEEDS_HUMAN = "needs_human_decision"
+ZCHAT_INSPECT_NOT_PRESENT = "not_present"
+ZCHAT_VALID_INSPECT_VERDICTS = frozenset({
+    ZCHAT_INSPECT_SAFE,
+    ZCHAT_INSPECT_UNSAFE,
+    ZCHAT_INSPECT_NEEDS_HUMAN,
+    ZCHAT_INSPECT_NOT_PRESENT,
+})
+
+ZCHAT_DANGEROUS_PATTERNS = [
+    (r"\brm\s+-rf?\b", "file_deletion"),
+    (r"\bos\.remove\(", "file_deletion"),
+    (r"\bshutil\.rmtree\(", "file_deletion"),
+    (r"\bPath\([^)]*\)\.unlink\(", "file_deletion"),
+    (r"\bdel\s+.*file", "file_deletion"),
+    (r"\bwrite.*outside\s+(scope|repo)", "writes_outside_scope"),
+    (r"\.env\b.*(read|access|get|load)", "env_secrets_access"),
+    (r"\bos\.environ\b", "env_secrets_access"),
+    (r"\bdotenv\b", "env_secrets_access"),
+    (r"\bgit\s+commit\b", "git_commit"),
+    (r"\bgit\s+push\b", "git_push"),
+    (r"\bgit\s+add\b", "git_mutation"),
+    (r"\b(git\s+checkout|git\s+branch|git\s+reset|git\s+clean|git\s+rebase)\b", "git_mutation"),
+    (r"\bpip\s+install\b", "network_install"),
+    (r"\bnpm\s+install\b", "network_install"),
+    (r"\bapt-get\s+install\b", "network_install"),
+    (r"\bchoco\s+install\b", "network_install"),
+    (r"\bcurl\b|wget\b", "network_download"),
+    (r"\brequests\.(get|post|put|delete|patch)\b", "network_download"),
+    (r"\burllib\.request\b", "network_download"),
+    (r"\bsubprocess\.(run|call|Popen|check_output|check_call)\b", "shell_subprocess"),
+    (r"\bos\.system\(", "shell_subprocess"),
+    (r"\bpopen\(", "shell_subprocess"),
+    (r"\beval\(", "code_execution"),
+    (r"\bexec\(", "code_execution"),
+    (r"\bcompile\(", "code_execution"),
+    (r"\.git\b.*(read|write|modify|access|delete)", "git_access"),
+    (r"\b/\.{1,2}/(etc|var|usr|tmp|home|root|proc|sys|dev)\b", "absolute_path"),
+    (r"\b[Cc]:\\.*Windows\b", "absolute_path"),
+    (r"\b(open|read|write).*\.\./", "path_traversal"),
+]
 
 ZCHAT_VERDICT_ACCEPTED = "accepted_for_review"
 ZCHAT_VERDICT_REJECTED_STRUCTURAL = "rejected_structural"
@@ -95,6 +157,7 @@ ZCHAT_RUNTIME_REVIEWS = ZCHAT_RUNTIME_DIR / "reviews"
 ZCHAT_RUNTIME_ACCEPTED = ZCHAT_RUNTIME_DIR / "accepted"
 ZCHAT_RUNTIME_REJECTED = ZCHAT_RUNTIME_DIR / "rejected"
 ZCHAT_RUNTIME_BRANCHES = ZCHAT_RUNTIME_DIR / "branches"
+ZCHAT_RUNTIME_QUARANTINE = ZCHAT_RUNTIME_DIR / "quarantine"
 
 ZCHAT_FORBIDDEN_PATH_PREFIXES = frozenset({
     ".git/",
@@ -754,14 +817,39 @@ class ZchatDecisionPackResult:
     journal_path: str = ""
 
 
+@dataclass
+class ZchatReceivePackResult:
+    mode: str = ZCHAT_MODE_RECEIVE_PACK
+    package_id: str = ""
+    verdict: str = ""
+    status: str = ""
+    error: str = ""
+    report_path: str = ""
+    quarantine_dir: str = ""
+    files_received: int = 0
+
+
+@dataclass
+class ZchatInspectVerificationPackResult:
+    mode: str = ZCHAT_MODE_INSPECT_VERIFICATION_PACK
+    verdict: str = ""
+    status: str = ""
+    error: str = ""
+    report_path: str = ""
+    findings: list[dict] = field(default_factory=list)
+
+
 def _validate_zchat_import_manifest_schema_like(manifest: dict, *, mode_check: str = ZCHAT_MODE_IMPORT_PACK) -> list[str]:
     errors: list[str] = []
     if not isinstance(manifest, dict):
         return ["manifest must be a JSON object"]
 
     mv = manifest.get("manifest_version")
+    if mv == "2.0":
+        return _validate_zchat_manifest_v2(manifest, mode_check=mode_check)
     if mv != "1.0":
-        errors.append(f"manifest_version must be '1.0', got: {mv}")
+        errors.append(f"manifest_version must be '1.0' or '2.0', got: {mv}")
+        return errors
 
     pid = manifest.get("package_id", "")
     if not isinstance(pid, str) or not pid.strip():
@@ -791,6 +879,74 @@ def _validate_zchat_import_manifest_schema_like(manifest: dict, *, mode_check: s
             sha_val = entry.get("sha256", "")
             if not isinstance(sha_val, str) or not re.match(r"^[a-f0-9]{64}$", sha_val.lower()):
                 errors.append(f"payload_files[{i}].sha256 must be 64-char hex string, got: {sha_val[:20]}...")
+
+    ap = manifest.get("allowed_paths")
+    if ap is not None:
+        if not isinstance(ap, list) or not all(isinstance(x, str) for x in ap):
+            errors.append("allowed_paths must be list[str] if present")
+
+    fp = manifest.get("forbidden_paths")
+    if fp is not None:
+        if not isinstance(fp, list) or not all(isinstance(x, str) for x in fp):
+            errors.append("forbidden_paths must be list[str] if present")
+
+    meta = manifest.get("metadata")
+    if meta is not None and not isinstance(meta, dict):
+        errors.append("metadata must be dict if present")
+
+    return errors
+
+
+def _validate_zchat_manifest_v2(manifest: dict, *, mode_check: str = ZCHAT_MODE_IMPORT_PACK) -> list[str]:
+    errors: list[str] = []
+
+    pid = manifest.get("package_id", "")
+    if not isinstance(pid, str) or not pid.strip():
+        errors.append("package_id must be non-empty string")
+
+    ca = manifest.get("created_at", "")
+    if not isinstance(ca, str) or not ca.strip():
+        errors.append("created_at must be non-empty string")
+
+    mode = manifest.get("mode", "")
+    if mode != mode_check:
+        errors.append(f"mode must be '{mode_check}', got: {mode}")
+
+    rt = manifest.get("zchat_result_type", "")
+    if rt not in ZCHAT_VALID_RESULT_TYPES:
+        errors.append(f"zchat_result_type must be one of {sorted(ZCHAT_VALID_RESULT_TYPES)}, got: {rt}")
+
+    rp = manifest.get("run_policy", ZCHAT_RUN_POLICY_NEVER_AUTO_RUN)
+    if rp not in ZCHAT_VALID_RUN_POLICIES:
+        errors.append(f"run_policy must be one of {sorted(ZCHAT_VALID_RUN_POLICIES)}, got: {rp}")
+
+    context_readback = manifest.get("context_readback", "")
+    metadata = manifest.get("metadata")
+    if not context_readback:
+        if isinstance(metadata, dict) and metadata.get("context_readback"):
+            context_readback = metadata["context_readback"]
+    if not context_readback:
+        errors.append("context_readback is required for v2 manifests (either as top-level field or metadata.context_readback)")
+
+    pf = manifest.get("payload_files")
+    if not isinstance(pf, list):
+        errors.append("payload_files must be a list")
+    else:
+        for i, entry in enumerate(pf):
+            if not isinstance(entry, dict):
+                errors.append(f"payload_files[{i}] must be a dict")
+                continue
+            path_val = entry.get("path", "")
+            if not isinstance(path_val, str) or not path_val.strip():
+                errors.append(f"payload_files[{i}].path must be non-empty string")
+            sha_val = entry.get("sha256", "")
+            if not isinstance(sha_val, str) or not re.match(r"^[a-f0-9]{64}$", sha_val.lower()):
+                errors.append(f"payload_files[{i}].sha256 must be 64-char hex string, got: {sha_val[:20]}...")
+
+    vf = manifest.get("verification_files")
+    if vf is not None:
+        if not isinstance(vf, list):
+            errors.append("verification_files must be list[str] if present")
 
     ap = manifest.get("allowed_paths")
     if ap is not None:
@@ -1488,6 +1644,337 @@ def zchat_verify_pack(
     )
 
 
+def zchat_receive_pack(
+    zip_path: Path,
+    *,
+    target_root: Path | None = None,
+) -> ZchatReceivePackResult:
+    if target_root is None:
+        target_root = REPO_ROOT
+    target_root = target_root.resolve(strict=True)
+
+    receive_slug = _zchat_slug_id()
+    quarantine_dir = ZCHAT_RUNTIME_QUARANTINE / receive_slug
+    ZCHAT_RUNTIME_QUARANTINE.mkdir(parents=True, exist_ok=True)
+
+    report_path = quarantine_dir / "receive_report.md"
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
+
+    report_lines = [
+        "# Zchat Receive Report",
+        "",
+        f"- **ZIP**: `{zip_path}`",
+        f"- **Quarantine**: `{quarantine_dir}`",
+        f"- **Started at**: {_utcnow()}",
+        "",
+    ]
+
+    common_verdict, manifest, common_errors, common_error_msg = _zchat_validate_import_common(
+        zip_path=zip_path,
+        target_root=target_root,
+    )
+
+    if common_verdict != ZCHAT_VERDICT_ACCEPTED:
+        verdict_label = common_verdict.replace("_", " ").title()
+        report_lines.append(f"## Verdict: {common_verdict}")
+        report_lines.append(f"\n**Error**: {common_error_msg}")
+        if common_errors:
+            report_lines.append("")
+            report_lines.append("### Details")
+            for err in common_errors:
+                report_lines.append(f"- {err}")
+        report_lines.append("")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatReceivePackResult(
+            verdict=common_verdict,
+            status="failed",
+            error=common_error_msg,
+            report_path=str(report_path),
+            quarantine_dir=str(quarantine_dir),
+        )
+
+    package_id = str(manifest.get("package_id", ""))
+    payload_files = manifest.get("payload_files", [])
+
+    report_lines.append(f"- **Package ID**: `{package_id}`")
+    report_lines.append(f"- **Payload files**: {len(payload_files)}")
+    report_lines.append("")
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            checksums_raw = zf.read("checksums.sha256").decode("utf-8-sig")
+    except KeyError:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append(f"\n**Error**: checksums.sha256 not found in ZIP\n")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatReceivePackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error="checksums.sha256 not found in ZIP",
+            report_path=str(report_path),
+            quarantine_dir=str(quarantine_dir),
+        )
+
+    expected_checksums: dict[str, str] = {}
+    for line in checksums_raw.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            expected_checksums[parts[1].strip()] = parts[0].strip().lower()
+
+    if not expected_checksums:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append(f"\n**Error**: checksums.sha256 is empty\n")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatReceivePackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error="checksums.sha256 is empty",
+            report_path=str(report_path),
+            quarantine_dir=str(quarantine_dir),
+        )
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zip_entries = [info.filename.replace("\\", "/") for info in zf.infolist()]
+
+    manifest_payload_paths = set()
+    for pf in payload_files:
+        if isinstance(pf, dict):
+            manifest_payload_paths.add("payload/" + str(pf.get("path", "")).replace("\\", "/"))
+
+    all_payload_entries = [e for e in zip_entries if e.startswith("payload/") and not e.endswith("/")]
+    extra_payload_entries = [e for e in all_payload_entries if e not in manifest_payload_paths]
+    if extra_payload_entries:
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append(f"\n**Error**: Extra payload files not in manifest: {sorted(extra_payload_entries)}")
+        report_lines.append("")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatReceivePackResult(
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error=f"Extra payload files not in manifest: {len(extra_payload_entries)}",
+            report_path=str(report_path),
+            quarantine_dir=str(quarantine_dir),
+        )
+
+    extracted = 0
+    checksum_errors: list[str] = []
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for pf in payload_files:
+            file_path = str(pf.get("path", ""))
+            manifest_sha = str(pf.get("sha256", "")).lower()
+            zip_member = "payload/" + file_path.replace("\\", "/")
+
+            if zip_member not in zip_entries:
+                checksum_errors.append(f"File in manifest but missing in ZIP: {file_path}")
+                continue
+
+            file_data = zf.read(zip_member)
+            actual_sha = _sha256_hex(file_data)
+            expected_sha = expected_checksums.get(file_path, manifest_sha)
+
+            if expected_sha and actual_sha != expected_sha:
+                checksum_errors.append(
+                    f"Checksum mismatch for {file_path}: expected {expected_sha}, got {actual_sha}"
+                )
+                continue
+
+            if manifest_sha and actual_sha != manifest_sha:
+                checksum_errors.append(
+                    f"Manifest checksum mismatch for {file_path}: expected {manifest_sha}, got {actual_sha}"
+                )
+                continue
+
+            dest_path = quarantine_dir / "payload" / file_path
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(file_data)
+            extracted += 1
+            report_lines.append(f"- Extracted to quarantine: `{file_path}` (sha256: `{actual_sha}`)")
+
+    if checksum_errors:
+        report_lines.append("")
+        report_lines.append(f"## Verdict: {ZCHAT_VERDICT_REJECTED_STRUCTURAL}")
+        report_lines.append("")
+        report_lines.append("### Checksum Errors")
+        for ce in checksum_errors:
+            report_lines.append(f"- {ce}")
+        report_lines.append("")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatReceivePackResult(
+            package_id=package_id,
+            verdict=ZCHAT_VERDICT_REJECTED_STRUCTURAL,
+            status="failed",
+            error="; ".join(checksum_errors),
+            report_path=str(report_path),
+            quarantine_dir=str(quarantine_dir),
+            files_received=extracted,
+        )
+
+    report_lines.append("")
+    report_lines.append(f"## Verdict: {ZCHAT_VERDICT_ACCEPTED}")
+    report_lines.append(f"\nAll {extracted} file(s) received into quarantine.\n")
+    report_lines.append("")
+    report_lines.append(f"- **Files received**: {extracted}")
+    report_lines.append(f"- **Quarantine dir**: `{quarantine_dir}`")
+    report_lines.append("")
+    report_lines.append("## IMPORTANT: Files are in QUARANTINE only")
+    report_lines.append("")
+    report_lines.append("- Files are NOT applied to the repository.")
+    report_lines.append("- Run `zchat_inspect_verification_pack` to check verification files for dangerous patterns.")
+    report_lines.append("- Verify checksums and review contents before any decision.")
+    report_lines.append("- Apply is NOT implemented; use `zchat_import_pack` for legacy direct-apply.")
+    report_lines.append("")
+
+    _atomic_write_text(report_path, "\n".join(report_lines))
+
+    return ZchatReceivePackResult(
+        package_id=package_id,
+        verdict=ZCHAT_VERDICT_ACCEPTED,
+        status="completed",
+        report_path=str(report_path),
+        quarantine_dir=str(quarantine_dir),
+        files_received=extracted,
+    )
+
+
+def zchat_inspect_verification_pack(
+    quarantine_dir: Path,
+    *,
+    verification_files: list[str] | None = None,
+) -> ZchatInspectVerificationPackResult:
+    quarantine_dir = quarantine_dir.resolve(strict=False)
+
+    inspect_slug = _zchat_slug_id()
+    report_path = quarantine_dir / "inspect_report.md"
+
+    report_lines = [
+        "# Zchat Inspection Report",
+        "",
+        f"- **Quarantine dir**: `{quarantine_dir}`",
+        f"- **Inspection time**: {_utcnow()}",
+        "",
+    ]
+
+    if not quarantine_dir.exists():
+        report_lines.append(f"## Verdict: {ZCHAT_INSPECT_NOT_PRESENT}")
+        report_lines.append(f"\nQuarantine directory not found.\n")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatInspectVerificationPackResult(
+            verdict=ZCHAT_INSPECT_NOT_PRESENT,
+            status="completed",
+            report_path=str(report_path),
+        )
+
+    manifest_path = quarantine_dir / "manifest.json"
+    manifest_data = _read_json_safe(manifest_path)
+
+    resolved_vf: list[str] = []
+    if verification_files:
+        resolved_vf = list(verification_files)
+    elif isinstance(manifest_data, dict) and manifest_data.get("manifest_version") == "2.0":
+        vf_from_manifest = manifest_data.get("verification_files")
+        if isinstance(vf_from_manifest, list):
+            resolved_vf = [str(v) for v in vf_from_manifest]
+
+    if not resolved_vf:
+        report_lines.append(f"## Verdict: {ZCHAT_INSPECT_NOT_PRESENT}")
+        report_lines.append(f"\nNo verification_files specified.\n")
+        _atomic_write_text(report_path, "\n".join(report_lines))
+        return ZchatInspectVerificationPackResult(
+            verdict=ZCHAT_INSPECT_NOT_PRESENT,
+            status="completed",
+            report_path=str(report_path),
+        )
+
+    findings: list[dict] = []
+    has_unsafe = False
+    has_warning = False
+
+    for vf_path_str in resolved_vf:
+        vf_file = quarantine_dir / "payload" / vf_path_str
+        if not vf_file.exists():
+            findings.append({
+                "file": vf_path_str,
+                "status": "missing",
+                "category": "not_present",
+                "details": "Verification file not found in quarantine payload",
+            })
+            continue
+
+        try:
+            content = vf_file.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            findings.append({
+                "file": vf_path_str,
+                "status": "unreadable",
+                "category": "error",
+                "details": "Could not read verification file",
+            })
+            continue
+
+        for pattern, category in ZCHAT_DANGEROUS_PATTERNS:
+            matches = re.findall(pattern, content, re.IGNORECASE | re.MULTILINE)
+            if matches:
+                for match in matches[:3]:
+                    finding = {
+                        "file": vf_path_str,
+                        "status": "unsafe",
+                        "category": category,
+                        "details": f"Pattern '{pattern}' matched: {str(match)[:120]}",
+                    }
+                    findings.append(finding)
+                    if category in {"shell_subprocess", "code_execution", "git_push", "env_secrets_access", "network_install", "network_download", "file_deletion", "writes_outside_scope"}:
+                        has_unsafe = True
+                    elif category in {"git_commit", "git_mutation", "git_access", "absolute_path", "path_traversal"}:
+                        has_warning = True
+
+        if not any(f["file"] == vf_path_str for f in findings):
+            findings.append({
+                "file": vf_path_str,
+                "status": "clean",
+                "category": "safe",
+                "details": "No dangerous patterns detected",
+            })
+
+    if has_unsafe:
+        verdict = ZCHAT_INSPECT_UNSAFE
+    elif has_warning:
+        verdict = ZCHAT_INSPECT_NEEDS_HUMAN
+    else:
+        verdict = ZCHAT_INSPECT_SAFE
+
+    report_lines.append(f"## Verdict: {verdict}")
+    report_lines.append("")
+
+    report_lines.append("### Findings")
+    report_lines.append("")
+    for f in findings:
+        report_lines.append(f"- **{f['file']}** [{f['category']}]: {f['details']}")
+    report_lines.append("")
+
+    report_lines.append("### Trust Chain Reminder")
+    report_lines.append("")
+    report_lines.append("- external answer != accepted")
+    report_lines.append("- created ZIP != received")
+    report_lines.append("- received to quarantine != applied to repo")
+    report_lines.append("- verification code exists != safe to run")
+    report_lines.append("- verified != accepted")
+    report_lines.append("- accepted != committed")
+    report_lines.append("")
+
+    _atomic_write_text(report_path, "\n".join(report_lines))
+
+    return ZchatInspectVerificationPackResult(
+        verdict=verdict,
+        status="completed",
+        report_path=str(report_path),
+        findings=findings,
+    )
+
+
 def zchat_decision_pack(
     *,
     subject_id: str,
@@ -2065,6 +2552,18 @@ def main() -> None:
         default=None,
         help="Comma-separated expected output paths for zchat prompt_pack",
     )
+    parser.add_argument(
+        "--zchat-receive-pack",
+        type=str,
+        default=None,
+        help="Path to ZIP file for zchat receive_pack (v2: extracts to quarantine only, never to repo)",
+    )
+    parser.add_argument(
+        "--zchat-inspect-verification-pack",
+        type=str,
+        default=None,
+        help="Path to quarantine directory for zchat inspect_verification_pack (reads verification_files, returns safety verdict)",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config) if args.config else None
@@ -2119,6 +2618,22 @@ def main() -> None:
     if args.zchat_verify_pack:
         pack_dir = Path(args.zchat_verify_pack)
         result = zchat_verify_pack(pack_dir)
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+        sys.exit(EXIT_COMPLETED if result.status == "completed" else EXIT_FAILED)
+
+    if args.zchat_receive_pack:
+        zip_path = Path(args.zchat_receive_pack)
+        if not zip_path.exists():
+            print(f"Error: ZIP file not found: {zip_path}", file=sys.stderr)
+            sys.exit(EXIT_CONFIG_ERROR)
+        target_root = Path(args.directory) if args.directory else REPO_ROOT
+        result = zchat_receive_pack(zip_path, target_root=target_root)
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+        sys.exit(EXIT_COMPLETED if result.status == "completed" else EXIT_FAILED)
+
+    if args.zchat_inspect_verification_pack:
+        quarantine_dir = Path(args.zchat_inspect_verification_pack)
+        result = zchat_inspect_verification_pack(quarantine_dir)
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
         sys.exit(EXIT_COMPLETED if result.status == "completed" else EXIT_FAILED)
 
