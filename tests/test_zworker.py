@@ -93,6 +93,47 @@ class ZworkerRequestIdTests(unittest.TestCase):
                 f"Result request_id should be valid: {result.request_id}",
             )
 
+    def test_zworker_slug_matches_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            result = jobs.zworker_prompt_pack("Build login page", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            self.assertIn("build-login-page", result.request_id)
+
+    def test_zworker_rejects_stale_slug(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            result = jobs.zworker_prompt_pack(
+                "Make beautiful tetris",
+                output_dir=output_dir,
+                request_id="ZWORKER-20260627-191435-stylish-calculator",
+            )
+            self.assertEqual(result.status, "failed")
+            self.assertIn("slug mismatch", result.error.lower())
+
+    def test_zworker_accepts_matching_slug(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            task = "Add login feature"
+            name = _git_utils_module.zworker_request_name(task)
+            result = jobs.zworker_prompt_pack(
+                task,
+                output_dir=output_dir,
+                request_id=name,
+            )
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.request_id, name)
+
+    def test_zworker_accepts_revision_slug(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            result = jobs.zworker_prompt_pack(
+                "stylish tetris",
+                output_dir=output_dir,
+                request_id="ZWORKER-20260627-191435-stylish-tetris-ver2",
+            )
+            self.assertEqual(result.status, "completed")
+
     def test_zworker_revision_name(self) -> None:
         base = "ZWORKER-20260627-120000-add-login-feature"
         rev2 = _git_utils_module.zworker_revision_name(base, 2)
@@ -119,56 +160,94 @@ class ZworkerRequestIdTests(unittest.TestCase):
         ))
 
 
-class ZworkerDocsTests(unittest.TestCase):
+class ZworkerManualDocsTests(unittest.TestCase):
 
-    def test_manual_exists(self) -> None:
+    def test_manual_exists_and_is_readable(self) -> None:
         manual_path = ROOT / "docs" / "zworker_external_agent_manual.md"
         self.assertTrue(manual_path.exists(), f"Manual not found: {manual_path}")
         content = manual_path.read_text(encoding="utf-8")
         self.assertIn("external agent", content.lower())
-        self.assertIn("PACKAGE_READY", content)
-        self.assertIn("BLOCKED_MISSING_CONTEXT", content)
         self.assertIn("answer.md", content)
 
-    def test_navigation_exists(self) -> None:
+    def test_manual_no_strict_response_modes(self) -> None:
+        content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
+        self.assertNotIn("Strict Response Modes", content)
+
+    def test_manual_no_package_ready(self) -> None:
+        content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
+        self.assertNotIn("PACKAGE_READY", content)
+
+    def test_manual_no_contract_conflict(self) -> None:
+        content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
+        self.assertNotIn("CONTRACT_CONFLICT", content)
+
+    def test_manual_no_blocked_missing_context(self) -> None:
+        content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
+        self.assertNotIn("BLOCKED_MISSING_CONTEXT", content)
+
+    def test_manual_no_bad_zip_worse_than_no_zip(self) -> None:
+        content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
+        self.assertNotIn("A bad ZIP is worse than no ZIP", content)
+
+    def test_manual_says_zip_always_contains_answer_md(self) -> None:
+        content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
+        self.assertIn("answer.md", content.lower())
+        self.assertIn("always required", content.lower())
+
+    def test_manual_missing_info_ask_not_fabricate(self) -> None:
+        content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
+        self.assertIn("do not fabricate", content.lower())
+
+
+class ZworkerNavigationDocsTests(unittest.TestCase):
+
+    def test_navigation_exists_and_readable(self) -> None:
         nav_path = ROOT / "docs" / "zworker_repo_navigation.md"
         self.assertTrue(nav_path.exists(), f"Navigation not found: {nav_path}")
         content = nav_path.read_text(encoding="utf-8")
         self.assertIn("ZWORKER-", content)
-        self.assertIn("answer.md", content)
 
-    def test_readme_exists(self) -> None:
-        readme_path = ROOT / ".ai" / "zworker" / "readme.md"
-        self.assertTrue(readme_path.exists(), f"Readme not found: {readme_path}")
-        content = readme_path.read_text(encoding="utf-8")
-        self.assertIn("Zworker", content)
-        self.assertIn("strict_zip_contract", content)
+    def test_navigation_no_strict_zip_contract(self) -> None:
+        content = (ROOT / "docs" / "zworker_repo_navigation.md").read_text(encoding="utf-8")
+        self.assertNotIn("Strict ZIP Contract", content)
+        self.assertNotIn("strict workflow", content)
+
+    def test_navigation_no_auto_apply_as_external_contract(self) -> None:
+        content = (ROOT / "docs" / "zworker_repo_navigation.md").read_text(encoding="utf-8")
+        self.assertNotIn("auto-apply as part of the external contract", content.lower())
+
+    def test_navigation_no_package_ready(self) -> None:
+        content = (ROOT / "docs" / "zworker_repo_navigation.md").read_text(encoding="utf-8")
+        self.assertNotIn("PACKAGE_READY", content)
+
+    def test_navigation_no_blocked_missing_context(self) -> None:
+        content = (ROOT / "docs" / "zworker_repo_navigation.md").read_text(encoding="utf-8")
+        self.assertNotIn("BLOCKED_MISSING_CONTEXT", content)
+
+
+class ZworkerTemplatesTests(unittest.TestCase):
 
     def test_prompt_template_exists(self) -> None:
         tmpl = (ROOT / ".ai" / "zworker" / "templates" / "prompt.md")
         self.assertTrue(tmpl.exists(), f"Template not found: {tmpl}")
         content = tmpl.read_text(encoding="utf-8")
-        self.assertIn("{request_name}", content)
+        self.assertIn("{request_id}", content)
         self.assertIn("{task}", content)
         self.assertIn("answer.md", content)
-        self.assertIn("root_repo_paths", content)
 
     def test_passport_template_exists(self) -> None:
         tmpl = (ROOT / ".ai" / "zworker" / "templates" / "prompt_passport.md")
         self.assertTrue(tmpl.exists(), f"Template not found: {tmpl}")
         content = tmpl.read_text(encoding="utf-8")
-        self.assertIn("{request_name}", content)
+        self.assertIn("{request_id}", content)
         self.assertIn("{task}", content)
-        self.assertIn("strict_zip_contract", content)
 
     def test_request_manifest_template_exists(self) -> None:
         tmpl = (ROOT / ".ai" / "zworker" / "templates" / "request_manifest.json")
         self.assertTrue(tmpl.exists(), f"Template not found: {tmpl}")
         manifest = json.loads(tmpl.read_text(encoding="utf-8"))
-        self.assertEqual(manifest["manifest_version"], "1.0")
-        self.assertFalse(manifest["strict_zip_contract"])
-        self.assertEqual(manifest["zip_layout"], "root_repo_paths")
-        self.assertEqual(manifest["mode"], "zworker_prompt_pack")
+        self.assertEqual(manifest["strict_zip_contract"], False)
+        self.assertEqual(manifest["requires_answer_md"], True)
 
     def test_runtime_gitkeep_exists(self) -> None:
         gitkeep = ROOT / ".ai" / "zworker" / "runtime" / ".gitkeep"
@@ -179,86 +258,208 @@ class ZworkerDocsTests(unittest.TestCase):
         content = gi.read_text(encoding="utf-8")
         self.assertIn(".ai/zworker/runtime/", content)
 
+    def test_readme_exists(self) -> None:
+        readme_path = ROOT / ".ai" / "zworker" / "readme.md"
+        self.assertTrue(readme_path.exists(), f"Readme not found: {readme_path}")
+        content = readme_path.read_text(encoding="utf-8")
+        self.assertIn("Zworker", content)
+        self.assertIn("strict_zip_contract", content)
 
-class ZworkerPromptPackTests(unittest.TestCase):
 
-    def test_prompt_pack_creates_all_artifacts(self) -> None:
+class ZworkerPromptPackShortPromptTests(unittest.TestCase):
+
+    def _pack(self, task: str, **kwargs) -> tuple:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            result = jobs.zworker_prompt_pack(task, output_dir=output_dir, **kwargs)
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8") if result.status == "completed" else ""
+            return result, prompt_text
+
+    def test_prompt_creates_all_artifacts(self) -> None:
+        result, _ = self._pack("Test task")
+        self.assertEqual(result.status, "completed")
+        self.assertTrue(result.request_id)
+        self.assertEqual(len(result.artifacts), 3)
+        self.assertIn("prompt.md", result.artifacts)
+        self.assertIn("prompt_passport.md", result.artifacts)
+        self.assertIn("request_manifest.json", result.artifacts)
+
+    def test_prompt_is_short(self) -> None:
+        _, prompt_text = self._pack("Build login page", context="Use React")
+        lines = [l for l in prompt_text.splitlines() if l.strip()]
+        self.assertLess(len(lines), 50, f"Prompt is too long: {len(lines)} lines")
+
+    def test_prompt_contains_request_id(self) -> None:
+        result, prompt_text = self._pack("Task one")
+        self.assertIn(result.request_id, prompt_text)
+
+    def test_prompt_contains_manual_url(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertIn("zworker_external_agent_manual.md", prompt_text)
+
+    def test_prompt_contains_navigation_url(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertIn("zworker_repo_navigation.md", prompt_text)
+
+    def test_prompt_contains_task(self) -> None:
+        _, prompt_text = self._pack("Build login page")
+        self.assertIn("Build login page", prompt_text)
+
+    def test_prompt_contains_zip_and_answer_md(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertIn("answer.md", prompt_text)
+        self.assertIn("ZIP", prompt_text)
+
+    def test_prompt_contains_files_to_read_with_urls(self) -> None:
+        _, prompt_text = self._pack("Task", source_urls=["https://example.com/file.py"])
+        self.assertIn("https://example.com/file.py", prompt_text)
+        self.assertIn("Files to read", prompt_text)
+
+    def test_prompt_no_specific_files_when_no_urls(self) -> None:
+        _, prompt_text = self._pack("Standalone task")
+        self.assertIn("No specific repository files are required", prompt_text)
+
+    def test_prompt_does_NOT_contain_authority_hierarchy(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertNotIn("Authority / Conflict Hierarchy", prompt_text)
+        self.assertNotIn("authority_order", prompt_text)
+
+    def test_prompt_does_NOT_contain_stop_if_missing(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertNotIn("Stop-if-Missing-Information Policy", prompt_text)
+        self.assertNotIn("BLOCKED_MISSING_CONTEXT", prompt_text)
+
+    def test_prompt_does_NOT_contain_sources_read_report_requirement(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertNotIn("Sources Read Report Requirement", prompt_text)
+
+    def test_prompt_does_NOT_contain_response_format(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertNotIn("Response Format", prompt_text)
+
+    def test_prompt_does_NOT_contain_package_ready(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertNotIn("PACKAGE_READY", prompt_text)
+
+    def test_prompt_does_NOT_contain_contract_conflict(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertNotIn("CONTRACT_CONFLICT", prompt_text)
+
+    def test_prompt_does_NOT_contain_preflight_checklist(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertNotIn("Preflight Checklist", prompt_text)
+
+    def test_prompt_does_NOT_contain_manifest_json(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertNotIn("manifest.json", prompt_text)
+
+    def test_prompt_does_NOT_contain_checksums(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertNotIn("checksums.sha256", prompt_text)
+
+    def test_prompt_does_NOT_contain_payload(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertNotIn("payload/", prompt_text)
+
+    def test_prompt_does_NOT_contain_bad_zip(self) -> None:
+        _, prompt_text = self._pack("Task")
+        self.assertNotIn("A bad ZIP is worse than no ZIP", prompt_text)
+
+
+class ZworkerBranchBlockTests(unittest.TestCase):
+
+    def test_no_branch_block_when_branch_not_created(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "zworker_output"
             result = jobs.zworker_prompt_pack(
-                "Test task for zworker",
+                "Task without sources",
                 output_dir=output_dir,
-                context="Test context",
-                constraints="Test constraint",
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertNotIn("Temporary Context Branch", prompt_text)
+            self.assertNotIn("Branch status: Not yet created", prompt_text)
+            self.assertNotIn("create_branch=false", prompt_text.lower())
+
+    def test_no_contradictory_branch_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            result = jobs.zworker_prompt_pack(
+                "Task without sources",
+                output_dir=output_dir,
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertNotIn("available", prompt_text.lower())
+
+    def test_no_branch_when_sources_provided(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            result = jobs.zworker_prompt_pack(
+                "Task with sources",
+                output_dir=output_dir,
                 source_urls=["https://example.com/file.py"],
             )
             self.assertEqual(result.status, "completed")
-            self.assertTrue(result.request_id)
-            self.assertEqual(len(result.artifacts), 3)
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertNotIn("Temporary Context Branch", prompt_text)
 
-            prompt_path = output_dir / "prompt.md"
-            passport_path = output_dir / "prompt_passport.md"
-            manifest_path = output_dir / "request_manifest.json"
 
-            self.assertTrue(prompt_path.exists())
-            self.assertTrue(passport_path.exists())
-            self.assertTrue(manifest_path.exists())
+class ZworkerManifestTests(unittest.TestCase):
 
-    def test_prompt_md_contains_task_and_context(self) -> None:
+    def test_manifest_has_internal_accounting_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            result = jobs.zworker_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertIn("request_id", manifest)
+            self.assertIn("slug", manifest)
+            self.assertIn("task_summary", manifest)
+            self.assertIn("manual_url", manifest)
+            self.assertIn("repo_navigation_url", manifest)
+            self.assertIn("files_to_read", manifest)
+            self.assertEqual(manifest["strict_zip_contract"], False)
+            self.assertEqual(manifest["requires_answer_md"], True)
+            self.assertIn("created_at", manifest)
+
+    def test_manifest_no_legacy_zchat_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            result = jobs.zworker_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertNotIn("manifest_version", manifest)
+            self.assertNotIn("zip_layout", manifest)
+            self.assertNotIn("required_reading", manifest)
+            self.assertNotIn("authority_order", manifest)
+            self.assertNotIn("missing_information_policy", manifest)
+            self.assertNotIn("source_policy", manifest)
+
+    def test_manifest_files_to_read_empty_for_standalone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            result = jobs.zworker_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["files_to_read"], [])
+
+    def test_manifest_files_to_read_populated(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "zworker_output"
             result = jobs.zworker_prompt_pack(
-                "Build login page",
+                "Task",
                 output_dir=output_dir,
-                context="Use React",
-                constraints="Follow existing patterns",
+                source_urls=["https://example.com/a.py", "https://example.com/b.py"],
             )
             self.assertEqual(result.status, "completed")
-            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
-            self.assertIn("Build login page", prompt_text)
-            self.assertIn("Use React", prompt_text)
-            self.assertIn("Follow existing patterns", prompt_text)
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["files_to_read"], ["https://example.com/a.py", "https://example.com/b.py"])
 
-    def test_prompt_md_contains_required_elements(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack("Task", output_dir=output_dir)
-            self.assertEqual(result.status, "completed")
-            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
-            self.assertIn("external agent", prompt_text.lower())
-            self.assertIn("no authority", prompt_text.lower())
-            self.assertIn("PACKAGE_READY", prompt_text)
-            self.assertIn("BLOCKED_MISSING_CONTEXT", prompt_text)
-            self.assertIn("CONTRACT_CONFLICT", prompt_text)
-            self.assertIn("answer.md", prompt_text)
-            self.assertIn("No ZIP produced.", prompt_text)
 
-    def test_prompt_md_contains_zip_contract(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack("Task", output_dir=output_dir)
-            self.assertEqual(result.status, "completed")
-            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
-            self.assertIn("root_repo_paths", prompt_text)
+class ZworkerPassportTests(unittest.TestCase):
 
-    def test_prompt_md_contains_sources_read_report(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack("Task", output_dir=output_dir)
-            self.assertEqual(result.status, "completed")
-            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
-            self.assertIn("Sources Read Report", prompt_text)
-
-    def test_prompt_md_contains_stop_if_missing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack("Task", output_dir=output_dir)
-            self.assertEqual(result.status, "completed")
-            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
-            self.assertIn("Stop-if-Missing", prompt_text)
-            self.assertIn("missing from all available sources", prompt_text)
-
-    def test_prompt_passport_contains_request_name(self) -> None:
+    def test_passport_contains_request_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "zworker_output"
             result = jobs.zworker_prompt_pack("Build feature X", output_dir=output_dir)
@@ -267,254 +468,26 @@ class ZworkerPromptPackTests(unittest.TestCase):
             self.assertIn(result.request_id, passport_text)
             self.assertIn("Build feature X", passport_text)
 
-    def test_request_manifest_strict_zip_contract_false(self) -> None:
+    def test_passport_contains_manual_nav_urls(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "zworker_output"
             result = jobs.zworker_prompt_pack("Task", output_dir=output_dir)
-            self.assertEqual(result.status, "completed")
-            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
-            self.assertFalse(manifest["strict_zip_contract"])
-            self.assertEqual(manifest["zip_layout"], "root_repo_paths")
-
-    def test_request_manifest_contains_all_fields(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack(
-                "Task",
-                output_dir=output_dir,
-                source_urls=["https://example.com/a.py"],
-                allowed_paths=["src/"],
-                forbidden_paths=["secrets/"],
-                expected_outputs=["answer.md", "src/file.py"],
-            )
-            self.assertEqual(result.status, "completed")
-            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["manifest_version"], "1.0")
-            self.assertEqual(manifest["mode"], "zworker_prompt_pack")
-            self.assertEqual(manifest["source_urls"], ["https://example.com/a.py"])
-            self.assertEqual(manifest["allowed_paths"], ["src/"])
-            self.assertEqual(manifest["forbidden_paths"], ["secrets/"])
-            self.assertEqual(manifest["expected_outputs"], ["answer.md", "src/file.py"])
-            self.assertIn("request_name", manifest)
-            self.assertIn("created_at", manifest)
-            self.assertIn("metadata", manifest)
-
-    def test_prompt_pack_with_request_id(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack(
-                "Task",
-                output_dir=output_dir,
-                request_id="ZWORKER-20260627-120000-custom-id",
-            )
-            self.assertEqual(result.status, "completed")
-            self.assertEqual(result.request_id, "ZWORKER-20260627-120000-custom-id")
-
-    def test_prompt_pack_source_urls_appear(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack(
-                "Task",
-                output_dir=output_dir,
-                source_urls=["https://example.com/file.py", "https://example.com/other.py"],
-            )
-            self.assertEqual(result.status, "completed")
-            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
-            self.assertIn("https://example.com/file.py", prompt_text)
-
-    def test_prompt_pack_result_dataclass_fields(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack("Task", output_dir=output_dir)
-            self.assertEqual(result.status, "completed")
-            self.assertEqual(result.mode, "zworker_prompt_pack")
-            self.assertTrue(result.request_id)
-            self.assertTrue(result.output_dir)
-            self.assertTrue(len(result.artifacts) > 0)
-            self.assertGreater(result.prompt_lines, 0)
-            self.assertGreater(result.passport_lines, 0)
-            self.assertIn("prompt_pack_ms", result.timings)
-
-    def test_prompt_pack_allowed_forbidden_expected_outputs_string_input(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack(
-                "Task",
-                output_dir=output_dir,
-                allowed_paths="src/,tests/",
-                forbidden_paths="secrets/",
-                expected_outputs="answer.md,src/main.py",
-            )
-            self.assertEqual(result.status, "completed")
-            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["allowed_paths"], ["src/", "tests/"])
-            self.assertEqual(manifest["forbidden_paths"], ["secrets/"])
-            self.assertEqual(manifest["expected_outputs"], ["answer.md", "src/main.py"])
-
-    def test_prompt_pack_empty_paths_ignored(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack(
-                "Task",
-                output_dir=output_dir,
-                allowed_paths="",
-                forbidden_paths="  ,  ",
-            )
-            self.assertEqual(result.status, "completed")
-            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["allowed_paths"], [])
-            self.assertEqual(manifest["forbidden_paths"], [])
-
-    def test_zworker_mode_constant(self) -> None:
-        self.assertEqual(jobs.ZWORKER_MODE_PROMPT_PACK, "zworker_prompt_pack")
-        self.assertIn("zworker_prompt_pack", jobs.ZWORKER_VALID_MODES)
-
-
-class ZworkerBranchMetadataTests(unittest.TestCase):
-
-    def test_prompt_pack_with_source_urls_disables_branch(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack(
-                "Task with sources",
-                output_dir=output_dir,
-                source_urls=["https://example.com/file.py"],
-            )
-            self.assertEqual(result.status, "completed")
-            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
-            self.assertFalse(manifest["branch_may_be_needed"])
-            self.assertEqual(manifest["branch_slug_id"], "")
-            self.assertEqual(manifest["branch_name"], "")
-            self.assertFalse(manifest["create_branch"])
-            self.assertEqual(manifest["branch_policy"], "temporary_branch_only_if_public_insufficient")
-
-    def test_prompt_pack_without_source_urls_sets_branch_needed(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack(
-                "Task without sources",
-                output_dir=output_dir,
-            )
-            self.assertEqual(result.status, "completed")
-            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
-            self.assertTrue(manifest["branch_may_be_needed"])
-            self.assertNotEqual(manifest["branch_name"], "")
-            self.assertNotEqual(manifest["branch_slug_id"], "")
-            if manifest["branch_name"]:
-                self.assertIn("zworker/context/", manifest["branch_name"])
-                self.assertIn(result.request_id, manifest["branch_name"])
-            self.assertFalse(manifest["create_branch"])
-
-    def test_prompt_pack_without_sources_prompt_contains_branch_info(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack(
-                "Task without sources",
-                output_dir=output_dir,
-            )
-            self.assertEqual(result.status, "completed")
-            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
-            self.assertIn("Temporary Context Branch", prompt_text)
-            self.assertIn("zworker/context/", prompt_text)
-            self.assertIn("temporary_branch_only_if_public_insufficient", prompt_text)
-            self.assertIn("create_branch=false", prompt_text.lower())
-
-    def test_prompt_pack_without_sources_passport_contains_branch_info(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack(
-                "Task without sources",
-                output_dir=output_dir,
-            )
             self.assertEqual(result.status, "completed")
             passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
-            self.assertIn("Temporary Context Branch", passport_text)
-            self.assertIn("zworker/context/", passport_text)
+            self.assertIn("zworker_external_agent_manual.md", passport_text)
+            self.assertIn("zworker_repo_navigation.md", passport_text)
 
-    def test_prompt_pack_with_sources_prompt_has_no_branch_needed(self) -> None:
+    def test_passport_has_human_next_step(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack(
-                "Task with sources",
-                output_dir=output_dir,
-                source_urls=["https://example.com/file.py"],
-            )
+            result = jobs.zworker_prompt_pack("Task", output_dir=output_dir)
             self.assertEqual(result.status, "completed")
-            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
-            self.assertIn("No temporary context branch is needed", prompt_text)
-
-    def test_request_manifest_contains_all_branch_fields(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack(
-                "Task",
-                output_dir=output_dir,
-                source_urls=["https://example.com/a.py"],
-            )
-            self.assertEqual(result.status, "completed")
-            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
-            self.assertIn("branch_policy", manifest)
-            self.assertIn("branch_may_be_needed", manifest)
-            self.assertIn("create_branch", manifest)
-            self.assertIn("branch_slug_id", manifest)
-            self.assertIn("branch_name", manifest)
-
-    def test_manifest_metadata_contains_branch_fields(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            output_dir = Path(tmp) / "zworker_output"
-            result = jobs.zworker_prompt_pack(
-                "Task",
-                output_dir=output_dir,
-            )
-            self.assertEqual(result.status, "completed")
-            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
-            metadata = manifest.get("metadata", {})
-            self.assertIn("branch_may_be_needed", metadata)
-            self.assertIn("create_branch", metadata)
-            self.assertIn("branch_slug_id", metadata)
-            self.assertIn("branch_name", metadata)
-            self.assertTrue(metadata["branch_may_be_needed"])
-            self.assertFalse(metadata["create_branch"])
-
-    def test_resolve_branch_decision_no_sources(self) -> None:
-        decision = _git_utils_module.resolve_branch_decision(source_urls=None)
-        self.assertEqual(decision["decision"], "branch_may_be_needed")
-        self.assertFalse(decision["create_branch"])
-
-    def test_resolve_branch_decision_empty_sources(self) -> None:
-        decision = _git_utils_module.resolve_branch_decision(source_urls=[])
-        self.assertEqual(decision["decision"], "branch_may_be_needed")
-
-    def test_resolve_branch_decision_with_sources(self) -> None:
-        decision = _git_utils_module.resolve_branch_decision(
-            source_urls=["https://example.com/file.py"]
-        )
-        self.assertEqual(decision["decision"], "no_branch_needed")
-
-    def test_resolve_branch_decision_public_context(self) -> None:
-        decision = _git_utils_module.resolve_branch_decision(
-            has_public_github_context=True
-        )
-        self.assertEqual(decision["decision"], "no_branch_needed")
-
-    def test_zworker_context_branch_name(self) -> None:
-        name = _git_utils_module.zworker_context_branch_name("ZWORKER-20260627-120000-test")
-        self.assertEqual(name, "zworker/context/ZWORKER-20260627-120000-test")
+            passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
+            self.assertIn("Copy prompt.md", passport_text)
+            self.assertIn("download ZIP", passport_text)
 
 
-class ZworkerGiTests(unittest.TestCase):
-
-    def test_zworker_request_name_is_valid_from_jobs(self) -> None:
-        name = jobs._zworker_request_name("Test feature")
-        self.assertTrue(jobs._zworker_request_name_is_valid(name))
-
-    def test_zworker_revision_name_from_jobs(self) -> None:
-        base = "ZWORKER-20260627-120000-test"
-        rev = jobs._zworker_revision_name(base, 2)
-        self.assertEqual(rev, "ZWORKER-20260627-120000-test-ver2")
-
-
-class ZworkerStage2UnpackTests(unittest.TestCase):
+class ZworkerUnpackTests(unittest.TestCase):
 
     def _make_zip(self, dir_path: Path, files: dict) -> Path:
         import zipfile
@@ -528,7 +501,7 @@ class ZworkerStage2UnpackTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             zip_path = self._make_zip(root, {
-                "answer.md": "# Answer\n\nSources Read Report: yes\n",
+                "answer.md": "# Answer\n\nDone.\n",
                 "src/file.py": "print('hello')\n",
             })
             output = jobs.zworker_result_unpack(zip_path, request_id="TEST-001", target_root=root)
@@ -621,8 +594,22 @@ class ZworkerStage2UnpackTests(unittest.TestCase):
         self.assertEqual(output.status, "failed")
         self.assertIn("ZIP file not found", output.error)
 
+    def test_unpack_does_not_write_to_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            zip_path = self._make_zip(root, {
+                "answer.md": "# Answer\n",
+                "src/file.py": "print('hello')\n",
+            })
+            output = jobs.zworker_result_unpack(zip_path, request_id="TEST-010", target_root=root)
+            self.assertEqual(output.status, "completed")
+            self.assertFalse((root / "src" / "file.py").exists(),
+                             "Unpack should NOT write directly to repo root")
+            inbox = Path(output.unpack_dir)
+            self.assertTrue((inbox / "src" / "file.py").exists())
 
-class ZworkerStage2ProcessResultTests(unittest.TestCase):
+
+class ZworkerProcessResultTests(unittest.TestCase):
 
     def _make_unpack_dir(self, base: Path, request_id: str, files: dict) -> Path:
         inbox = base / "inbox" / request_id
@@ -637,13 +624,15 @@ class ZworkerStage2ProcessResultTests(unittest.TestCase):
         req_dir = base / "requests" / request_id
         req_dir.mkdir(parents=True, exist_ok=True)
         manifest = {
-            "manifest_version": "1.0",
-            "request_name": request_id,
             "request_id": request_id,
-            "created_at": "2026-06-27T12:00:00Z",
-            "mode": "zworker_prompt_pack",
+            "slug": "test",
+            "task_summary": "test",
+            "manual_url": "",
+            "repo_navigation_url": "",
+            "files_to_read": [],
             "strict_zip_contract": False,
-            "zip_layout": "root_repo_paths",
+            "requires_answer_md": True,
+            "created_at": "2026-06-27T12:00:00Z",
             "allowed_paths": ["src/"],
             "forbidden_paths": [],
             "auto_apply_enabled": True,
@@ -653,7 +642,7 @@ class ZworkerStage2ProcessResultTests(unittest.TestCase):
         (req_dir / "request_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         return req_dir
 
-    def test_process_result_reads_answer_first(self) -> None:
+    def test_process_result_with_answer_and_report_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             request_id = "ZWORKER-20260627-120000-test"
@@ -684,13 +673,13 @@ class ZworkerStage2ProcessResultTests(unittest.TestCase):
             self.assertEqual(output.decision, "accepted")
             self.assertTrue(output.auto_applied)
 
-    def test_process_result_requires_sources_read_report_structure(self) -> None:
+    def test_process_result_missing_answer_requires_revision(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             request_id = "ZWORKER-20260627-120000-test2"
             self._make_request_dir(base, request_id)
             self._make_unpack_dir(base, request_id, {
-                "answer.md": "# Answer\n\nJust an answer, no report.\n",
+                "src/file.py": "print('hello')\n",
             })
 
             with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
@@ -700,14 +689,65 @@ class ZworkerStage2ProcessResultTests(unittest.TestCase):
                         unpack_dir=base / "inbox" / request_id,
                         target_root=base,
                     )
-            self.assertFalse(output.sources_report_found)
+            self.assertFalse(output.answer_read)
             self.assertTrue(output.requires_revision)
-            self.assertEqual(output.decision, "needs_revision")
+            self.assertFalse(output.auto_applied)
+            self.assertIn("answer.md not found", output.human_readable_summary.lower())
 
-    def test_process_result_blocks_out_of_scope_files(self) -> None:
+    def test_process_result_missing_sources_report_not_hard_blocker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             request_id = "ZWORKER-20260627-120000-test3"
+            self._make_request_dir(base, request_id)
+            self._make_unpack_dir(base, request_id, {
+                "answer.md": "# Answer\n\nJust an answer, no report.\n",
+                "src/file.py": "print('hello')\n",
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", base / "inbox"):
+                    output = jobs.zworker_process_result(
+                        request_id,
+                        unpack_dir=base / "inbox" / request_id,
+                        target_root=base,
+                    )
+            self.assertEqual(output.status, "completed")
+            self.assertFalse(output.sources_report_found)
+            self.assertEqual(output.decision, "accepted")
+            self.assertTrue(output.auto_applied)
+            self.assertIn("Note", output.human_readable_summary)
+
+    def test_process_result_partial_sources_report_not_hard_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            request_id = "ZWORKER-20260627-120000-test4"
+            self._make_request_dir(base, request_id)
+            self._make_unpack_dir(base, request_id, {
+                "answer.md": (
+                    "# Answer\n\n"
+                    "## Sources Read Report\n\n"
+                    "### Read fully\n- doc1\n\n"
+                ),
+                "src/file.py": "print('hello')\n",
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", base / "inbox"):
+                    output = jobs.zworker_process_result(
+                        request_id,
+                        unpack_dir=base / "inbox" / request_id,
+                        target_root=base,
+                    )
+            self.assertEqual(output.status, "completed")
+            self.assertFalse(output.sources_report_valid)
+            self.assertEqual(output.decision, "accepted")
+            self.assertTrue(output.auto_applied)
+            self.assertIn("Note", output.human_readable_summary)
+
+    def test_process_result_out_of_scope_files_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            request_id = "ZWORKER-20260627-120000-test5"
             self._make_request_dir(base, request_id, {"allowed_paths": ["src/"]})
             self._make_unpack_dir(base, request_id, {
                 "answer.md": (
@@ -736,7 +776,7 @@ class ZworkerStage2ProcessResultTests(unittest.TestCase):
     def test_process_result_auto_applies_in_scope_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
-            request_id = "ZWORKER-20260627-120000-test4"
+            request_id = "ZWORKER-20260627-120000-test6"
             (base / "src").mkdir(parents=True, exist_ok=True)
             self._make_request_dir(base, request_id, {"allowed_paths": ["src/"]})
             self._make_unpack_dir(base, request_id, {
@@ -763,51 +803,7 @@ class ZworkerStage2ProcessResultTests(unittest.TestCase):
             self.assertTrue((base / "src" / "file.py").exists())
             self.assertIn("print('auto-applied')", (base / "src" / "file.py").read_text())
 
-    def test_process_result_missing_answer(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            request_id = "ZWORKER-20260627-120000-test5"
-            self._make_request_dir(base, request_id)
-            self._make_unpack_dir(base, request_id, {
-                "src/file.py": "print('hello')\n",
-            })
-
-            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
-                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", base / "inbox"):
-                    output = jobs.zworker_process_result(
-                        request_id,
-                        unpack_dir=base / "inbox" / request_id,
-                        target_root=base,
-                    )
-            self.assertFalse(output.answer_read)
-            self.assertTrue(output.requires_revision)
-            self.assertFalse(output.auto_applied)
-
-    def test_process_result_partial_sources_report(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            request_id = "ZWORKER-20260627-120000-test6"
-            self._make_request_dir(base, request_id)
-            self._make_unpack_dir(base, request_id, {
-                "answer.md": (
-                    "# Answer\n\n"
-                    "## Sources Read Report\n\n"
-                    "### Read fully\n- doc1\n\n"
-                    "# Missing Read partially and Not read sections\n"
-                ),
-            })
-
-            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
-                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", base / "inbox"):
-                    output = jobs.zworker_process_result(
-                        request_id,
-                        unpack_dir=base / "inbox" / request_id,
-                        target_root=base,
-                    )
-            self.assertFalse(output.sources_report_valid)
-            self.assertTrue(output.requires_revision)
-
-    def test_process_result_no_request_manifest(self) -> None:
+    def test_process_result_no_request_manifest_default_scope(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             request_id = "ZWORKER-20260627-120000-test7"
@@ -834,7 +830,7 @@ class ZworkerStage2ProcessResultTests(unittest.TestCase):
             self.assertTrue(output.auto_applied)
 
 
-class ZworkerStage2RevisionPromptTests(unittest.TestCase):
+class ZworkerRevisionPromptTests(unittest.TestCase):
 
     def test_revision_prompt_creates_ver2_artifacts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -845,7 +841,7 @@ class ZworkerStage2RevisionPromptTests(unittest.TestCase):
             with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REVISIONS", base / "revisions"):
                 output = jobs.zworker_revision_prompt(
                     "ZWORKER-20260627-120000-test",
-                    feedback="Missing Sources Read Report",
+                    feedback="Missing answer.md",
                     revision_number=2,
                 )
             self.assertEqual(output.status, "completed")
@@ -867,14 +863,29 @@ class ZworkerStage2RevisionPromptTests(unittest.TestCase):
             with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REVISIONS", base / "revisions"):
                 output = jobs.zworker_revision_prompt(
                     "ZWORKER-20260627-120000-test",
-                    feedback="Fix the Sources Read Report",
+                    feedback="Fix the answer.md",
                     revision_number=2,
                 )
             rev_dir = Path(output.revision_dir)
             prompt_text = (rev_dir / "revision_prompt.md").read_text(encoding="utf-8")
-            self.assertIn("Fix the Sources Read Report", prompt_text)
+            self.assertIn("Fix the answer.md", prompt_text)
             self.assertIn("answer.md", prompt_text)
-            self.assertIn("Sources Read Report", prompt_text)
+
+    def test_revision_prompt_uses_relaxed_sources_language(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            revisions = base / "revisions"
+            revisions.mkdir(parents=True, exist_ok=True)
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REVISIONS", base / "revisions"):
+                output = jobs.zworker_revision_prompt(
+                    "ZWORKER-20260627-120000-test",
+                    feedback="Fix something",
+                    revision_number=2,
+                )
+            rev_dir = Path(output.revision_dir)
+            prompt_text = (rev_dir / "revision_prompt.md").read_text(encoding="utf-8")
+            self.assertNotIn("Sources Read Report inside answer.md (REQUIRED)", prompt_text)
 
     def test_revision_prompt_auto_detects_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -897,15 +908,35 @@ class ZworkerStage2RevisionPromptTests(unittest.TestCase):
         self.assertEqual(output.status, "failed")
 
 
-class ZworkerStage2ModeConstantsTests(unittest.TestCase):
+class ZworkerModeConstantsTests(unittest.TestCase):
 
     def test_new_mode_constants(self) -> None:
+        self.assertEqual(jobs.ZWORKER_MODE_PROMPT_PACK, "zworker_prompt_pack")
         self.assertEqual(jobs.ZWORKER_MODE_RESULT_UNPACK, "zworker_result_unpack")
         self.assertEqual(jobs.ZWORKER_MODE_PROCESS_RESULT, "zworker_process_result")
         self.assertEqual(jobs.ZWORKER_MODE_REVISION_PROMPT, "zworker_revision_prompt")
+        self.assertIn(jobs.ZWORKER_MODE_PROMPT_PACK, jobs.ZWORKER_VALID_MODES)
         self.assertIn(jobs.ZWORKER_MODE_RESULT_UNPACK, jobs.ZWORKER_VALID_MODES)
         self.assertIn(jobs.ZWORKER_MODE_PROCESS_RESULT, jobs.ZWORKER_VALID_MODES)
         self.assertIn(jobs.ZWORKER_MODE_REVISION_PROMPT, jobs.ZWORKER_VALID_MODES)
+
+
+class ZworkerGiTests(unittest.TestCase):
+
+    def test_zworker_request_name_from_jobs(self) -> None:
+        name = jobs._zworker_request_name("Test feature")
+        self.assertTrue(jobs._zworker_request_name_is_valid(name))
+
+    def test_zworker_revision_name_from_jobs(self) -> None:
+        base = "ZWORKER-20260627-120000-test"
+        rev = jobs._zworker_revision_name(base, 2)
+        self.assertEqual(rev, "ZWORKER-20260627-120000-test-ver2")
+
+    def test_zworker_task_to_slug(self) -> None:
+        self.assertEqual(jobs._zworker_task_to_slug("Build login page"), "build-login-page")
+        self.assertEqual(jobs._zworker_task_to_slug("  ADD LOGIN Feature  "), "add-login-feature")
+        self.assertEqual(jobs._zworker_task_to_slug("Stylish Tetris!"), "stylish-tetris")
+        self.assertEqual(jobs._zworker_task_to_slug(""), "task")
 
 
 if __name__ == "__main__":

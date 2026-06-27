@@ -592,7 +592,8 @@ def zworker_revision_prompt_result_to_mcp_response(result: jobs.ZworkerRevisionP
         "Create a zworker prompt artifact pack: prompt.md, prompt_passport.md, request_manifest.json. "
         "Lightweight route parallel to zchat. No manifest/checksum contract (strict_zip_contract=false). "
         "ZIP layout uses root_repo_paths (answer.md at root, repo files at repo-relative paths). "
-        "Supports allowed_paths, forbidden_paths, expected_outputs as comma-separated strings or plain text."
+        "Supports allowed_paths, forbidden_paths, expected_outputs as comma-separated strings or plain text. "
+        "Validates request_id slug matches task when provided."
     ),
 )
 def opencode_zworker_prompt_pack(
@@ -660,10 +661,10 @@ def opencode_zworker_result_unpack(
 @mcp.tool(
     name="opencode_zworker_process_result",
     description=(
-        "Process unpacked zworker result. Reads answer.md first, validates Sources Read Report "
-        "structure (Read fully, Read partially, Not read, External search used), checks repo files "
+        "Process unpacked zworker result. Reads answer.md first, checks Sources Read Report "
+        "(advisory — missing/incomplete report does NOT block acceptance), checks repo files "
         "against request manifest scope. Auto-applies in-scope files when safe and clear. "
-        "Blocks auto-apply for out-of-scope files or missing/incomplete reports. "
+        "Blocks auto-apply for out-of-scope files or missing answer.md. "
         "Returns human-readable decision: accepted / needs_revision / needs_clarification."
     ),
 )

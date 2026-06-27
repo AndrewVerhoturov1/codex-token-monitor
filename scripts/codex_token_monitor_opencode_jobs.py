@@ -2095,6 +2095,36 @@ def zchat_prompt_pack(
         )
 
 
+def _zworker_task_to_slug(task: str) -> str:
+    import re
+    raw = task.strip().casefold()
+    raw = re.sub(r"[^a-z0-9\s-]", "", raw)
+    raw = re.sub(r"\s+", "-", raw)
+    raw = re.sub(r"-{2,}", "-", raw)
+    raw = raw.strip("-")
+    if len(raw) > 48:
+        raw = raw[:48].rstrip("-")
+    if not raw:
+        raw = "task"
+    return raw
+
+
+def _zworker_validate_request_id_slug(request_id: str, task: str) -> tuple[bool, str]:
+    if not request_id or not task:
+        return True, ""
+    task_slug = _zworker_task_to_slug(task)
+    if not request_id.endswith(f"-{task_slug}") and not request_id.endswith(f"-{task_slug}-ver"):
+        rev_match = bool(re.match(r"^ZWORKER-\d{8}-\d{6}-(.+?)-ver\d+$", request_id))
+        if rev_match:
+            return True, ""
+        return False, (
+            f"Request ID slug mismatch: request_id '{request_id}' does not match "
+            f"task-derived slug '{task_slug}'. "
+            f"Request ID must end with '-{task_slug}' (e.g. ZWORKER-YYYYMMDD-HHMMSS-{task_slug})."
+        )
+    return True, ""
+
+
 def zworker_prompt_pack(
     task: str,
     *,
@@ -2110,7 +2140,22 @@ def zworker_prompt_pack(
     t_total_start = time.perf_counter_ns()
     timings: dict[str, int] = {}
 
-    request_name = request_id if request_id else _zworker_request_name(task)
+    normalized_task = task.strip() if task else "task"
+
+    request_name = request_id if request_id else _zworker_request_name(normalized_task)
+
+    if request_id:
+        slug_ok, slug_err = _zworker_validate_request_id_slug(request_id, normalized_task)
+        if not slug_ok:
+            timings["prompt_pack_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
+            return ZworkerPromptPackResult(
+                request_id=request_name,
+                output_dir=str(output_dir) if output_dir else "",
+                status="failed",
+                error=slug_err,
+                timings=timings,
+            )
+
     if output_dir is None:
         output_dir = ZWORKER_RUNTIME_REQUESTS / request_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2127,7 +2172,6 @@ def zworker_prompt_pack(
     if branch_may_be_needed:
         branch_slug_id = hashlib.sha256(request_name.encode()).hexdigest()[:12]
         branch_name = _git_utils.zworker_context_branch_name(request_name) if _git_utils else f"zworker/context/{request_name}"
-    branch_policy = "temporary_branch_only_if_public_insufficient"
 
     try:
         now_utc = _utcnow()
@@ -2138,169 +2182,69 @@ def zworker_prompt_pack(
 
         t_render_start = time.perf_counter_ns()
 
-        required_reading = (
-            f"1. Static manual (canonical): {manual_url}\n"
-            f"2. Repo navigation (canonical): {nav_url}\n"
-            f"3. This task prompt (read in full)\n"
-            f"4. Required Task Source URLs (see section below)\n"
-            f"5. Optional Task Source URLs / Side Files (if any are listed below)\n"
-        )
-        missing_information_policy = (
-            "If information required to complete the task is missing from all available sources, "
-            "stop immediately with status BLOCKED_MISSING_CONTEXT. "
-            "Do NOT guess, fabricate, or assume. Do NOT produce a ZIP."
-        )
-        sources_read_report_requirement = (
-            "You MUST include a Sources Read Report in answer.md covering every provided source: "
-            "what was read fully, read partially, or not read and why. "
-            "Include all fields from the canonical manual. Mark external search if used. "
-            "For blocked/conflict responses, include a brief Sources Read Report in the chat response body."
-        )
-        required_task_source_urls_block = (
-            "\n".join(f"- {url}" for url in resolved_urls)
-            if resolved_urls
-            else "No required task source URLs provided."
-        )
-        optional_task_source_urls_block = "None specified."
-        authority_order_block = (
-            "1. Canonical public docs (static manual, repo navigation) — highest authority.\n"
-            "2. This task prompt — overrides only where task is more specific and does not contradict canonical docs.\n"
-            "3. Required task source URLs — below canonical docs; above optional sources.\n"
-            "4. Optional task source URLs / side files — lowest authority among provided sources.\n"
-            "5. External search / web results — never above any provided source.\n"
-            "6. Guessing / fabrication — never allowed.\n"
-            "\n"
-            "If any source below level 1 contradicts a canonical doc, the canonical doc wins. "
-            "If the conflict is unresolvable, return CONTRACT_CONFLICT."
-        )
-
-        temp_branch_info_block = "No temporary context branch is needed for this request. You have sufficient public context via the source URLs."
-        if branch_may_be_needed:
-            temp_branch_info_block = (
-                f"Since sufficient public context was NOT provided via source URLs, "
-                f"a temporary read-only context branch is available to host files from this repository for your reading.\n\n"
-                f"- **Branch policy**: {branch_policy}\n"
-                f"- **Branch name**: `{branch_name}`\n"
-                f"- **Slug ID**: `{branch_slug_id}`\n"
-                f"- **Branch status**: Not yet created (create_branch=false). "
-                f"The branch identity is recorded here so an external process can create the branch if needed.\n\n"
-                f"**How to read files from this branch**: "
-                f"If the branch exists, files are accessible via "
-                f"`https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/{branch_name}/<path>`.\n\n"
-                f"**Important**: This branch IS read-only. You can read files from it but cannot modify, commit, or push to it. "
-                f"You have no authority over git operations."
+        files_to_read_block: str
+        if resolved_urls:
+            files_to_read_block = "\n".join(f"- {url}" for url in resolved_urls)
+        else:
+            files_to_read_block = (
+                "No specific repository files are required for this task.\n"
+                "Create a standalone result based on the task description."
             )
 
         prompt_template = (ZWORKER_TEMPLATE_DIR / "prompt.md").read_text(encoding="utf-8")
-        prompt_content = prompt_template.replace("{request_name}", request_name)
-        prompt_content = prompt_content.replace("{task}", task)
+        prompt_content = prompt_template.replace("{request_id}", request_name)
+        prompt_content = prompt_content.replace("{task}", normalized_task)
         prompt_content = prompt_content.replace("{context}", context or "No additional context provided.")
-        prompt_content = prompt_content.replace("{constraints}", constraints or "Follow repository conventions.")
-        prompt_content = prompt_content.replace("{static_manual_url}", manual_url)
+        prompt_content = prompt_content.replace("{manual_url}", manual_url)
         prompt_content = prompt_content.replace("{repo_navigation_url}", nav_url)
-        prompt_content = prompt_content.replace("{required_reading}", required_reading)
-        prompt_content = prompt_content.replace("{missing_information_policy}", missing_information_policy)
-        prompt_content = prompt_content.replace("{sources_read_report_requirement}", sources_read_report_requirement)
-        prompt_content = prompt_content.replace("{required_task_source_urls}", required_task_source_urls_block)
-        prompt_content = prompt_content.replace("{optional_task_source_urls}", optional_task_source_urls_block)
-        prompt_content = prompt_content.replace("{authority_order}", authority_order_block)
-        prompt_content = prompt_content.replace("{temp_branch_info}", temp_branch_info_block)
-
-        allowed_block = "\n".join(f"- {p}" for p in normalized_allowed) if normalized_allowed else "No explicit allowed_paths provided."
-        forbidden_block = "\n".join(f"- {p}" for p in normalized_forbidden) if normalized_forbidden else "No explicit forbidden_paths provided."
-        expected_block = "\n".join(f"- {o}" for o in normalized_expected) if normalized_expected else "No explicit expected_outputs provided."
-        prompt_content = prompt_content.replace("{allowed_paths}", allowed_block)
-        prompt_content = prompt_content.replace("{forbidden_paths}", forbidden_block)
-        prompt_content = prompt_content.replace("{expected_outputs}", expected_block)
+        prompt_content = prompt_content.replace("{files_to_read}", files_to_read_block)
 
         prompt_path = output_dir / "prompt.md"
         _atomic_write_text(prompt_path, prompt_content)
         artifacts.append("prompt.md")
 
-        allowed_passport_block = "\n".join(f"- {p}" for p in normalized_allowed) if normalized_allowed else "- No explicit allowed_paths provided."
-        forbidden_passport_block = "\n".join(f"- {p}" for p in normalized_forbidden) if normalized_forbidden else "- No explicit forbidden_paths provided."
-        if normalized_expected:
-            expected_passport_block = f"{len(normalized_expected)} expected outputs:\n" + "\n".join(f"- {o}" for o in normalized_expected)
+        files_linked_block: str
+        if resolved_urls:
+            files_linked_block = "\n".join(f"- {url}" for url in resolved_urls)
         else:
-            expected_passport_block = "- No explicit expected_outputs provided."
+            files_linked_block = "(none — standalone task)"
 
         passport_template = (ZWORKER_TEMPLATE_DIR / "prompt_passport.md").read_text(encoding="utf-8")
-        passport_content = passport_template.replace("{request_name}", request_name)
-        passport_content = passport_content.replace("{task}", task)
+        passport_content = passport_template.replace("{request_id}", request_name)
+        passport_content = passport_content.replace("{task}", normalized_task)
         passport_content = passport_content.replace("{prompt_path}", str(output_dir / "prompt.md"))
-        passport_content = passport_content.replace("{static_manual_url}", manual_url)
+        passport_content = passport_content.replace("{manual_url}", manual_url)
         passport_content = passport_content.replace("{repo_navigation_url}", nav_url)
-        passport_content = passport_content.replace("{required_task_source_urls}", required_task_source_urls_block)
-        passport_content = passport_content.replace("{allowed_paths}", allowed_passport_block)
-        passport_content = passport_content.replace("{forbidden_paths}", forbidden_passport_block)
-        passport_content = passport_content.replace("{expected_outputs}", expected_passport_block)
-        passport_content = passport_content.replace("{temp_branch_info}", temp_branch_info_block)
+        passport_content = passport_content.replace("{files_linked}", files_linked_block)
         passport_path = output_dir / "prompt_passport.md"
         _atomic_write_text(passport_path, passport_content)
         artifacts.append("prompt_passport.md")
 
         timings["render_templates_ms"] = int((time.perf_counter_ns() - t_render_start) / 1_000_000)
 
-        artifacts.append("request_manifest.json")
-        required_reading_list = [
-            f"1. Static manual (canonical): {manual_url}",
-            f"2. Repo navigation (canonical): {nav_url}",
-            f"3. This task prompt (read in full)",
-        ]
-        if resolved_urls:
-            required_reading_list.append(
-                "4. Required Task Source URLs: " + ", ".join(resolved_urls)
-            )
-        required_reading_list.append("5. Optional Task Source URLs / Side Files (if any)")
+        task_slug = _zworker_task_to_slug(normalized_task)
         manifest = {
-            "manifest_version": "1.0",
-            "request_name": request_name,
             "request_id": request_name,
-            "created_at": now_utc,
-            "mode": ZWORKER_MODE_PROMPT_PACK,
-            "strict_zip_contract": False,
-            "zip_layout": "root_repo_paths",
-            "artifacts": artifacts,
-            "static_manual_url": manual_url,
+            "slug": task_slug,
+            "task_summary": normalized_task[:200],
+            "manual_url": manual_url,
             "repo_navigation_url": nav_url,
-            "required_reading": required_reading_list,
-            "required_task_source_urls": list(resolved_urls),
-            "optional_task_source_urls": [],
-            "authority_order": [
-                "1. Canonical public docs (static manual, repo navigation) — highest authority.",
-                "2. This task prompt — overrides only where more specific and does not contradict canonical docs.",
-                "3. Required task source URLs — below canonical docs; above optional sources.",
-                "4. Optional task source URLs / side files — lowest authority among provided sources.",
-                "5. External search / web results — never above any provided source.",
-                "6. Guessing / fabrication — never allowed.",
-            ],
-            "missing_information_policy": "BLOCKED_MISSING_CONTEXT: stop, do not guess, do not produce ZIP",
-            "source_policy": "public_github_raw_first",
-            "branch_policy": branch_policy,
+            "files_to_read": list(resolved_urls),
+            "strict_zip_contract": False,
+            "requires_answer_md": True,
+            "created_at": now_utc,
+            "allowed_paths": normalized_allowed,
+            "forbidden_paths": normalized_forbidden,
+            "expected_outputs": normalized_expected,
+            "auto_apply_enabled": True,
             "branch_may_be_needed": branch_may_be_needed,
             "create_branch": False,
             "branch_slug_id": branch_slug_id,
             "branch_name": branch_name,
-            "dependencies": resolved_urls,
-            "source_urls": resolved_urls,
-            "allowed_paths": normalized_allowed,
-            "forbidden_paths": normalized_forbidden,
-            "expected_outputs": normalized_expected,
-            "metadata": {
-                "context_provided": bool(context),
-                "constraints_provided": bool(constraints),
-                "source_urls_count": len(resolved_urls),
-                "has_allowed_paths": bool(normalized_allowed),
-                "has_forbidden_paths": bool(normalized_forbidden),
-                "has_expected_outputs": bool(normalized_expected),
-                "branch_may_be_needed": branch_may_be_needed,
-                "create_branch": False,
-                "branch_slug_id": branch_slug_id,
-                "branch_name": branch_name,
-            },
         }
         manifest_path = output_dir / "request_manifest.json"
         _atomic_write_json(manifest_path, manifest)
+        artifacts.append("request_manifest.json")
 
         prompt_lines = prompt_content.count("\n") + 1
         passport_lines = passport_content.count("\n") + 1
@@ -2644,25 +2588,6 @@ def zworker_process_result(
             f"The external agent must include answer.md at the root of the ZIP.\n"
             f"Request a revision with `zworker_revision_prompt`.\n"
         )
-    elif not sources_report_found:
-        requires_revision = True
-        decision = "needs_revision"
-        human_readable = (
-            f"## Process Result: REVISION REQUIRED\n\n"
-            f"**Reason**: Sources Read Report section not found in answer.md.\n"
-            f"The external agent must include a Sources Read Report covering all provided sources.\n"
-            f"Request a revision with `zworker_revision_prompt`.\n"
-        )
-    elif not sources_report_valid:
-        requires_revision = True
-        decision = "needs_revision"
-        issues_text = "\n".join(f"- {issue}" for issue in sources_report_issues)
-        human_readable = (
-            f"## Process Result: REVISION REQUIRED\n\n"
-            f"**Reason**: Sources Read Report is incomplete or invalid.\n\n"
-            f"### Issues\n{issues_text}\n\n"
-            f"Request a revision with `zworker_revision_prompt`.\n"
-        )
     elif repo_files_out_of_scope > 0 and auto_apply_enabled:
         requires_clarification = True
         decision = "needs_clarification"
@@ -2712,17 +2637,25 @@ def zworker_process_result(
             auto_applied = True
             decision = "accepted"
             applied_list = "\n".join(f"- `{rel}`" for _, rel in in_scope_files)
+            if not sources_report_found:
+                sources_note = (
+                    "**Note**: answer.md found and read but no Sources Read Report section was found. "
+                    "Consider requesting a revision if source traceability matters."
+                )
+            elif not sources_report_valid:
+                issues_text = "; ".join(sources_report_issues)
+                sources_note = (
+                    f"**Note**: Sources Read Report found but incomplete ({issues_text}). "
+                    f"Consider requesting a revision if source traceability matters."
+                )
+            else:
+                sources_note = "Sources Read Report: valid"
             human_readable = (
                 f"## Process Result: ACCEPTED\n\n"
                 f"All {auto_apply_files} in-scope file(s) applied automatically.\n\n"
                 f"### Applied Files\n{applied_list}\n\n"
-                f"### answer.md\n- Sources Read Report: valid\n"
-                f"- answer.md read: yes\n\n"
-                f"### Sources Report Sections Verified\n"
-                f"- Read fully: found\n"
-                f"- Read partially: found\n"
-                f"- Not read: found\n"
-                f"- External search used: found\n"
+                f"### answer.md\n- {sources_note}\n"
+                f"- answer.md read: yes\n"
             )
     else:
         if not auto_apply_enabled:
@@ -2867,11 +2800,7 @@ def zworker_revision_prompt(
         "## What to fix / improve",
         "",
         "1. Ensure answer.md is at the root of the ZIP and complete.",
-        "2. Verify Sources Read Report includes all required sections:",
-        "   - Read fully",
-        "   - Read partially",
-        "   - Not read",
-        "   - External search used",
+        "2. Describe which sources were read (it helps traceability — include Read fully, Read partially, Not read, External search used if applicable).",
         "3. All repo files must be within the allowed scope.",
         "4. Do NOT include files in .git/, .ai/zworker/runtime/, or .ai/zchat/runtime/.",
         "5. Use repo-relative paths directly at ZIP root (no payload/ directory).",
@@ -2879,8 +2808,7 @@ def zworker_revision_prompt(
         "## Must include in the ZIP",
         "",
         "- `answer.md` at ZIP root (REQUIRED)",
-        "- Sources Read Report inside answer.md (REQUIRED)",
-        "- All sections: Read fully, Read partially, Not read, External search used (REQUIRED)",
+        "- Sources description in answer.md (recommended for traceability)",
         "",
     ]
 
