@@ -25,11 +25,11 @@ You are an **external chat agent**. You have **no authority** over the target re
 
 ## Required Reading Order
 
-1. This static manual (`docs/zchat_external_agent_static_manual.md`)
-2. Repo navigation (`docs/zchat_repo_navigation.md`)
-3. Task prompt (read in full)
-4. Required task source URLs (in the order listed in the prompt)
-5. Optional task source URLs / side files (if any are listed in the prompt)
+1. Static manual
+2. Repo navigation
+3. This task prompt
+4. Required task source URLs
+5. Optional task source URLs / side files if needed
 
 ## Stop-If-Missing-Information Rule
 
@@ -88,13 +88,17 @@ Logical manifest/checksum paths MUST be `{repo_relative_path}` WITHOUT `payload/
 
 ## Manifest v2 Template
 
+`zchat_result_type` is a type set: the task prompt MUST provide a concrete value.
+Package tasks MUST use exactly `"package"`. The external agent MUST NOT copy
+placeholder/type-union values into the manifest.
+
 ```json
 {
   "manifest_version": "2.0",
   "package_id": "{non-empty string}",
   "created_at": "{ISO8601 UTC}",
   "mode": "zchat_import_pack",
-  "zchat_result_type": "advice|review|package",
+  "zchat_result_type": "{zchat_result_type}",
   "run_policy": "never_auto_run",
   "context_readback": "{repo_relative_path}",
   "payload_files": [
@@ -179,9 +183,9 @@ Statements that require repo-local access (running tests, checking git state, re
 ## Citation Guidance
 
 When citing sources in deliverables:
-- Cite the **source URL** and, when available, a **section heading**, **anchor**, or a short **quoted phrase**.
-- Use **line numbers only when they were provided** to you in the task sources.
-- **Never invent line numbers.** If you do not have line numbers from the sources, cite by section heading or quoted phrase.
+- Cite source URL and section heading / anchor / short quoted phrase when available.
+- Use line numbers only when the source view provides line numbers.
+- Never invent line numbers.
 
 ## Preflight Checklist
 

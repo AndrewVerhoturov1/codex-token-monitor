@@ -32,9 +32,9 @@ All canonical public documentation for Zchat is in `docs/` at the repository roo
 
 ## Path Rule
 
-- **Physical ZIP**: files stored as `payload/<repo-relative-path>`.
-- **Logical manifest/checksum**: paths are `<repo-relative-path>` WITHOUT `payload/` prefix.
-- Never include `payload/` in manifest `payload_files[].path`, `context_readback`, `verification_files`, `metadata.context_readback`, or `checksums.sha256`.
+Physical ZIP path: payload/{repo_relative_path}
+Logical manifest/checksum path: {repo_relative_path}
+Never include payload/ in logical manifest/checksum paths.
 
 ## Workflow Overview
 

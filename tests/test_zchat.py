@@ -2301,6 +2301,37 @@ class ZchatExternalAgentComplianceTests(unittest.TestCase):
                     f"Physical entry must be under payload/: {e}")
 
 
+    def test_static_manual_contains_never_invent_line_numbers(self) -> None:
+        manual_path = ROOT / "docs" / "zchat_external_agent_static_manual.md"
+        content = manual_path.read_text(encoding="utf-8")
+        self.assertIn("Never invent line numbers.", content)
+
+    def test_static_manual_required_reading_contains_this_task_prompt(self) -> None:
+        manual_path = ROOT / "docs" / "zchat_external_agent_static_manual.md"
+        content = manual_path.read_text(encoding="utf-8")
+        self.assertIn("This task prompt", content)
+
+    def test_static_manual_says_package_tasks_must_use_exactly_package(self) -> None:
+        manual_path = ROOT / "docs" / "zchat_external_agent_static_manual.md"
+        content = manual_path.read_text(encoding="utf-8")
+        self.assertIn('Package tasks MUST use exactly `"package"`', content)
+
+    def test_repo_navigation_contains_payload_slash_repo_relative_path(self) -> None:
+        nav_path = ROOT / "docs" / "zchat_repo_navigation.md"
+        content = nav_path.read_text(encoding="utf-8")
+        self.assertIn("payload/{repo_relative_path}", content)
+
+    def test_repo_navigation_contains_repo_relative_path_placeholder(self) -> None:
+        nav_path = ROOT / "docs" / "zchat_repo_navigation.md"
+        content = nav_path.read_text(encoding="utf-8")
+        self.assertIn("{repo_relative_path}", content)
+
+    def test_repo_navigation_does_not_contain_paths_are_backtick_phrasing(self) -> None:
+        nav_path = ROOT / "docs" / "zchat_repo_navigation.md"
+        content = nav_path.read_text(encoding="utf-8")
+        self.assertNotIn("paths are ``", content)
+
+
 class ZchatRequestNameTests(unittest.TestCase):
 
     def test_request_name_format(self) -> None:
