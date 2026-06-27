@@ -198,6 +198,31 @@ class ZworkerManualDocsTests(unittest.TestCase):
         content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
         self.assertIn("do not fabricate", content.lower())
 
+    def test_manual_no_zip_contract(self) -> None:
+        content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
+        self.assertNotIn("ZIP Contract", content)
+
+    def test_manual_no_auto_apply(self) -> None:
+        content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
+        self.assertNotIn("Auto-apply", content)
+
+    def test_manual_no_accepted_for_review(self) -> None:
+        content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
+        self.assertNotIn("accepted_for_review", content)
+
+    def test_manual_no_manifest_json_as_requirement(self) -> None:
+        content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
+        self.assertNotIn("manifest.json is required", content.lower())
+
+    def test_manual_no_checksums_sha256_as_requirement(self) -> None:
+        content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
+        self.assertNotIn("checksums.sha256 is required", content.lower())
+
+    def test_manual_review_before_apply(self) -> None:
+        content = (ROOT / "docs" / "zworker_external_agent_manual.md").read_text(encoding="utf-8")
+        self.assertIn("Decide", content)
+        self.assertIn("whether to apply", content.lower())
+
 
 class ZworkerNavigationDocsTests(unittest.TestCase):
 
@@ -224,6 +249,26 @@ class ZworkerNavigationDocsTests(unittest.TestCase):
         content = (ROOT / "docs" / "zworker_repo_navigation.md").read_text(encoding="utf-8")
         self.assertNotIn("BLOCKED_MISSING_CONTEXT", content)
 
+    def test_navigation_no_zip_contract(self) -> None:
+        content = (ROOT / "docs" / "zworker_repo_navigation.md").read_text(encoding="utf-8")
+        self.assertNotIn("ZIP Contract", content)
+
+    def test_navigation_no_checks_scope_against_manifest(self) -> None:
+        content = (ROOT / "docs" / "zworker_repo_navigation.md").read_text(encoding="utf-8")
+        self.assertNotIn("checks scope against manifest", content.lower())
+
+    def test_navigation_no_accepted_for_review(self) -> None:
+        content = (ROOT / "docs" / "zworker_repo_navigation.md").read_text(encoding="utf-8")
+        self.assertNotIn("accepted_for_review", content)
+
+    def test_navigation_no_broken_raw_url(self) -> None:
+        content = (ROOT / "docs" / "zworker_repo_navigation.md").read_text(encoding="utf-8")
+        self.assertNotIn("codex-token-monitor//", content)
+
+    def test_navigation_has_branch_template(self) -> None:
+        content = (ROOT / "docs" / "zworker_repo_navigation.md").read_text(encoding="utf-8")
+        self.assertIn("<branch_name>/<path>", content)
+
 
 class ZworkerTemplatesTests(unittest.TestCase):
 
@@ -234,6 +279,22 @@ class ZworkerTemplatesTests(unittest.TestCase):
         self.assertIn("{request_id}", content)
         self.assertIn("{task}", content)
         self.assertIn("answer.md", content)
+
+    def test_prompt_template_no_package_ready(self) -> None:
+        content = (ROOT / ".ai" / "zworker" / "templates" / "prompt.md").read_text(encoding="utf-8")
+        self.assertNotIn("PACKAGE_READY", content)
+
+    def test_prompt_template_no_manifest_json(self) -> None:
+        content = (ROOT / ".ai" / "zworker" / "templates" / "prompt.md").read_text(encoding="utf-8")
+        self.assertNotIn("manifest.json", content)
+
+    def test_prompt_template_no_checksums_sha256(self) -> None:
+        content = (ROOT / ".ai" / "zworker" / "templates" / "prompt.md").read_text(encoding="utf-8")
+        self.assertNotIn("checksums.sha256", content)
+
+    def test_prompt_template_no_payload(self) -> None:
+        content = (ROOT / ".ai" / "zworker" / "templates" / "prompt.md").read_text(encoding="utf-8")
+        self.assertNotIn("payload/", content)
 
     def test_passport_template_exists(self) -> None:
         tmpl = (ROOT / ".ai" / "zworker" / "templates" / "prompt_passport.md")
@@ -264,6 +325,18 @@ class ZworkerTemplatesTests(unittest.TestCase):
         content = readme_path.read_text(encoding="utf-8")
         self.assertIn("Zworker", content)
         self.assertIn("strict_zip_contract", content)
+
+    def test_readme_no_auto_apply(self) -> None:
+        content = (ROOT / ".ai" / "zworker" / "readme.md").read_text(encoding="utf-8")
+        self.assertNotIn("auto-apply", content.lower())
+
+    def test_readme_answer_md_read_first(self) -> None:
+        content = (ROOT / ".ai" / "zworker" / "readme.md").read_text(encoding="utf-8")
+        self.assertIn("answer.md", content)
+
+    def test_readme_result_applied_after_review(self) -> None:
+        content = (ROOT / ".ai" / "zworker" / "readme.md").read_text(encoding="utf-8")
+        self.assertIn("after review", content.lower())
 
 
 class ZworkerPromptPackShortPromptTests(unittest.TestCase):

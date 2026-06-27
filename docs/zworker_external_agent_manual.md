@@ -48,9 +48,9 @@ If a file, command, or clarification is needed but not provided in the prompt, a
 - External sources are **never above canonical docs** in priority.
 - If external search contradicts canonical docs, canonical docs win.
 
-## ZIP Contract
+## Result ZIP Format
 
-The zworker ZIP contract is lightweight. No manifest, no checksums required.
+The zworker result ZIP format is lightweight. No manifest, no checksums required.
 
 ### Required ZIP Structure
 
@@ -101,11 +101,11 @@ If the static manual and/or repo navigation declare a version, report those vers
 
 ## What Happens After Delivery
 
-After you submit your ZIP, the local system will:
+After you submit your ZIP, Codex/OpenCode may:
 1. **Unpack** the ZIP safely into a runtime inbox without writing to the repo.
 2. **Read answer.md** first.
-3. **Check scope** of repo-candidate files.
-4. **Auto-apply** files that are clearly in-scope and safe.
+3. **Inspect** the included files.
+4. **Decide** whether to apply files to the repository.
 5. If something is missing or unclear, ask for a revision (ver2, ver3, ...).
 
 ## Revisions

@@ -27,14 +27,14 @@ ZIP responses with `answer.md` at root and repo files at repo-relative paths.
 |---|---|---|---|
 | 1. Prompt | `zworker_prompt_pack` | Creates prompt artifacts | `runtime/requests/<slug>/` |
 | 2. Unpack | `zworker_result_unpack` | Safe unpack ZIP to inbox only | `runtime/inbox/<request-id>/` |
-| 3. Process | `zworker_process_result` | Read answer.md, validate Sources Read Report, auto-apply safe files | `runtime/inbox/<request-id>/` |
+| 3. Process | `zworker_process_result` | Read answer.md, check source notes (advisory), apply files after review | `runtime/inbox/<request-id>/` |
 | 4. Revision | `zworker_revision_prompt` | Generate follow-up prompt with -ver2/-ver3 naming | `runtime/revisions/<request-id>-verN/` |
 
 ## Prompt-Pack Artifacts
 
 Each prompt-pack request creates under `.ai/zworker/runtime/requests/<request_name>/`:
 
-- `prompt.md` — The task prompt for the external agent. Short, references manual/navigation, requires ZIP with answer.md and honest Sources Read Report.
+- `prompt.md` — The task prompt for the external agent. Short, references manual/navigation, requires ZIP with answer.md. The worker should honestly describe what sources/context it used and what was not verified.
 - `prompt_passport.md` — Human-card summary of the request.
 - `request_manifest.json` — Machine-readable manifest with `strict_zip_contract=false` and `zip_layout=root_repo_paths`.
 
@@ -99,12 +99,12 @@ python scripts/codex_token_monitor_opencode_jobs.py --zworker-prompt-pack --zwor
 python scripts/codex_token_monitor_opencode_jobs.py --zworker-result-unpack result.zip --zworker-unpack-request-id ZWORKER-20260627-120000-task
 ```
 
-### Process result (reads answer.md, validates report, auto-applies safe files)
+### Process result (reads answer.md, reviews source notes, applies files after review)
 ```
 python scripts/codex_token_monitor_opencode_jobs.py --zworker-process-result ZWORKER-20260627-120000-task
 ```
 
 ### Request revision (if needed)
 ```
-python scripts/codex_token_monitor_opencode_jobs.py --zworker-revision-prompt ZWORKER-20260627-120000-task --zworker-revision-feedback "Missing Sources Read Report sections"
+python scripts/codex_token_monitor_opencode_jobs.py --zworker-revision-prompt ZWORKER-20260627-120000-task --zworker-revision-feedback "Missing source notes in answer.md"
 ```
