@@ -365,6 +365,10 @@ class OpenCodeJobsMcpIntegrationTests(unittest.TestCase):
                 "opencode_zchat_decision_pack",
                 "opencode_zchat_receive_pack",
                 "opencode_zchat_inspect_verification_pack",
+                "opencode_zworker_prompt_pack",
+                "opencode_zworker_result_unpack",
+                "opencode_zworker_process_result",
+                "opencode_zworker_revision_prompt",
             }
             self.assertEqual({tool.name for tool in tools}, expected)
 

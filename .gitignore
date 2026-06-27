@@ -4,3 +4,5 @@ __pycache__/
 _local/
 .ai/zchat/runtime/
 .ai/zchat/runtime/**
+.ai/zworker/runtime/
+.ai/zworker/runtime/**

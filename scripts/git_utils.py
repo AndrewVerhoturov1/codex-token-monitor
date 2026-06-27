@@ -43,6 +43,29 @@ def zchat_request_name_is_valid(name: str) -> bool:
     return bool(re.match(r"^ZCHAT-\d{8}-\d{6}-[a-z0-9][a-z0-9-]*$", name))
 
 
+def zworker_request_name(task: str | None = None) -> str:
+    now = datetime.now(timezone.utc)
+    ts = now.strftime("%Y%m%d-%H%M%S")
+    slug = _zchat_task_to_slug(task) if task else "task"
+    return f"ZWORKER-{ts}-{slug}"
+
+
+def zworker_request_name_is_valid(name: str) -> bool:
+    import re
+    return bool(re.match(r"^ZWORKER-\d{8}-\d{6}-[a-z0-9][a-z0-9-]*$", name))
+
+
+def zworker_revision_name(base_name: str, revision: int) -> str:
+    if revision < 2:
+        raise ValueError("Revision must be >= 2")
+    return f"{base_name}-ver{revision}"
+
+
+def zworker_revision_name_is_valid(name: str) -> bool:
+    import re
+    return bool(re.match(r"^ZWORKER-\d{8}-\d{6}-[a-z0-9][a-z0-9-]*-ver\d+$", name))
+
+
 @dataclass
 class BranchMetadata:
     slug_id: str = ""
@@ -144,6 +167,10 @@ def delete_temp_branch(repo_path: Path, branch_name: str, *, return_to: str = ""
         deleted=local_ok,
         error=error,
     )
+
+
+def zworker_context_branch_name(request_name: str) -> str:
+    return f"zworker/context/{request_name}"
 
 
 def resolve_branch_decision(

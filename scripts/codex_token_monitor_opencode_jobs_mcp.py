@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 from pathlib import Path
@@ -506,6 +507,207 @@ def opencode_zchat_inspect_verification_pack(
     dir_path = Path(normalized_dir)
     result = jobs.zchat_inspect_verification_pack(dir_path)
     return zchat_inspect_verification_pack_result_to_mcp_response(result)
+
+
+def zworker_prompt_pack_result_to_mcp_response(result: jobs.ZworkerPromptPackResult) -> dict[str, Any]:
+    response = {
+        "mode": result.mode,
+        "request_id": result.request_id,
+        "output_dir": str(Path(result.output_dir).resolve(strict=False)) if result.output_dir else "",
+        "artifacts": result.artifacts,
+        "status": result.status,
+        "error": result.error,
+    }
+    output_dir = Path(result.output_dir) if result.output_dir else None
+    if output_dir:
+        manifest_path = output_dir / "request_manifest.json"
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                response["branch_may_be_needed"] = manifest.get("branch_may_be_needed", False)
+                response["branch_name"] = manifest.get("branch_name", "")
+                response["branch_slug_id"] = manifest.get("branch_slug_id", "")
+            except (OSError, json.JSONDecodeError):
+                pass
+    return response
+
+
+def zworker_unpack_result_to_mcp_response(result: jobs.ZworkerUnpackResult) -> dict[str, Any]:
+    return {
+        "mode": result.mode,
+        "request_id": result.request_id,
+        "unpack_dir": str(Path(result.unpack_dir).resolve(strict=False)) if result.unpack_dir else "",
+        "verdict": result.verdict,
+        "status": result.status,
+        "error": result.error,
+        "answer_found": result.answer_found,
+        "files_extracted": result.files_extracted,
+        "files_rejected": result.files_rejected,
+        "rejection_details": result.rejection_details,
+        "report_path": str(Path(result.report_path).resolve(strict=False)) if result.report_path else "",
+    }
+
+
+def zworker_process_result_to_mcp_response(result: jobs.ZworkerProcessResultResult) -> dict[str, Any]:
+    return {
+        "mode": result.mode,
+        "request_id": result.request_id,
+        "decision": result.decision,
+        "status": result.status,
+        "error": result.error,
+        "answer_read": result.answer_read,
+        "sources_report_found": result.sources_report_found,
+        "sources_report_valid": result.sources_report_valid,
+        "sources_report_issues": result.sources_report_issues,
+        "repo_files_found": result.repo_files_found,
+        "repo_files_in_scope": result.repo_files_in_scope,
+        "repo_files_out_of_scope": result.repo_files_out_of_scope,
+        "auto_applied": result.auto_applied,
+        "auto_apply_files": result.auto_apply_files,
+        "auto_apply_errors": result.auto_apply_errors,
+        "requires_revision": result.requires_revision,
+        "requires_clarification": result.requires_clarification,
+        "human_readable_summary": result.human_readable_summary,
+        "report_path": str(Path(result.report_path).resolve(strict=False)) if result.report_path else "",
+    }
+
+
+def zworker_revision_prompt_result_to_mcp_response(result: jobs.ZworkerRevisionPromptResult) -> dict[str, Any]:
+    return {
+        "mode": result.mode,
+        "request_id": result.request_id,
+        "revision_name": result.revision_name,
+        "revision_dir": str(Path(result.revision_dir).resolve(strict=False)) if result.revision_dir else "",
+        "revision_number": result.revision_number,
+        "status": result.status,
+        "error": result.error,
+        "artifacts": result.artifacts,
+        "prompt_lines": result.prompt_lines,
+    }
+
+
+@mcp.tool(
+    name="opencode_zworker_prompt_pack",
+    description=(
+        "Create a zworker prompt artifact pack: prompt.md, prompt_passport.md, request_manifest.json. "
+        "Lightweight route parallel to zchat. No manifest/checksum contract (strict_zip_contract=false). "
+        "ZIP layout uses root_repo_paths (answer.md at root, repo files at repo-relative paths). "
+        "Supports allowed_paths, forbidden_paths, expected_outputs as comma-separated strings or plain text."
+    ),
+)
+def opencode_zworker_prompt_pack(
+    task_text: str,
+    context: str | None = None,
+    constraints: str | None = None,
+    source_urls: str | None = None,
+    output_dir: str | None = None,
+    allowed_paths: str | None = None,
+    forbidden_paths: str | None = None,
+    expected_outputs: str | None = None,
+) -> dict[str, Any]:
+    normalized_task = _normalize_text(task_text)
+    if normalized_task is None:
+        return {"mode": jobs.ZWORKER_MODE_PROMPT_PACK, "status": "failed", "error": "task_text is required"}
+    url_list = None
+    if source_urls:
+        url_list = [u.strip() for u in source_urls.split(",") if u.strip()]
+    output = None
+    if output_dir:
+        output = Path(output_dir)
+    result = jobs.zworker_prompt_pack(
+        normalized_task,
+        output_dir=output,
+        context=_normalize_text(context) or "",
+        constraints=_normalize_text(constraints) or "",
+        source_urls=url_list,
+        allowed_paths=allowed_paths,
+        forbidden_paths=forbidden_paths,
+        expected_outputs=expected_outputs,
+    )
+    return zworker_prompt_pack_result_to_mcp_response(result)
+
+
+@mcp.tool(
+    name="opencode_zworker_result_unpack",
+    description=(
+        "Safely unpack a zworker ZIP result into the inbox. "
+        "Extracts only into .ai/zworker/runtime/inbox/<request-id>/. "
+        "Rejects absolute paths, path traversal, .git/, runtime dirs. "
+        "Does NOT execute anything. Does NOT copy to repo. "
+        "Requires answer.md at ZIP root; if missing, marks result as requiring revision."
+    ),
+)
+def opencode_zworker_result_unpack(
+    zip_path: str,
+    request_id: str = "",
+    target_root: str | None = None,
+) -> dict[str, Any]:
+    normalized_zip = _normalize_text(zip_path)
+    if normalized_zip is None:
+        return {"mode": jobs.ZWORKER_MODE_RESULT_UNPACK, "status": "failed", "verdict": "rejected_structural", "error": "zip_path is required"}
+    zip_file = Path(normalized_zip)
+    if not zip_file.exists():
+        return {"mode": jobs.ZWORKER_MODE_RESULT_UNPACK, "status": "failed", "verdict": "rejected_structural", "error": f"ZIP file not found: {zip_file}"}
+    root = Path(target_root) if target_root else jobs.REPO_ROOT
+    result = jobs.zworker_result_unpack(
+        zip_file,
+        request_id=_normalize_text(request_id) or "",
+        target_root=root,
+    )
+    return zworker_unpack_result_to_mcp_response(result)
+
+
+@mcp.tool(
+    name="opencode_zworker_process_result",
+    description=(
+        "Process unpacked zworker result. Reads answer.md first, validates Sources Read Report "
+        "structure (Read fully, Read partially, Not read, External search used), checks repo files "
+        "against request manifest scope. Auto-applies in-scope files when safe and clear. "
+        "Blocks auto-apply for out-of-scope files or missing/incomplete reports. "
+        "Returns human-readable decision: accepted / needs_revision / needs_clarification."
+    ),
+)
+def opencode_zworker_process_result(
+    request_id: str,
+    unpack_dir: str | None = None,
+    target_root: str | None = None,
+) -> dict[str, Any]:
+    normalized_request_id = _normalize_text(request_id)
+    if normalized_request_id is None:
+        return {"mode": jobs.ZWORKER_MODE_PROCESS_RESULT, "status": "failed", "error": "request_id is required"}
+    root = Path(target_root) if target_root else jobs.REPO_ROOT
+    udir = Path(unpack_dir) if unpack_dir else None
+    result = jobs.zworker_process_result(
+        normalized_request_id,
+        unpack_dir=udir,
+        target_root=root,
+    )
+    return zworker_process_result_to_mcp_response(result)
+
+
+@mcp.tool(
+    name="opencode_zworker_revision_prompt",
+    description=(
+        "Generate a follow-up revision prompt for a zworker request. "
+        "Creates ver2/ver3 artifacts in .ai/zworker/runtime/revisions/<request-id>-verN/. "
+        "Includes feedback, reminds about answer.md and Sources Read Report requirements. "
+        "Uses -ver2/-ver3 naming convention."
+    ),
+)
+def opencode_zworker_revision_prompt(
+    request_id: str,
+    feedback: str | None = None,
+    revision_number: int = 0,
+) -> dict[str, Any]:
+    normalized_request_id = _normalize_text(request_id)
+    if normalized_request_id is None:
+        return {"mode": jobs.ZWORKER_MODE_REVISION_PROMPT, "status": "failed", "error": "request_id is required"}
+    result = jobs.zworker_revision_prompt(
+        normalized_request_id,
+        feedback=_normalize_text(feedback) or "",
+        revision_number=revision_number,
+    )
+    return zworker_revision_prompt_result_to_mcp_response(result)
 
 
 def main() -> None:
