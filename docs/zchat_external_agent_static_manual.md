@@ -158,7 +158,7 @@ Format MUST be markdown-friendly. The report MUST be placed inside `context_read
 
 ### Confirmed
 
-Facts verified from provided sources. Cite specific source URL and line/region.
+Facts verified from provided sources. Cite source URL and section heading / anchor / short quoted phrase when available. Use line numbers only when the source view provides line numbers. Never invent line numbers.
 
 ### Inferred
 

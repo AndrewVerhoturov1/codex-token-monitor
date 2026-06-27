@@ -2306,6 +2306,11 @@ class ZchatExternalAgentComplianceTests(unittest.TestCase):
         content = manual_path.read_text(encoding="utf-8")
         self.assertIn("Never invent line numbers.", content)
 
+    def test_static_manual_no_longer_contains_old_cite_phrase(self) -> None:
+        manual_path = ROOT / "docs" / "zchat_external_agent_static_manual.md"
+        content = manual_path.read_text(encoding="utf-8")
+        self.assertNotIn("Cite specific source URL and line/region", content)
+
     def test_static_manual_required_reading_contains_this_task_prompt(self) -> None:
         manual_path = ROOT / "docs" / "zchat_external_agent_static_manual.md"
         content = manual_path.read_text(encoding="utf-8")
