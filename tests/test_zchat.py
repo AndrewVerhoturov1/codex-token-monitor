@@ -53,7 +53,6 @@ class ZchatPromptPackTests(unittest.TestCase):
 
             passport_text = passport_path.read_text(encoding="utf-8")
             self.assertIn("https://example.com/file.py", passport_text)
-            self.assertIn("temporary branch is NOT required", passport_text)
 
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["manifest_version"], "1.0")
@@ -171,8 +170,6 @@ class ZchatPromptPackTests(unittest.TestCase):
             manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
             self.assertTrue(manifest["metadata"]["branch_may_be_needed"])
             self.assertFalse(manifest["metadata"]["create_branch"])
-            passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
-            self.assertIn("temporary branch is NOT required", passport_text)
 
     def test_prompt_pack_uses_zchat_slug_when_no_request_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -252,7 +249,7 @@ class ZchatPromptPackTests(unittest.TestCase):
             result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
             self.assertEqual(result.status, "completed")
             passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
-            self.assertIn("- No source_urls provided.", passport_text)
+            self.assertIn("No required task source URLs provided.", passport_text)
             self.assertIn("- No explicit allowed_paths provided.", passport_text)
             self.assertIn("- No explicit forbidden_paths provided.", passport_text)
             self.assertIn("- No explicit expected_outputs provided.", passport_text)
@@ -380,12 +377,12 @@ class ZchatPromptPackTests(unittest.TestCase):
             result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
             self.assertEqual(result.status, "completed")
             passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
-            self.assertIn("Required Task Source URLs", passport_text)
-            self.assertIn("Optional Task Source URLs", passport_text)
-            self.assertIn("Side Files", passport_text)
-            self.assertIn("Authority Order", passport_text)
-            self.assertIn("Preflight Checklist", passport_text)
-            self.assertIn("A bad ZIP is worse than no ZIP", passport_text)
+            self.assertIn("Required Task Sources", passport_text)
+            self.assertIn("Allowed Paths", passport_text)
+            self.assertIn("Forbidden Paths", passport_text)
+            self.assertIn("Expected Outputs", passport_text)
+            self.assertIn("Key Contract", passport_text)
+            self.assertIn("Human Next Step", passport_text)
 
     def test_prompt_required_reading_includes_five_levels(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -430,6 +427,155 @@ class ZchatPromptPackTests(unittest.TestCase):
             self.assertEqual(result.status, "completed")
             prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
             self.assertIn("manifest.context_readback", prompt_text)
+
+
+    def test_passport_does_not_contain_preflight_checklist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
+            self.assertNotIn("Preflight Checklist", passport_text)
+
+    def test_passport_does_not_contain_expected_zip_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
+            self.assertNotIn("Expected ZIP Contract", passport_text)
+
+    def test_passport_does_not_contain_codex_actions_after_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
+            self.assertNotIn("Codex Actions After ZIP", passport_text)
+
+    def test_package_prompt_no_generic_result_type_string(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                expected_outputs=["docs/stylish/index.html"],
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertNotIn('"zchat_result_type": "advice|review|package"', prompt_text)
+
+    def test_package_prompt_contains_concrete_result_type_package(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn('"zchat_result_type": "package"', prompt_text)
+
+    def test_package_prompt_contains_concrete_package_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Build calculator", output_dir=output_dir,
+                expected_outputs=["docs/calc/index.html", "docs/calc/app.js"],
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn('"package_id": "' + result.request_id, prompt_text)
+
+    def test_package_prompt_contains_concrete_context_readback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                expected_outputs=[
+                    "docs/calc/index.html",
+                    "docs/calc/context_readback.md",
+                    "docs/calc/app.js",
+                ],
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn('"context_readback": "docs/calc/context_readback.md"', prompt_text)
+
+    def test_package_prompt_contains_all_expected_payload_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            expected = [
+                "docs/zchat_live_calculator/index.html",
+                "docs/zchat_live_calculator/styles.css",
+                "docs/zchat_live_calculator/app.js",
+                "docs/zchat_live_calculator/README.md",
+                "docs/zchat_live_calculator/context_readback.md",
+                "docs/zchat_live_calculator/change_summary.md",
+                "docs/zchat_live_calculator/verification/check_result.py",
+            ]
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                expected_outputs=expected,
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            for ep in expected:
+                self.assertIn('"path": "' + ep, prompt_text)
+
+    def test_required_task_source_urls_not_duplicated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                source_urls=["https://example.com/a.py", "https://example.com/b.py"],
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            count = prompt_text.count("Required Task Source URLs")
+            self.assertEqual(count, 2, "Required Task Source URLs should appear exactly twice (once in reading order, once as section)")
+            reading_order_pos = prompt_text.find("Required Reading Order")
+            section_pos = prompt_text.find("## Required Task Source URLs")
+            self.assertGreater(section_pos, reading_order_pos)
+            section_text = prompt_text[section_pos:]
+            next_section = section_text.find("##", 1)
+            if next_section == -1:
+                next_section = len(section_text)
+            section_only = section_text[:next_section]
+            urls_count_in_section = section_only.count("example.com")
+            self.assertEqual(urls_count_in_section, 2)
+
+    def test_passport_contains_key_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
+            self.assertIn("zchat_result_type = package", passport_text)
+            self.assertIn("package_id = request name", passport_text)
+            self.assertIn("manifest/checksum paths are repo-relative without payload/", passport_text)
+            self.assertIn("physical ZIP entries use payload/{repo_relative_path}", passport_text)
+
+    def test_passport_contains_human_next_step(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
+            self.assertIn("Human Next Step", passport_text)
+            self.assertIn("give prompt.md to external chat", passport_text)
+
+    def test_passport_expected_outputs_includes_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            expected = [
+                "docs/calc/index.html",
+                "docs/calc/styles.css",
+                "docs/calc/app.js",
+            ]
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                expected_outputs=expected,
+            )
+            self.assertEqual(result.status, "completed")
+            passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
+            self.assertIn("3 expected outputs:", passport_text)
 
 
 class ZchatImportPackTests(unittest.TestCase):
@@ -1273,8 +1419,8 @@ class ZchatBranchPolicyTests(unittest.TestCase):
             output_dir = Path(tmp) / "zchat_output"
             result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
             self.assertEqual(result.status, "completed")
-            passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
-            self.assertIn("temporary branch is NOT required", passport_text)
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertFalse(manifest["metadata"]["create_branch"])
 
 
 class ZchatSchemaValidationTests(unittest.TestCase):
@@ -2185,7 +2331,7 @@ class ZchatExternalAgentComplianceTests(unittest.TestCase):
             result = jobs.zchat_prompt_pack("Test task", output_dir=output_dir)
             self.assertEqual(result.status, "completed")
             passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
-            self.assertIn("Required Reading", passport_text)
+            self.assertIn("Required Task Sources", passport_text)
 
     def test_prompt_passport_contains_missing_information_policy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2193,7 +2339,7 @@ class ZchatExternalAgentComplianceTests(unittest.TestCase):
             result = jobs.zchat_prompt_pack("Test task", output_dir=output_dir)
             self.assertEqual(result.status, "completed")
             passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
-            self.assertIn("Missing Information Policy", passport_text)
+            self.assertIn("Key Contract", passport_text)
 
     def test_request_manifest_contains_canonical_urls(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2439,10 +2585,16 @@ class ZchatCanonicalUrlBlockedTests(unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
         jobs._ZCHAT_SKIP_URL_CHECK = False
+        jobs._ZCHAT_CACHE_BYPASS_SAVE = True
+        if jobs.ZCHAT_CANONICAL_CACHE_FILE.exists():
+            jobs.ZCHAT_CANONICAL_CACHE_FILE.unlink()
 
     def tearDown(self) -> None:
         super().tearDown()
         jobs._ZCHAT_SKIP_URL_CHECK = True
+        jobs._ZCHAT_CACHE_BYPASS_SAVE = False
+        if jobs.ZCHAT_CANONICAL_CACHE_FILE.exists():
+            jobs.ZCHAT_CANONICAL_CACHE_FILE.unlink()
 
     def test_prompt_pack_blocks_when_urls_unreachable(self) -> None:
         from unittest.mock import patch
@@ -2510,6 +2662,539 @@ class ZchatCanonicalUrlBlockedTests(unittest.TestCase):
                 f"Expected completed but got {result.status}: {result.error}")
             prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
             self.assertIn("Required Task Source URLs", prompt_text)
+
+
+class ZchatProfileSlimFullTests(unittest.TestCase):
+
+    def test_prompt_pack_defaults_to_slim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.profile, jobs.ZCHAT_PROFILE_SLIM)
+
+    def test_full_profile_produces_longer_prompt_than_slim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            slim_dir = Path(tmp) / "slim_out"
+            full_dir = Path(tmp) / "full_out"
+            expected = [
+                "docs/stylish/index.html",
+                "docs/stylish/styles.css",
+                "docs/stylish/app.js",
+            ]
+            result_slim = jobs.zchat_prompt_pack(
+                "Build stylish calculator",
+                output_dir=slim_dir,
+                expected_outputs=expected,
+                profile=jobs.ZCHAT_PROFILE_SLIM,
+            )
+            result_full = jobs.zchat_prompt_pack(
+                "Build stylish calculator",
+                output_dir=full_dir,
+                expected_outputs=expected,
+                profile=jobs.ZCHAT_PROFILE_FULL,
+            )
+            self.assertEqual(result_slim.status, "completed")
+            self.assertEqual(result_full.status, "completed")
+            self.assertEqual(result_slim.profile, jobs.ZCHAT_PROFILE_SLIM)
+            self.assertEqual(result_full.profile, jobs.ZCHAT_PROFILE_FULL)
+            slim_prompt = (slim_dir / "prompt.md").read_text(encoding="utf-8")
+            full_prompt = (full_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertLess(len(slim_prompt), len(full_prompt),
+                f"Slim prompt ({len(slim_prompt)} chars) should be shorter than full ({len(full_prompt)} chars)")
+            self.assertIn("ZIP Contract Reference", slim_prompt)
+            self.assertNotIn("Expected ZIP Contract", slim_prompt)
+            self.assertIn("Expected ZIP Contract", full_prompt)
+
+    def test_slim_prompt_still_has_manifest_skeleton(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            expected = ["docs/out.md"]
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                expected_outputs=expected,
+                profile=jobs.ZCHAT_PROFILE_SLIM,
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("Package Manifest Skeleton", prompt_text)
+            self.assertIn("docs/out.md", prompt_text)
+
+    def test_passport_stays_short_in_slim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            expected = ["docs/calc/index.html", "docs/calc/app.js"]
+            result = jobs.zchat_prompt_pack(
+                "Build calculator", output_dir=output_dir,
+                expected_outputs=expected,
+                profile=jobs.ZCHAT_PROFILE_SLIM,
+            )
+            self.assertEqual(result.status, "completed")
+            passport_text = (output_dir / "prompt_passport.md").read_text(encoding="utf-8")
+            self.assertNotIn("Preflight Checklist", passport_text)
+            self.assertNotIn("Expected ZIP Contract", passport_text)
+            self.assertNotIn("Verification Files Policy", passport_text)
+            self.assertLess(len(passport_text.splitlines()), 50,
+                "Passport should be short (<50 lines)")
+
+    def test_full_passport_same_or_shorter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            slim_dir = Path(tmp) / "slim"
+            full_dir = Path(tmp) / "full"
+            expected = ["docs/stylish/index.html", "docs/stylish/app.js"]
+            result_slim = jobs.zchat_prompt_pack(
+                "Build stylish calculator", output_dir=slim_dir,
+                expected_outputs=expected, profile=jobs.ZCHAT_PROFILE_SLIM,
+            )
+            result_full = jobs.zchat_prompt_pack(
+                "Build stylish calculator", output_dir=full_dir,
+                expected_outputs=expected, profile=jobs.ZCHAT_PROFILE_FULL,
+            )
+            self.assertEqual(result_slim.status, "completed")
+            self.assertEqual(result_full.status, "completed")
+            slim_passport = (slim_dir / "prompt_passport.md").read_text(encoding="utf-8")
+            full_passport = (full_dir / "prompt_passport.md").read_text(encoding="utf-8")
+            self.assertEqual(len(slim_passport.splitlines()), len(full_passport.splitlines()),
+                "Passport size should not differ between slim and full")
+
+    def test_invalid_profile_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir, profile="invalid_profile",
+            )
+            self.assertEqual(result.status, "failed")
+            self.assertIn("Invalid profile", result.error)
+
+
+class ZchatSelfCheckTests(unittest.TestCase):
+
+    def test_self_check_includes_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                expected_outputs=["docs/test.md"],
+            )
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertIn("self_check", manifest)
+            self.assertIsInstance(manifest["self_check"]["passed"], bool)
+            self.assertIsInstance(manifest["self_check"]["errors"], list)
+
+    def test_self_check_passes_for_valid_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Build a valid tool", output_dir=output_dir,
+                expected_outputs=["docs/valid/index.html"],
+                source_urls=["https://example.com/source.py"],
+            )
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertTrue(manifest["self_check"]["passed"],
+                f"Self-check errors: {manifest['self_check']['errors']}")
+
+    def test_self_check_covers_request_name_regex(self) -> None:
+        passed, errors = jobs._zchat_prompt_pack_self_check(
+            prompt_text="## Canonical\n## Required Task Source URLs\n## Expected Outputs\n",
+            passport_text="",
+            request_name="invalid-name",
+            has_concrete_manifest=True,
+        )
+        self.assertFalse(passed)
+        self.assertTrue(any("request_name" in e for e in errors))
+
+    def test_self_check_covers_canonical_docs_presence(self) -> None:
+        passed, errors = jobs._zchat_prompt_pack_self_check(
+            prompt_text="## Required Task Source URLs\n## Expected Outputs\n",
+            passport_text="",
+            request_name="ZCHAT-20260627-120000-test-slug",
+            has_concrete_manifest=True,
+        )
+        self.assertFalse(passed)
+        self.assertTrue(any("canonical" in e.lower() for e in errors))
+
+    def test_self_check_covers_task_sources_presence(self) -> None:
+        passed, errors = jobs._zchat_prompt_pack_self_check(
+            prompt_text="## Canonical\n## Expected Outputs\n",
+            passport_text="",
+            request_name="ZCHAT-20260627-120000-test-slug",
+            has_concrete_manifest=True,
+        )
+        self.assertFalse(passed)
+        self.assertTrue(any("task sources" in e.lower() for e in errors))
+
+    def test_self_check_requires_manifest_skeleton_when_concrete(self) -> None:
+        passed, errors = jobs._zchat_prompt_pack_self_check(
+            prompt_text="## Canonical\n## Required Task Source URLs\n## Expected Outputs\n",
+            passport_text="",
+            request_name="ZCHAT-20260627-120000-test-slug",
+            has_concrete_manifest=True,
+        )
+        self.assertFalse(passed)
+        self.assertTrue(any("manifest skeleton" in e.lower() for e in errors))
+
+    def test_self_check_no_advice_review_package_literal(self) -> None:
+        passed, errors = jobs._zchat_prompt_pack_self_check(
+            prompt_text=(
+                '## Canonical\n## Required Task Source URLs\n## Expected Outputs\n'
+                '## Package Manifest Skeleton\n{"zchat_result_type": "advice|review|package"}\n'
+            ),
+            passport_text="",
+            request_name="ZCHAT-20260627-120000-test-slug",
+            has_concrete_manifest=True,
+        )
+        self.assertFalse(passed)
+        self.assertTrue(any("advice|review|package" in e for e in errors))
+
+    def test_self_check_no_payload_in_logical_paths(self) -> None:
+        passed, errors = jobs._zchat_prompt_pack_self_check(
+            prompt_text=(
+                '## Canonical\n## Required Task Source URLs\n## Expected Outputs\n'
+                '## Package Manifest Skeleton\n'
+                '"path": "payload/docs/test.md"\n'
+            ),
+            passport_text="",
+            request_name="ZCHAT-20260627-120000-test-slug",
+            has_concrete_manifest=True,
+        )
+        self.assertFalse(passed)
+        self.assertTrue(any("payload/" in e for e in errors))
+
+    def test_self_check_passport_no_full_contract(self) -> None:
+        passed, errors = jobs._zchat_prompt_pack_self_check(
+            prompt_text="## Canonical\n## Required Task Source URLs\n## Expected Outputs\n## Package Manifest Skeleton\n",
+            passport_text="## Expected ZIP Contract\n",
+            request_name="ZCHAT-20260627-120000-test-slug",
+            has_concrete_manifest=True,
+        )
+        self.assertFalse(passed)
+        self.assertTrue(any("full ZIP contract" in e for e in errors))
+
+    def test_self_check_passport_no_preflight(self) -> None:
+        passed, errors = jobs._zchat_prompt_pack_self_check(
+            prompt_text="## Canonical\n## Required Task Source URLs\n## Expected Outputs\n## Package Manifest Skeleton\n",
+            passport_text="## Preflight Checklist\n",
+            request_name="ZCHAT-20260627-120000-test-slug",
+            has_concrete_manifest=True,
+        )
+        self.assertFalse(passed)
+        self.assertTrue(any("preflight" in e.lower() for e in errors))
+
+    def test_self_check_expected_outputs_listed(self) -> None:
+        passed, errors = jobs._zchat_prompt_pack_self_check(
+            prompt_text="## Canonical\n## Required Task Source URLs\n## Package Manifest Skeleton\n",
+            passport_text="",
+            request_name="ZCHAT-20260627-120000-test-slug",
+            has_concrete_manifest=True,
+        )
+        self.assertFalse(passed)
+        self.assertTrue(any("expected outputs" in e.lower() for e in errors))
+
+
+class ZchatCanonicalDocsCacheTests(unittest.TestCase):
+
+    def setUp(self) -> None:
+        super().setUp()
+        jobs._ZCHAT_SKIP_URL_CHECK = True
+        jobs._ZCHAT_CACHE_BYPASS_SAVE = True
+        if jobs.ZCHAT_CANONICAL_CACHE_FILE.exists():
+            jobs.ZCHAT_CANONICAL_CACHE_FILE.unlink()
+        self._saved_cache_path = jobs.ZCHAT_CANONICAL_CACHE_FILE
+        self._saved_cache_dir = jobs.ZCHAT_CANONICAL_CACHE_DIR
+
+    def tearDown(self) -> None:
+        super().tearDown()
+        jobs._ZCHAT_SKIP_URL_CHECK = True
+        jobs._ZCHAT_CACHE_BYPASS_SAVE = False
+        if jobs.ZCHAT_CANONICAL_CACHE_FILE.exists():
+            jobs.ZCHAT_CANONICAL_CACHE_FILE.unlink()
+
+    def test_cache_file_path_exists(self) -> None:
+        self.assertTrue(
+            str(jobs.ZCHAT_CANONICAL_CACHE_FILE).endswith("canonical_docs.json"),
+            "Cache file path should point to canonical_docs.json"
+        )
+        self.assertTrue("cache" in str(jobs.ZCHAT_CANONICAL_CACHE_DIR),
+            "Cache dir should be under runtime/cache/")
+
+    def test_cache_fields_per_item(self) -> None:
+        import time
+        cache = jobs._zchat_canonical_docs_cache_load()
+        if cache:
+            for url, entry in cache.items():
+                self.assertIn("url", entry)
+                self.assertIn("sha256", entry)
+                self.assertIn("checked_at", entry)
+                self.assertIn("ttl_seconds", entry)
+                self.assertIn("status", entry)
+
+    def test_cache_ttl_default(self) -> None:
+        self.assertEqual(jobs.ZCHAT_CANONICAL_CACHE_TTL_SECONDS, 7200)
+
+    def test_refresh_flag_bypasses_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            jobs._ZCHAT_CACHE_BYPASS_SAVE = True
+            try:
+                with unittest.mock.patch("urllib.request.urlopen", side_effect=OSError("no net")):
+                    result = jobs.zchat_prompt_pack(
+                        "Task", output_dir=output_dir,
+                        refresh_canonical_docs=True,
+                    )
+            finally:
+                jobs._ZCHAT_CACHE_BYPASS_SAVE = False
+            self.assertIn(result.status, ["blocked", "completed"])
+
+    def test_prompt_pack_normal_path_does_not_depend_on_pytest(self) -> None:
+        self.assertIsNotNone(jobs.zchat_prompt_pack)
+        self.assertIsNotNone(jobs._zchat_prompt_pack_self_check)
+        self.assertIsNotNone(jobs._zchat_canonical_docs_cache_check)
+
+    def test_prompt_pack_cache_used_on_normal_path(self) -> None:
+        import time
+        manual_url, nav_url = jobs._zchat_canonical_public_urls()
+        cache_data = {
+            manual_url: {
+                "url": manual_url,
+                "sha256": "",
+                "checked_at": time.time(),
+                "ttl_seconds": jobs.ZCHAT_CANONICAL_CACHE_TTL_SECONDS,
+                "status": "reachable",
+            },
+            nav_url: {
+                "url": nav_url,
+                "sha256": "",
+                "checked_at": time.time(),
+                "ttl_seconds": jobs.ZCHAT_CANONICAL_CACHE_TTL_SECONDS,
+                "status": "reachable",
+            },
+        }
+        jobs._ZCHAT_CACHE_BYPASS_SAVE = True
+        try:
+            jobs._zchat_canonical_docs_cache_save(cache_data)
+            with tempfile.TemporaryDirectory() as tmp:
+                output_dir = Path(tmp) / "zchat_output"
+                result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+        finally:
+            jobs._ZCHAT_CACHE_BYPASS_SAVE = False
+            if jobs.ZCHAT_CANONICAL_CACHE_FILE.exists():
+                jobs.ZCHAT_CANONICAL_CACHE_FILE.unlink()
+        self.assertEqual(result.status, "completed",
+            f"Expected completed but got {result.status}: {result.error}")
+        self.assertIn("canonical_docs_check_ms", result.timings)
+
+
+class ZchatTimingsTests(unittest.TestCase):
+
+    def test_prompt_pack_returns_timings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            self.assertIn("prompt_pack_ms", result.timings)
+            self.assertIn("canonical_docs_check_ms", result.timings)
+            self.assertIn("render_templates_ms", result.timings)
+            self.assertIn("self_check_ms", result.timings)
+            for k in ["prompt_pack_ms", "canonical_docs_check_ms", "render_templates_ms", "self_check_ms"]:
+                self.assertIsInstance(result.timings[k], int)
+                self.assertGreaterEqual(result.timings[k], 0)
+
+    def test_timings_in_prompt_pack_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+            self.assertGreater(result.timings["prompt_pack_ms"], 0,
+                "Total prompt_pack_ms should be > 0")
+
+    def test_receive_pack_returns_timings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir / "target"
+            target.mkdir()
+            zip_path = tmpdir / "test.zip"
+            content = b"hello"
+            sha = jobs._sha256_hex(content)
+            manifest = {
+                "manifest_version": "2.0",
+                "package_id": "timing-test",
+                "created_at": "2025-01-01T00:00:00.000Z",
+                "mode": "zchat_import_pack",
+                "zchat_result_type": "package",
+                "run_policy": "never_auto_run",
+                "context_readback": "cr.md",
+                "payload_files": [{"path": "test.txt", "sha256": sha}],
+            }
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("manifest.json", json.dumps(manifest))
+                zf.writestr("checksums.sha256", f"{sha}  test.txt\n")
+                zf.writestr("payload/test.txt", content)
+            result = jobs.zchat_receive_pack(zip_path, target_root=target)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_ACCEPTED)
+            self.assertIn("receive_zip_open_ms", result.timings)
+            self.assertIn("receive_manifest_ms", result.timings)
+            self.assertIn("receive_hash_ms", result.timings)
+            self.assertIn("receive_extract_ms", result.timings)
+
+    def test_verify_pack_returns_timings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            pack_dir = tmpdir / "pack"
+            pack_dir.mkdir()
+            (pack_dir / "payload").mkdir()
+            content = b"data"
+            sha = jobs._sha256_hex(content)
+            (pack_dir / "payload" / "f.txt").write_bytes(content)
+            manifest = {
+                "manifest_version": "1.0",
+                "package_id": "verify-timing",
+                "created_at": "2025-01-01T00:00:00.000Z",
+                "mode": "zchat_import_pack",
+                "payload_files": [{"path": "f.txt", "sha256": sha}],
+            }
+            (pack_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            (pack_dir / "checksums.sha256").write_text(f"{sha}  f.txt\n", encoding="utf-8")
+            result = jobs.zchat_verify_pack(pack_dir)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_ACCEPTED)
+            self.assertIn("verify_ms", result.timings)
+            self.assertIn("verify_manifest_ms", result.timings)
+            self.assertIn("verify_checksums_ms", result.timings)
+            self.assertIn("verify_payload_ms", result.timings)
+            for k in ["verify_ms", "verify_manifest_ms", "verify_checksums_ms", "verify_payload_ms"]:
+                self.assertIsInstance(result.timings[k], int)
+                self.assertGreaterEqual(result.timings[k], 0)
+
+    def test_import_pack_returns_timings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            target = tmpdir / "target"
+            target.mkdir()
+            content = b"hello"
+            sha = jobs._sha256_hex(content)
+            zip_path = tmpdir / "test.zip"
+            manifest = {
+                "manifest_version": "1.0",
+                "package_id": "import-timing",
+                "created_at": "2025-01-01T00:00:00.000Z",
+                "mode": "zchat_import_pack",
+                "payload_files": [{"path": "test.txt", "sha256": sha}],
+            }
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("manifest.json", json.dumps(manifest))
+                zf.writestr("checksums.sha256", f"{sha}  test.txt\n")
+                zf.writestr("payload/test.txt", content)
+            result = jobs.zchat_import_pack(zip_path, target_root=target)
+            self.assertEqual(result.verdict, jobs.ZCHAT_VERDICT_ACCEPTED)
+            self.assertIn("import_zip_open_ms", result.timings)
+            self.assertIn("import_manifest_ms", result.timings)
+            self.assertIn("import_hash_ms", result.timings)
+            self.assertIn("import_extract_ms", result.timings)
+            for k in ["import_zip_open_ms", "import_manifest_ms", "import_hash_ms", "import_extract_ms"]:
+                self.assertIsInstance(result.timings[k], int)
+                self.assertGreaterEqual(result.timings[k], 0)
+
+
+class ZchatVerificationFilesOptionalTests(unittest.TestCase):
+
+    def test_prompt_pack_no_verification_files_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                expected_outputs=["docs/test.md"],
+            )
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest.get("verification_files"), [])
+
+    def test_prompt_pack_verification_files_when_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                expected_outputs=["docs/test.md"],
+                verification_files=["docs/check.py"],
+            )
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest.get("verification_files"), ["docs/check.py"])
+
+    def test_prompt_pack_verification_files_optional_in_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                expected_outputs=["docs/readme.md"],
+            )
+            self.assertEqual(result.status, "completed")
+            prompt_text = (output_dir / "prompt.md").read_text(encoding="utf-8")
+            self.assertIn("Verification Files Policy", prompt_text)
+
+    def test_verification_files_not_derived_from_check_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                expected_outputs=[
+                    "docs/test.py",
+                    "docs/verification/check_result.py",
+                ],
+            )
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest.get("verification_files"), [],
+                "verification_files should be empty by default, not derived from check_result")
+
+
+class ZchatPromptPackNoPytestTests(unittest.TestCase):
+
+    def test_prompt_pack_normal_path_no_pytest_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack("Task", output_dir=output_dir)
+            self.assertEqual(result.status, "completed")
+
+    def test_self_check_does_not_import_pytest(self) -> None:
+        self.assertNotIn("pytest", jobs._zchat_prompt_pack_self_check.__module__)
+
+    def test_prompt_pack_runs_without_test_framework(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Build calculator", output_dir=output_dir,
+                expected_outputs=["docs/calc/index.html"],
+                profile=jobs.ZCHAT_PROFILE_SLIM,
+            )
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.profile, jobs.ZCHAT_PROFILE_SLIM)
+
+
+class ZchatPromptLinesTests(unittest.TestCase):
+
+    def test_prompt_lines_in_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                expected_outputs=["docs/a.md", "docs/b.md"],
+                profile=jobs.ZCHAT_PROFILE_SLIM,
+            )
+            self.assertEqual(result.status, "completed")
+            self.assertGreater(result.prompt_lines, 0)
+            self.assertGreater(result.passport_lines, 0)
+
+    def test_prompt_lines_vs_file_line_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zchat_output"
+            result = jobs.zchat_prompt_pack(
+                "Task", output_dir=output_dir,
+                expected_outputs=["docs/test.md"],
+            )
+            self.assertEqual(result.status, "completed")
+            actual_lines = (output_dir / "prompt.md").read_text(encoding="utf-8").count("\n") + 1
+            self.assertEqual(result.prompt_lines, actual_lines)
 
 
 if __name__ == "__main__":

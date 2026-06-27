@@ -129,7 +129,7 @@ payload/               - Directory containing all deliverable files
   "package_id": "{non-empty string}",
   "created_at": "{ISO8601 UTC}",
   "mode": "zchat_import_pack",
-  "zchat_result_type": "advice|review|package",
+  "zchat_result_type": "package",
   "run_policy": "never_auto_run",
   "context_readback": "{repo_relative_path}",
   "payload_files": [
