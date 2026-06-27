@@ -3197,5 +3197,299 @@ class ZchatPromptLinesTests(unittest.TestCase):
             self.assertEqual(result.prompt_lines, actual_lines)
 
 
+class ZchatMatchPackTests(unittest.TestCase):
+
+    def _create_quarantine_with_manifest(
+        self, tmpdir: Path, manifest_extras: dict | None, files: list[tuple[str, str]],
+    ) -> Path:
+        quarantine = tmpdir / "quarantine"
+        (quarantine / "payload").mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "manifest_version": "2.0",
+            "package_id": "ZCHAT-20260627-120000-stylish-calc",
+            "created_at": "2025-06-01T12:00:00.000Z",
+            "mode": "zchat_import_pack",
+            "zchat_result_type": "package",
+            "run_policy": "never_auto_run",
+            "context_readback": "docs/stylish-calc/context_readback.md",
+            "payload_files": [],
+            "verification_files": [],
+        }
+        if manifest_extras:
+            manifest.update(manifest_extras)
+        for fpath, fcontent in files:
+            file_full = quarantine / "payload" / fpath
+            file_full.parent.mkdir(parents=True, exist_ok=True)
+            file_full.write_text(fcontent, encoding="utf-8")
+            sanitized = fpath.replace("\\", "/")
+            manifest["payload_files"].append({
+                "path": sanitized,
+                "sha256": jobs._sha256_hex(fcontent.encode("utf-8")),
+            })
+        (quarantine / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        return quarantine
+
+    def _create_request_manifest(
+        self, tmpdir: Path, **overrides,
+    ) -> Path:
+        rm_path = tmpdir / "request_manifest.json"
+        manifest = {
+            "manifest_version": "1.0",
+            "request_name": "ZCHAT-20260627-120000-stylish-calc",
+            "request_id": "ZCHAT-20260627-120000-stylish-calc",
+            "created_at": "2025-06-01T12:00:00.000Z",
+            "mode": "zchat_prompt_pack",
+            "allowed_paths": ["docs/"],
+            "forbidden_paths": ["scripts/", "secrets/"],
+            "expected_outputs": [
+                "docs/stylish-calc/index.html",
+                "docs/stylish-calc/styles.css",
+                "docs/stylish-calc/app.js",
+                "docs/stylish-calc/README.md",
+                "docs/stylish-calc/context_readback.md",
+                "docs/stylish-calc/change_summary.md",
+                "docs/stylish-calc/verification/check_result.py",
+            ],
+            "expected_outputs_strict": "true",
+        }
+        manifest.update(overrides)
+        rm_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        return rm_path
+
+    def test_package_id_request_mismatch_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            quarantine = self._create_quarantine_with_manifest(
+                tmpdir,
+                {"package_id": "ZCHAT-20260627-120000-other-request"},
+                [("docs/other/file.txt", "other")],
+            )
+            rm_path = self._create_request_manifest(tmpdir)
+            result = jobs.zchat_match_pack_against_request(
+                quarantine,
+                request_manifest_path=rm_path,
+                receive_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+                verify_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+            )
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.request_match_verdict, jobs.ZCHAT_MATCH_VERDICT_REJECTED_REQUEST_MISMATCH)
+            self.assertEqual(result.verdict, jobs.ZCHAT_MATCH_VERDICT_REJECTED_REQUEST_MISMATCH)
+
+    def test_missing_expected_outputs_rejected_task_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            files = [
+                ("docs/stylish-calc/index.html", "<html><body>calc</body></html>"),
+                ("docs/stylish-calc/styles.css", "body { color: red; }"),
+                ("docs/stylish-calc/app.js", "console.log('calc');"),
+                ("docs/stylish-calc/README.md", "# Calc"),
+            ]
+            quarantine = self._create_quarantine_with_manifest(tmpdir, None, files)
+            rm_path = self._create_request_manifest(tmpdir)
+            result = jobs.zchat_match_pack_against_request(
+                quarantine,
+                request_manifest_path=rm_path,
+                receive_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+                verify_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+            )
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.request_match_verdict, jobs.ZCHAT_MATCH_VERDICT_REJECTED_TASK_OUTPUTS)
+            self.assertEqual(result.verdict, jobs.ZCHAT_MATCH_VERDICT_REJECTED_TASK_OUTPUTS)
+
+    def test_wrong_package_id_with_correct_payload_paths_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            files = [
+                ("docs/stylish-calc/index.html", "<html><body>calc</body></html>"),
+                ("docs/stylish-calc/styles.css", "body { color: red; }"),
+                ("docs/stylish-calc/app.js", "console.log('calc');"),
+                ("docs/stylish-calc/README.md", "# Calc"),
+                ("docs/stylish-calc/context_readback.md", "## Sources Read Report\n\nSTATIC_MANUAL_READ: true\n"),
+                ("docs/stylish-calc/change_summary.md", "# Changes"),
+                ("docs/stylish-calc/verification/check_result.py", "# verification"),
+            ]
+            quarantine = self._create_quarantine_with_manifest(
+                tmpdir,
+                {"package_id": "ZCHAT-20260627-120000-wrong-calc"},
+                files,
+            )
+            rm_path = self._create_request_manifest(tmpdir)
+            result = jobs.zchat_match_pack_against_request(
+                quarantine,
+                request_manifest_path=rm_path,
+                receive_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+                verify_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+            )
+            self.assertEqual(result.request_match_verdict, jobs.ZCHAT_MATCH_VERDICT_REJECTED_REQUEST_MISMATCH)
+
+    def test_js_with_eval_new_function_fetch_rejected_content_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            files = [
+                ("docs/stylish-calc/index.html", "<html><body>calc</body></html>"),
+                ("docs/stylish-calc/styles.css", "body { color: red; }"),
+                ("docs/stylish-calc/app.js", "eval('alert(1)'); new Function('return 1'); fetch('https://evil.com');"),
+                ("docs/stylish-calc/README.md", "# Calc"),
+                ("docs/stylish-calc/context_readback.md", "## Sources Read Report\n\nSTATIC_MANUAL_READ: true\n"),
+                ("docs/stylish-calc/change_summary.md", "# Changes"),
+                ("docs/stylish-calc/verification/check_result.py", "# verification"),
+            ]
+            quarantine = self._create_quarantine_with_manifest(tmpdir, None, files)
+            rm_path = self._create_request_manifest(tmpdir)
+            result = jobs.zchat_match_pack_against_request(
+                quarantine,
+                request_manifest_path=rm_path,
+                receive_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+                verify_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+            )
+            self.assertEqual(result.request_match_verdict, jobs.ZCHAT_MATCH_VERDICT_REJECTED_CONTENT_POLICY)
+            self.assertEqual(result.verdict, jobs.ZCHAT_MATCH_VERDICT_REJECTED_CONTENT_POLICY)
+            self.assertGreater(result.content_policy_violations, 0)
+
+    def test_valid_stylish_calculator_accepted_for_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            files = [
+                ("docs/stylish-calc/index.html", "<html><body><h1>Calc</h1></body></html>"),
+                ("docs/stylish-calc/styles.css", "body { font-family: sans-serif; }"),
+                ("docs/stylish-calc/app.js", "document.querySelector('h1').textContent = '42';"),
+                ("docs/stylish-calc/README.md", "# Stylish Calculator"),
+                ("docs/stylish-calc/context_readback.md",
+                 "## Sources Read Report\n\nSTATIC_MANUAL_READ: true\nSOURCE_URLS_READ: example.com\n"),
+                ("docs/stylish-calc/change_summary.md", "# Changes\n- Added calc"),
+                ("docs/stylish-calc/verification/check_result.py", "def check(): return True"),
+            ]
+            quarantine = self._create_quarantine_with_manifest(
+                tmpdir,
+                {"forbidden_paths": ["scripts/", "secrets/"], "allowed_paths": ["docs/"]},
+                files,
+            )
+            rm_path = self._create_request_manifest(tmpdir)
+            result = jobs.zchat_match_pack_against_request(
+                quarantine,
+                request_manifest_path=rm_path,
+                receive_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+                verify_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+            )
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.request_match_verdict, jobs.ZCHAT_MATCH_VERDICT_ACCEPTED)
+            self.assertEqual(result.verdict, jobs.ZCHAT_MATCH_VERDICT_ACCEPTED)
+            self.assertEqual(result.final_workflow_verdict, jobs.ZCHAT_MATCH_VERDICT_ACCEPTED)
+            self.assertEqual(result.content_policy_violations, 0)
+
+    def test_report_contains_structural_verdict_separate_from_final(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            files = [
+                ("docs/stylish-calc/index.html", "<html><body>calc</body></html>"),
+                ("docs/stylish-calc/styles.css", "body { color: red; }"),
+                ("docs/stylish-calc/app.js", "console.log('calc');"),
+                ("docs/stylish-calc/README.md", "# Calc"),
+                ("docs/stylish-calc/context_readback.md", "## Sources Read Report\n\nSTATIC_MANUAL_READ: true\n"),
+                ("docs/stylish-calc/change_summary.md", "# Changes"),
+                ("docs/stylish-calc/verification/check_result.py", "# verification"),
+            ]
+            quarantine = self._create_quarantine_with_manifest(
+                tmpdir,
+                {"forbidden_paths": ["scripts/", "secrets/"], "allowed_paths": ["docs/"]},
+                files,
+            )
+            rm_path = self._create_request_manifest(tmpdir)
+            result = jobs.zchat_match_pack_against_request(
+                quarantine,
+                request_manifest_path=rm_path,
+                receive_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+                verify_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+            )
+            self.assertTrue(Path(result.report_path).exists())
+            report_text = Path(result.report_path).read_text(encoding="utf-8")
+            self.assertIn("Receive Structural Verdict", report_text)
+            self.assertIn("Verify Checksum/Path Verdict", report_text)
+            self.assertIn("Request Match Verdict", report_text)
+            self.assertIn("Final Workflow Verdict", report_text)
+            self.assertNotEqual(
+                report_text.find("Receive Structural Verdict"),
+                report_text.find("Final Workflow Verdict"),
+            )
+
+    def test_content_policy_rejects_css_import_url(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            files = [
+                ("docs/stylish-calc/index.html", "<html><body>calc</body></html>"),
+                ("docs/stylish-calc/styles.css", "@import url('https://evil.com/bad.css');"),
+                ("docs/stylish-calc/app.js", "console.log('ok');"),
+                ("docs/stylish-calc/README.md", "# Calc"),
+                ("docs/stylish-calc/context_readback.md", "## Sources Read Report\n\nSTATIC_MANUAL_READ: true\n"),
+                ("docs/stylish-calc/change_summary.md", "# Changes"),
+                ("docs/stylish-calc/verification/check_result.py", "# verification"),
+            ]
+            quarantine = self._create_quarantine_with_manifest(
+                tmpdir,
+                {"forbidden_paths": ["scripts/", "secrets/"], "allowed_paths": ["docs/"]},
+                files,
+            )
+            rm_path = self._create_request_manifest(tmpdir)
+            result = jobs.zchat_match_pack_against_request(
+                quarantine,
+                request_manifest_path=rm_path,
+                receive_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+                verify_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+            )
+            self.assertEqual(result.request_match_verdict, jobs.ZCHAT_MATCH_VERDICT_REJECTED_CONTENT_POLICY)
+
+    def test_content_policy_rejects_google_fonts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            files = [
+                ("docs/stylish-calc/index.html", '<link href="https://fonts.googleapis.com/css2?family=Roboto" rel="stylesheet">'),
+                ("docs/stylish-calc/styles.css", "body { font-family: Roboto; }"),
+                ("docs/stylish-calc/app.js", "console.log('ok');"),
+                ("docs/stylish-calc/README.md", "# Calc"),
+                ("docs/stylish-calc/context_readback.md", "## Sources Read Report\n\nSTATIC_MANUAL_READ: true\n"),
+                ("docs/stylish-calc/change_summary.md", "# Changes"),
+                ("docs/stylish-calc/verification/check_result.py", "# verification"),
+            ]
+            quarantine = self._create_quarantine_with_manifest(
+                tmpdir,
+                {"forbidden_paths": ["scripts/", "secrets/"], "allowed_paths": ["docs/"]},
+                files,
+            )
+            rm_path = self._create_request_manifest(tmpdir)
+            result = jobs.zchat_match_pack_against_request(
+                quarantine,
+                request_manifest_path=rm_path,
+                receive_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+                verify_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+            )
+            self.assertEqual(result.request_match_verdict, jobs.ZCHAT_MATCH_VERDICT_REJECTED_CONTENT_POLICY)
+
+    def test_needs_human_when_semantic_inconclusive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            files = [
+                ("docs/stylish-calc/index.html", "<html><body>calc</body></html>"),
+                ("docs/stylish-calc/styles.css", "body { color: red; }"),
+                ("docs/stylish-calc/app.js", "console.log('calc');"),
+                ("docs/stylish-calc/README.md", "# Calc"),
+                ("docs/stylish-calc/context_readback.md", "## Sources Read Report\n\nSTATIC_MANUAL_READ: true\n"),
+                ("docs/stylish-calc/change_summary.md", "# Changes"),
+                ("docs/stylish-calc/verification/check_result.py", "# verification"),
+            ]
+            quarantine = self._create_quarantine_with_manifest(
+                tmpdir,
+                {"context_readback": "docs/stylish-calc/wrong_cr.md"},
+                files,
+            )
+            rm_path = self._create_request_manifest(tmpdir)
+            result = jobs.zchat_match_pack_against_request(
+                quarantine,
+                request_manifest_path=rm_path,
+                receive_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+                verify_verdict=jobs.ZCHAT_VERDICT_ACCEPTED,
+            )
+            self.assertEqual(result.request_match_verdict, jobs.ZCHAT_MATCH_VERDICT_NEEDS_HUMAN)
+
+
 if __name__ == "__main__":
     unittest.main()

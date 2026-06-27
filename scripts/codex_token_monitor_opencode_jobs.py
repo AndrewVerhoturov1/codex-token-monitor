@@ -59,6 +59,7 @@ ZCHAT_MODE_VERIFY_PACK = "zchat_verify_pack"
 ZCHAT_MODE_DECISION_PACK = "zchat_decision_pack"
 ZCHAT_MODE_RECEIVE_PACK = "zchat_receive_pack"
 ZCHAT_MODE_INSPECT_VERIFICATION_PACK = "zchat_inspect_verification_pack"
+ZCHAT_MODE_MATCH_PACK = "zchat_match_pack"
 ZCHAT_VALID_MODES = frozenset({
     ZCHAT_MODE_PROMPT_PACK,
     ZCHAT_MODE_IMPORT_PACK,
@@ -66,6 +67,7 @@ ZCHAT_VALID_MODES = frozenset({
     ZCHAT_MODE_DECISION_PACK,
     ZCHAT_MODE_RECEIVE_PACK,
     ZCHAT_MODE_INSPECT_VERIFICATION_PACK,
+    ZCHAT_MODE_MATCH_PACK,
 })
 
 ZCHAT_RESULT_TYPE_ADVICE = "advice"
@@ -144,6 +146,32 @@ ZCHAT_VALID_DECISIONS = frozenset({
     ZCHAT_DECISION_REJECTED,
     ZCHAT_DECISION_NEEDS_REVISION,
 })
+
+ZCHAT_MATCH_VERDICT_ACCEPTED = "accepted_for_review"
+ZCHAT_MATCH_VERDICT_REJECTED_REQUEST_MISMATCH = "rejected_request_mismatch"
+ZCHAT_MATCH_VERDICT_REJECTED_TASK_OUTPUTS = "rejected_task_outputs"
+ZCHAT_MATCH_VERDICT_REJECTED_CONTENT_POLICY = "rejected_content_policy"
+ZCHAT_MATCH_VERDICT_NEEDS_HUMAN = "needs_human_decision"
+ZCHAT_VALID_MATCH_VERDICTS = frozenset({
+    ZCHAT_MATCH_VERDICT_ACCEPTED,
+    ZCHAT_MATCH_VERDICT_REJECTED_REQUEST_MISMATCH,
+    ZCHAT_MATCH_VERDICT_REJECTED_TASK_OUTPUTS,
+    ZCHAT_MATCH_VERDICT_REJECTED_CONTENT_POLICY,
+    ZCHAT_MATCH_VERDICT_NEEDS_HUMAN,
+})
+
+ZCHAT_CONTENT_POLICY_PATTERNS = [
+    (r"\bfetch\s*\(", "fetch_api"),
+    (r"\bXMLHttpRequest\b", "xmlhttprequest"),
+    (r"\beval\s*\(", "eval_content"),
+    (r"\bnew\s+Function\s*\(", "new_function"),
+    (r"\bimport\s*\(\s*['\"]", "dynamic_import"),
+    (r"@import\s+url\(\s*['\"]\s*https?://", "css_import_http"),
+    (r"url\(\s*['\"]\s*https?://", "css_url_http"),
+    (r"fonts\.googleapis\.com", "google_fonts"),
+    (r"https?://[^\s\"'<]*(?:cdn|cdnjs|unpkg|jsdelivr)[^\s\"'<]*\.(?:js|css)", "external_cdn_script"),
+    (r"https?://[^\s\"'<]*fonts\.(?:googleapis|gstatic)\.com", "google_fonts_external"),
+]
 
 ZCHAT_DIR = REPO_ROOT / ".ai" / "zchat"
 ZCHAT_TEMPLATE_DIR = ZCHAT_DIR / "templates"
@@ -1010,6 +1038,447 @@ class ZchatInspectVerificationPackResult:
     error: str = ""
     report_path: str = ""
     findings: list[dict] = field(default_factory=list)
+
+
+@dataclass
+class ZchatMatchPackResult:
+    mode: str = ZCHAT_MODE_MATCH_PACK
+    verdict: str = ""
+    status: str = ""
+    error: str = ""
+    report_path: str = ""
+    receive_verdict: str = ""
+    verify_verdict: str = ""
+    request_match_verdict: str = ""
+    final_workflow_verdict: str = ""
+    content_policy_violations: int = 0
+    checks: list[dict] = field(default_factory=list)
+
+
+def _zchat_content_policy_check(file_path: str, content: str) -> list[dict]:
+    violations: list[dict] = []
+    ext = Path(file_path).suffix.lower()
+    if ext not in {".html", ".css", ".js"}:
+        return violations
+    for pattern, category in ZCHAT_CONTENT_POLICY_PATTERNS:
+        matches = list(re.finditer(pattern, content, re.IGNORECASE | re.MULTILINE))
+        for match in matches[:3]:
+            snippet = content[max(0, match.start() - 20):match.end() + 20].replace("\n", " ")
+            violations.append({
+                "file": file_path,
+                "category": category,
+                "pattern": pattern,
+                "snippet": snippet.strip(),
+            })
+    return violations
+
+
+def _zchat_derive_expected_context_readback(expected_outputs: list[str]) -> str:
+    if not expected_outputs:
+        return ""
+    for ep in expected_outputs:
+        if "context_readback" in ep:
+            return ep
+    return ""
+
+
+def _zchat_match_pack_report(
+    *,
+    request_manifest: dict,
+    received_manifest: dict,
+    match_checks: list[dict],
+    content_violations: list[dict],
+    receive_verdict: str,
+    verify_verdict: str,
+    request_match_verdict: str,
+    final_verdict: str,
+    timings: dict[str, int],
+) -> str:
+    request_name = str(request_manifest.get("request_name", request_manifest.get("request_id", "")))
+    package_id = str(received_manifest.get("package_id", ""))
+    request_allowed = request_manifest.get("allowed_paths", [])
+    request_forbidden = request_manifest.get("forbidden_paths", [])
+    request_expected = request_manifest.get("expected_outputs", [])
+    manifest_allowed = received_manifest.get("allowed_paths")
+    manifest_forbidden = received_manifest.get("forbidden_paths")
+
+    lines = [
+        "# Zchat Match Pack Report",
+        "",
+        f"- **Request**: `{request_name}`",
+        f"- **Package ID**: `{package_id}`",
+        f"- **Match time**: {_utcnow()}",
+        "",
+        "## Receive Structural Verdict",
+        "",
+        f"**{receive_verdict}**",
+        "",
+        "## Verify Checksum/Path Verdict",
+        "",
+        f"**{verify_verdict}**",
+        "",
+        "## Request Match Verdict",
+        "",
+        f"**{request_match_verdict}**",
+        "",
+        "### Match Checks",
+        "",
+    ]
+    for check in match_checks:
+        status_icon = "PASS" if check.get("passed") else "FAIL"
+        lines.append(f"- [{status_icon}] {check.get('check', '')}: {check.get('detail', '')}")
+    lines.append("")
+
+    if content_violations:
+        lines.append("### Content Policy Violations")
+        lines.append("")
+        for v in content_violations:
+            lines.append(f"- **{v['file']}** [{v['category']}]: `{v['snippet']}`")
+        lines.append("")
+
+    lines.append("### Request vs Package Comparison")
+    lines.append("")
+    lines.append(f"- Request allowed_paths: {json.dumps(request_allowed)}")
+    if manifest_allowed is not None:
+        lines.append(f"- Package allowed_paths: {json.dumps(manifest_allowed)}")
+    lines.append(f"- Request forbidden_paths: {json.dumps(request_forbidden)}")
+    if manifest_forbidden is not None:
+        lines.append(f"- Package forbidden_paths: {json.dumps(manifest_forbidden)}")
+    lines.append(f"- Request expected_outputs: {json.dumps(request_expected)}")
+    lines.append("")
+
+    lines.append("## Final Workflow Verdict")
+    lines.append("")
+    lines.append(f"**{final_verdict}**")
+    lines.append("")
+
+    lines.append("### Timings")
+    for k, v in timings.items():
+        lines.append(f"- **{k}**: {v} ms")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def _zchat_content_policy_quarantine_scan(quarantine_dir: Path) -> list[dict]:
+    all_violations: list[dict] = []
+    payload_dir = quarantine_dir / "payload"
+    if not payload_dir.exists():
+        return all_violations
+    for f in payload_dir.rglob("*"):
+        if not f.is_file():
+            continue
+        ext = f.suffix.lower()
+        if ext not in {".html", ".css", ".js"}:
+            continue
+        try:
+            content = f.read_text(encoding="utf-8-sig", errors="replace")
+        except OSError:
+            continue
+        violations = _zchat_content_policy_check(str(f.relative_to(payload_dir)), content)
+        all_violations.extend(violations)
+    return all_violations
+
+
+def zchat_match_pack_against_request(
+    quarantine_dir: Path,
+    *,
+    request_manifest_path: Path,
+    expected_zchat_result_type: str = ZCHAT_RESULT_TYPE_PACKAGE,
+    receive_verdict: str = "",
+    verify_verdict: str = "",
+    prompt_metadata: dict | None = None,
+) -> ZchatMatchPackResult:
+    t_total_start = time.perf_counter_ns()
+    timings: dict[str, int] = {}
+
+    quarantine_dir = quarantine_dir.resolve(strict=False)
+    if not quarantine_dir.exists():
+        return ZchatMatchPackResult(
+            status="failed",
+            error=f"Quarantine directory not found: {quarantine_dir}",
+        )
+
+    if not request_manifest_path.exists():
+        return ZchatMatchPackResult(
+            status="failed",
+            error=f"Request manifest not found: {request_manifest_path}",
+        )
+
+    match_slug = _zchat_slug_id()
+    report_path = quarantine_dir / f"match_report_{uuid.uuid4().hex[:12]}.md"
+
+    t_load_start = time.perf_counter_ns()
+
+    received_manifest = _read_json_safe(quarantine_dir / "manifest.json")
+    if not isinstance(received_manifest, dict):
+        timings["match_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
+        return ZchatMatchPackResult(
+            status="failed",
+            error="No valid manifest.json in quarantine directory",
+            timings=timings,
+        )
+
+    try:
+        request_manifest_data = json.loads(request_manifest_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as e:
+        timings["match_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
+        return ZchatMatchPackResult(
+            status="failed",
+            error=f"Cannot read request manifest: {e}",
+            timings=timings,
+        )
+
+    if not isinstance(request_manifest_data, dict):
+        timings["match_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
+        return ZchatMatchPackResult(
+            status="failed",
+            error="Request manifest is not a valid JSON object",
+            timings=timings,
+        )
+
+    timings["match_load_ms"] = int((time.perf_counter_ns() - t_load_start) / 1_000_000)
+
+    t_check_start = time.perf_counter_ns()
+    match_checks: list[dict] = []
+
+    request_name = str(request_manifest_data.get("request_name", request_manifest_data.get("request_id", "")))
+    package_id = str(received_manifest.get("package_id", ""))
+    request_allowed = request_manifest_data.get("allowed_paths", []) or []
+    request_forbidden = request_manifest_data.get("forbidden_paths", []) or []
+    request_expected = request_manifest_data.get("expected_outputs", []) or []
+    manifest_zchat_result_type = str(received_manifest.get("zchat_result_type", ""))
+    manifest_context_readback = str(received_manifest.get("context_readback", ""))
+    metadata = received_manifest.get("metadata")
+    if not manifest_context_readback and isinstance(metadata, dict):
+        manifest_context_readback = str(metadata.get("context_readback", ""))
+    manifest_allowed = received_manifest.get("allowed_paths")
+    manifest_forbidden = received_manifest.get("forbidden_paths")
+
+    expected_context_readback = _zchat_derive_expected_context_readback(request_expected)
+    has_explicit_expected = bool(request_expected)
+    is_strict_expected = str(request_manifest_data.get("expected_outputs_strict", "false")).lower() in {"true", "1", "yes"}
+
+    payload_files = received_manifest.get("payload_files", []) or []
+    manifest_file_paths = set()
+    for pf in payload_files:
+        if isinstance(pf, dict):
+            manifest_file_paths.add(str(pf.get("path", "")))
+
+    check_identity = {
+        "check": "request_identity",
+        "detail": f"package_id='{package_id}' vs request_name='{request_name}'",
+    }
+    if not package_id or not request_name:
+        check_identity["passed"] = False
+        check_identity["detail"] = "Missing package_id or request_name"
+    elif package_id != request_name:
+        check_identity["passed"] = False
+        check_identity["detail"] = f"Package ID mismatch: {package_id} != {request_name}"
+    else:
+        check_identity["passed"] = True
+    match_checks.append(check_identity)
+
+    check_result_type = {
+        "check": "zchat_result_type",
+        "detail": f"manifest has '{manifest_zchat_result_type}', expected '{expected_zchat_result_type}'",
+    }
+    if manifest_zchat_result_type and manifest_zchat_result_type != expected_zchat_result_type:
+        check_result_type["passed"] = False
+    else:
+        check_result_type["passed"] = True
+    match_checks.append(check_result_type)
+
+    check_context_readback = {
+        "check": "context_readback",
+        "detail": f"manifest has '{manifest_context_readback}', expected '{expected_context_readback}'",
+    }
+    if expected_context_readback and manifest_context_readback != expected_context_readback:
+        check_context_readback["passed"] = False
+    else:
+        check_context_readback["passed"] = True
+    match_checks.append(check_context_readback)
+
+    check_allowed = {
+        "check": "allowed_paths",
+        "detail": "",
+    }
+    if request_allowed and manifest_allowed is not None:
+        for mp in manifest_allowed:
+            mp_norm = str(mp).replace("\\", "/")
+            if not any(mp_norm.startswith(ap.replace("\\", "/")) for ap in request_allowed):
+                check_allowed["passed"] = False
+                check_allowed["detail"] = f"Package allowed_path '{mp}' not covered by request allowed_paths"
+                break
+        else:
+            check_allowed["passed"] = True
+            check_allowed["detail"] = "Package allowed_paths are within request allowed_paths"
+    else:
+        check_allowed["passed"] = True
+        check_allowed["detail"] = "No allowed_paths constraint"
+    match_checks.append(check_allowed)
+
+    check_forbidden = {
+        "check": "forbidden_paths",
+        "detail": "",
+    }
+    if request_forbidden:
+        manifest_forbidden_set = set(
+            str(p).replace("\\", "/") for p in (manifest_forbidden or [])
+        )
+        uncovered = [p for p in request_forbidden if p.replace("\\", "/") not in manifest_forbidden_set]
+        if uncovered:
+            check_forbidden["passed"] = False
+            check_forbidden["detail"] = f"Request forbidden_paths not covered by package: {uncovered}"
+        else:
+            check_forbidden["passed"] = True
+            check_forbidden["detail"] = "Package forbidden_paths cover request forbidden_paths"
+    else:
+        check_forbidden["passed"] = True
+        check_forbidden["detail"] = "No forbidden_paths constraint"
+    match_checks.append(check_forbidden)
+
+    check_outputs = {
+        "check": "expected_outputs",
+        "detail": "",
+    }
+    missing_outputs = []
+    for ep in request_expected:
+        ep_norm = ep.replace("\\", "/")
+        if ep_norm not in manifest_file_paths:
+            missing_outputs.append(ep)
+    extra_outputs = []
+    if is_strict_expected and has_explicit_expected:
+        for mp in manifest_file_paths:
+            mp_norm = mp.replace("\\", "/")
+            if mp_norm not in {e.replace("\\", "/") for e in request_expected}:
+                extra_outputs.append(mp)
+    if missing_outputs:
+        check_outputs["passed"] = False
+        check_outputs["detail"] = f"Missing expected outputs: {missing_outputs}"
+    elif extra_outputs:
+        check_outputs["passed"] = False
+        check_outputs["detail"] = f"Extra unexpected outputs (strict): {extra_outputs}"
+    else:
+        check_outputs["passed"] = True
+        check_outputs["detail"] = f"All {len(request_expected)} expected outputs found"
+    match_checks.append(check_outputs)
+
+    check_sources_report = {
+        "check": "sources_read_report",
+        "detail": "",
+    }
+    if has_explicit_expected:
+        cr_file = expected_context_readback
+        if cr_file:
+            cr_path = quarantine_dir / "payload" / cr_file
+            if cr_path.exists():
+                try:
+                    cr_content = cr_path.read_text(encoding="utf-8-sig", errors="replace")
+                    if "Sources Read Report" in cr_content or "sources read" in cr_content.lower():
+                        check_sources_report["passed"] = True
+                        check_sources_report["detail"] = f"Sources Read Report found in {cr_file}"
+                    else:
+                        check_sources_report["passed"] = False
+                        check_sources_report["detail"] = f"No Sources Read Report section in {cr_file}"
+                except OSError:
+                    check_sources_report["passed"] = False
+                    check_sources_report["detail"] = f"Cannot read {cr_file}"
+            else:
+                check_sources_report["passed"] = False
+                check_sources_report["detail"] = f"Context readback file not found: {cr_file}"
+        else:
+            check_sources_report["passed"] = True
+            check_sources_report["detail"] = "No context_readback expected"
+    else:
+        check_sources_report["passed"] = True
+        check_sources_report["detail"] = "No expected outputs to check"
+    match_checks.append(check_sources_report)
+
+    check_context_sections = {
+        "check": "context_readback_sections",
+        "detail": "",
+    }
+    if has_explicit_expected and expected_context_readback:
+        cr_path = quarantine_dir / "payload" / expected_context_readback
+        if cr_path.exists():
+            try:
+                cr_content = cr_path.read_text(encoding="utf-8-sig", errors="replace")
+                section_count = len(re.findall(r"^#{1,4}\s+", cr_content, re.MULTILINE))
+                if section_count >= 1:
+                    check_context_sections["passed"] = True
+                    check_context_sections["detail"] = f"Context Readback has {section_count} sections"
+                else:
+                    check_context_sections["passed"] = False
+                    check_context_sections["detail"] = "Context Readback has no markdown sections"
+            except OSError:
+                check_context_sections["passed"] = False
+                check_context_sections["detail"] = f"Cannot read context_readback: {expected_context_readback}"
+        else:
+            check_context_sections["passed"] = False
+            check_context_sections["detail"] = f"Context readback file not found: {expected_context_readback}"
+    else:
+        check_context_sections["passed"] = True
+        check_context_sections["detail"] = "No context_readback section check needed"
+    match_checks.append(check_context_sections)
+
+    timings["match_checks_ms"] = int((time.perf_counter_ns() - t_check_start) / 1_000_000)
+
+    t_content_start = time.perf_counter_ns()
+    content_violations = _zchat_content_policy_quarantine_scan(quarantine_dir)
+    timings["match_content_policy_ms"] = int((time.perf_counter_ns() - t_content_start) / 1_000_000)
+
+    identity_failed = not any(c["passed"] for c in match_checks if c["check"] == "request_identity")
+    outputs_failed = not any(c["passed"] for c in match_checks if c["check"] == "expected_outputs")
+
+    if identity_failed:
+        request_match_verdict = ZCHAT_MATCH_VERDICT_REJECTED_REQUEST_MISMATCH
+    elif outputs_failed:
+        request_match_verdict = ZCHAT_MATCH_VERDICT_REJECTED_TASK_OUTPUTS
+    elif content_violations:
+        request_match_verdict = ZCHAT_MATCH_VERDICT_REJECTED_CONTENT_POLICY
+    elif all(c["passed"] for c in match_checks):
+        request_match_verdict = ZCHAT_MATCH_VERDICT_ACCEPTED
+    else:
+        request_match_verdict = ZCHAT_MATCH_VERDICT_NEEDS_HUMAN
+
+    if receive_verdict == ZCHAT_VERDICT_ACCEPTED and verify_verdict == ZCHAT_VERDICT_ACCEPTED and request_match_verdict == ZCHAT_MATCH_VERDICT_ACCEPTED:
+        final_verdict = ZCHAT_MATCH_VERDICT_ACCEPTED
+    elif request_match_verdict in ZCHAT_VALID_MATCH_VERDICTS - {ZCHAT_MATCH_VERDICT_ACCEPTED}:
+        final_verdict = request_match_verdict
+    elif receive_verdict != ZCHAT_VERDICT_ACCEPTED:
+        final_verdict = receive_verdict
+    elif verify_verdict != ZCHAT_VERDICT_ACCEPTED:
+        final_verdict = verify_verdict
+    else:
+        final_verdict = ZCHAT_MATCH_VERDICT_NEEDS_HUMAN
+
+    timings["match_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
+
+    report_text = _zchat_match_pack_report(
+        request_manifest=request_manifest_data,
+        received_manifest=received_manifest,
+        match_checks=match_checks,
+        content_violations=content_violations,
+        receive_verdict=receive_verdict or "unknown",
+        verify_verdict=verify_verdict or "unknown",
+        request_match_verdict=request_match_verdict,
+        final_verdict=final_verdict,
+        timings=timings,
+    )
+    _atomic_write_text(report_path, report_text)
+
+    return ZchatMatchPackResult(
+        verdict=final_verdict,
+        status="completed",
+        report_path=str(report_path),
+        receive_verdict=receive_verdict,
+        verify_verdict=verify_verdict,
+        request_match_verdict=request_match_verdict,
+        final_workflow_verdict=final_verdict,
+        content_policy_violations=len(content_violations),
+        checks=match_checks,
+    )
 
 
 def _validate_zchat_import_manifest_schema_like(manifest: dict, *, mode_check: str = ZCHAT_MODE_IMPORT_PACK) -> list[str]:
@@ -3033,6 +3502,36 @@ def main() -> None:
         help="Path to quarantine directory for zchat inspect_verification_pack (reads verification_files, returns safety verdict)",
     )
     parser.add_argument(
+        "--zchat-match-pack",
+        type=str,
+        default=None,
+        help="Path to quarantine directory for zchat match_pack_against_request (match received pack against original request)",
+    )
+    parser.add_argument(
+        "--zchat-match-request-manifest",
+        type=str,
+        default=None,
+        help="Path to request_manifest.json for zchat match_pack",
+    )
+    parser.add_argument(
+        "--zchat-match-expected-result-type",
+        type=str,
+        default=ZCHAT_RESULT_TYPE_PACKAGE,
+        help=f"Expected zchat_result_type for zchat match_pack: {ZCHAT_RESULT_TYPE_ADVICE}/{ZCHAT_RESULT_TYPE_REVIEW}/{ZCHAT_RESULT_TYPE_PACKAGE} (default: package)",
+    )
+    parser.add_argument(
+        "--zchat-match-receive-verdict",
+        type=str,
+        default="",
+        help="Receive stage verdict for zchat match_pack report",
+    )
+    parser.add_argument(
+        "--zchat-match-verify-verdict",
+        type=str,
+        default="",
+        help="Verify stage verdict for zchat match_pack report",
+    )
+    parser.add_argument(
         "--zchat-profile",
         type=str,
         default=ZCHAT_PROFILE_SLIM,
@@ -3127,6 +3626,28 @@ def main() -> None:
         result = zchat_inspect_verification_pack(quarantine_dir)
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
         sys.exit(EXIT_COMPLETED if result.status == "completed" else EXIT_FAILED)
+
+    if args.zchat_match_pack:
+        quarantine_dir = Path(args.zchat_match_pack)
+        if not args.zchat_match_request_manifest:
+            print("Error: zchat_match_pack requires --zchat-match-request-manifest", file=sys.stderr)
+            sys.exit(EXIT_CONFIG_ERROR)
+        request_manifest_path = Path(args.zchat_match_request_manifest)
+        if not request_manifest_path.exists():
+            print(f"Error: request manifest not found: {request_manifest_path}", file=sys.stderr)
+            sys.exit(EXIT_CONFIG_ERROR)
+        result = zchat_match_pack_against_request(
+            quarantine_dir,
+            request_manifest_path=request_manifest_path,
+            expected_zchat_result_type=args.zchat_match_expected_result_type,
+            receive_verdict=args.zchat_match_receive_verdict,
+            verify_verdict=args.zchat_match_verify_verdict,
+        )
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+        exit_map_match = {
+            ZCHAT_MATCH_VERDICT_ACCEPTED: EXIT_COMPLETED,
+        }
+        sys.exit(exit_map_match.get(result.verdict, EXIT_FAILED))
 
     if args.zchat_decision_pack:
         if not args.zchat_subject_id:
