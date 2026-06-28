@@ -108,6 +108,9 @@ def _empty_response(reason: str, summary: str) -> dict[str, Any]:
         "export_session_reason": "",
         "session_export_path": "",
         "session_transcript_path": "",
+        "route_c_profile": "",
+        "route_c_profile_account_id": "",
+        "route_c_profile_account_index": 0,
     }
 
 
@@ -142,6 +145,9 @@ def job_result_to_mcp_response(result: jobs.JobResult) -> dict[str, Any]:
         "export_session_reason": result.export_session_reason,
         "session_export_path": str(Path(result.session_export_path).resolve(strict=False)) if result.session_export_path else "",
         "session_transcript_path": str(Path(result.session_transcript_path).resolve(strict=False)) if result.session_transcript_path else "",
+        "route_c_profile": result.route_c_profile,
+        "route_c_profile_account_id": result.route_c_profile_account_id,
+        "route_c_profile_account_index": result.route_c_profile_account_index,
     }
 
 def build_effective_job_config(
@@ -154,6 +160,7 @@ def build_effective_job_config(
     opencode_attach_url: Any = None,
     export_session: Any = None,
     config_path: Any = None,
+    route_c_profile: Any = None,
 ) -> tuple[jobs.JobConfig, Path | None]:
     config_file = _resolve_repo_path(config_path)
     config = jobs.load_config(config_file)
@@ -180,6 +187,10 @@ def build_effective_job_config(
     if export_mode is not None:
         config.export_session = jobs._normalize_export_session_mode(export_mode)
 
+    route_cp = _normalize_text(route_c_profile)
+    if route_cp is not None:
+        config.route_c_profile = route_cp
+
     return config, config_file.parent if config_file else None
 
 
@@ -195,6 +206,7 @@ def opencode_job_run_and_wait_impl(
     opencode_attach_url: Any = None,
     export_session: Any = None,
     config_path: Any = None,
+    route_c_profile: Any = None,
 ) -> dict[str, Any]:
     normalized_task = _normalize_text(task_text)
     if normalized_task is None:
@@ -218,6 +230,7 @@ def opencode_job_run_and_wait_impl(
         opencode_attach_url=opencode_attach_url,
         export_session=export_session,
         config_path=config_path,
+        route_c_profile=route_c_profile,
     )
 
     try:
@@ -260,6 +273,7 @@ def opencode_job_run_and_wait(
     opencode_attach_url: str | None = None,
     export_session: str | None = None,
     config_path: str | None = None,
+    route_c_profile: str | None = None,
 ) -> dict[str, Any]:
     return opencode_job_run_and_wait_impl(
         task_text=task_text,
@@ -272,6 +286,7 @@ def opencode_job_run_and_wait(
         opencode_attach_url=opencode_attach_url,
         export_session=export_session,
         config_path=config_path,
+        route_c_profile=route_c_profile,
     )
 
 

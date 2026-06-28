@@ -39,7 +39,7 @@ EXIT_BLOCKED = 20
 EXIT_FAILED = 30
 EXIT_CONFIG_ERROR = 31
 EXIT_PROTOCOL_ERROR = 32
-DEFAULT_TIMEOUT_SECONDS = 720
+DEFAULT_TIMEOUT_SECONDS = 180
 ADAPTER_BOOTSTRAP_TIMEOUT_SECONDS = 15
 
 EXPORT_SESSION_OFF = "off"
@@ -86,6 +86,8 @@ class JobConfig:
     cleanup_success_after_days: int = 7
     cleanup_failure_after_days: int = 30
     cleanup_keep_recent: int = 20
+    route_c_profile: str = ""
+    route_c_profiles: dict = field(default_factory=dict)
     command_template: list[str] = field(default_factory=lambda: [
         "python",
         "scripts/codex_token_monitor_opencode_adapter.py",
@@ -128,6 +130,31 @@ class JobResult:
     export_session_reason: str = ""
     session_export_path: str = ""
     session_transcript_path: str = ""
+    route_c_profile: str = ""
+    route_c_profile_account_id: str = ""
+    route_c_profile_account_index: int = 0
+
+
+ROUTE_C_QUOTA_HINTS = (
+    "quota exceeded",
+    "rate limit",
+    "daily limit",
+    "insufficient credits",
+    "insufficient credit",
+    "credit balance",
+    "quota_exceeded",
+    "rate_limit",
+    "too many requests",
+    "http 429",
+    "status 429",
+    " 429 ",
+)
+
+ROUTE_C_RETRYABLE_REASON_HINTS = (
+    "opencode_exit_",
+    "quota",
+    "rate_limit",
+)
 
 
 def _read_json(path: Path) -> Any:
@@ -179,6 +206,16 @@ def _append_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(text)
+
+
+def _normalize_positive_int(value: Any, *, default: int, minimum: int = 0) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        normalized = default
+    if normalized < minimum:
+        return minimum
+    return normalized
 
 
 def _utcnow() -> str:
@@ -242,6 +279,11 @@ def _build_adapter_command(
     )
     if _command_uses_builtin_adapter(command_tokens):
         command_tokens = _normalize_builtin_adapter_command(command_tokens)
+        command_tokens = _force_builtin_adapter_model_args(
+            command_tokens,
+            provider_id=provider_id,
+            model_id=model_id,
+        )
     command_tokens.extend([
         "--stdout-log", str(stdout_path),
         "--stderr-log", str(stderr_path),
@@ -283,6 +325,30 @@ def _normalize_builtin_adapter_command(command_tokens: list[str]) -> list[str]:
         if token_norm == "codex_token_monitor_opencode_adapter.py":
             normalized[index] = str(REPO_ROOT / "scripts" / "codex_token_monitor_opencode_adapter.py")
             break
+    return normalized
+
+
+def _force_builtin_adapter_model_args(
+    command_tokens: list[str],
+    *,
+    provider_id: str,
+    model_id: str,
+) -> list[str]:
+    normalized = list(command_tokens)
+    replacements = {
+        "--provider-id": provider_id,
+        "--model-id": model_id,
+    }
+    for flag, value in replacements.items():
+        try:
+            index = normalized.index(flag)
+        except ValueError:
+            normalized.extend([flag, value])
+            continue
+        if index + 1 < len(normalized):
+            normalized[index + 1] = value
+        else:
+            normalized.append(value)
     return normalized
 
 
@@ -1706,16 +1772,219 @@ def zworker_revision_prompt(
     )
 
 
-def run_opencode_job(
+def _resolve_route_c_profile(config: JobConfig) -> dict[str, Any]:
+    profile_name = (config.route_c_profile or "").strip()
+    if not profile_name:
+        return {
+            "provider_id": config.provider_id,
+            "model_id": config.model_id,
+            "route_c_profile": "",
+            "route_c_profile_account_id": "",
+            "route_c_profile_account_index": -1,
+            "route_c_profile_state_file": None,
+            "route_c_profile_accounts_count": 0,
+            "quota_cooldown_seconds": 0,
+            "timeout_cooldown_seconds": 0,
+            "timeout_cooldown_after_failures": 0,
+            "immediate_retry_attempts": 0,
+        }
+
+    profile_cfg = config.route_c_profiles.get(profile_name)
+    if not isinstance(profile_cfg, dict):
+        return {
+            "provider_id": config.provider_id,
+            "model_id": config.model_id,
+            "route_c_profile": profile_name,
+            "route_c_profile_account_id": "",
+            "route_c_profile_account_index": -1,
+            "route_c_profile_state_file": None,
+            "route_c_profile_accounts_count": 0,
+            "quota_cooldown_seconds": 0,
+            "timeout_cooldown_seconds": 0,
+            "timeout_cooldown_after_failures": 0,
+            "immediate_retry_attempts": 0,
+        }
+
+    accounts = profile_cfg.get("accounts")
+    state_rel = profile_cfg.get("state_file", "")
+    if not accounts or not isinstance(accounts, list) or not state_rel:
+        return {
+            "provider_id": config.provider_id,
+            "model_id": config.model_id,
+            "route_c_profile": profile_name,
+            "route_c_profile_account_id": "",
+            "route_c_profile_account_index": -1,
+            "route_c_profile_state_file": None,
+            "route_c_profile_accounts_count": 0,
+            "quota_cooldown_seconds": 0,
+            "timeout_cooldown_seconds": 0,
+            "timeout_cooldown_after_failures": 0,
+            "immediate_retry_attempts": 0,
+        }
+
+    import codex_token_monitor_route_c_round_robin as round_robin
+    state_file = REPO_ROOT / state_rel
+    reservation = round_robin.reserve_next_account(
+        accounts=accounts,
+        state_file=state_file,
+    )
+
+    return {
+        "provider_id": reservation["provider_id"],
+        "model_id": reservation["model_id"],
+        "route_c_profile": profile_name,
+        "route_c_profile_account_id": reservation["account_id"],
+        "route_c_profile_account_index": int(reservation["index"]),
+        "route_c_profile_state_file": state_file,
+        "route_c_profile_accounts_count": len(accounts),
+        "quota_cooldown_seconds": _normalize_positive_int(
+            profile_cfg.get("quota_cooldown_seconds"),
+            default=12 * 60 * 60,
+        ),
+        "timeout_cooldown_seconds": _normalize_positive_int(
+            profile_cfg.get("timeout_cooldown_seconds"),
+            default=30 * 60,
+        ),
+        "timeout_cooldown_after_failures": _normalize_positive_int(
+            profile_cfg.get("timeout_cooldown_after_failures"),
+            default=2,
+            minimum=1,
+        ),
+        "immediate_retry_attempts": _normalize_positive_int(
+            profile_cfg.get("immediate_retry_attempts"),
+            default=max(len(accounts) - 1, 0),
+        ),
+    }
+
+
+def _read_text_if_exists(path_value: str | Path | None) -> str:
+    if not path_value:
+        return ""
+    path = Path(path_value)
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _collect_route_c_failure_text(result: JobResult) -> str:
+    parts = [
+        result.reason,
+        result.summary,
+        _read_text_if_exists(result.stderr_path),
+        _read_text_if_exists(result.stdout_path),
+        _read_text_if_exists(result.result_path),
+    ]
+    return "\n".join(part for part in parts if part).lower()
+
+
+def _classify_route_c_result(result: JobResult, route_c_resolved: dict[str, Any]) -> dict[str, Any]:
+    if result.status in {STATUS_COMPLETED, STATUS_PARTIAL}:
+        return {
+            "category": "success",
+            "retry_now": False,
+            "timed_out": False,
+            "cooldown_seconds": 0,
+            "summary": "",
+        }
+
+    failure_text = _collect_route_c_failure_text(result)
+    quota_hit = any(hint in failure_text for hint in ROUTE_C_QUOTA_HINTS)
+    timed_out = bool(result.timed_out) or str(result.reason).strip() == "timed_out"
+
+    if quota_hit:
+        return {
+            "category": "quota_exhausted",
+            "retry_now": True,
+            "timed_out": False,
+            "cooldown_seconds": int(route_c_resolved.get("quota_cooldown_seconds", 0) or 0),
+            "summary": "quota or rate-limit signal detected",
+        }
+
+    reason = str(result.reason or "").strip().lower()
+    retryable_reason = any(hint in reason for hint in ROUTE_C_RETRYABLE_REASON_HINTS)
+    if timed_out:
+        return {
+            "category": "timed_out",
+            "retry_now": False,
+            "timed_out": True,
+            "cooldown_seconds": 0,
+            "summary": "task timed out",
+        }
+    if retryable_reason:
+        return {
+            "category": "retryable_failure",
+            "retry_now": False,
+            "timed_out": False,
+            "cooldown_seconds": 0,
+            "summary": "retryable adapter failure without explicit quota signal",
+        }
+    return {
+        "category": "failure",
+        "retry_now": False,
+        "timed_out": False,
+        "cooldown_seconds": 0,
+        "summary": "non-retryable failure",
+    }
+
+
+def _record_route_c_result(result: JobResult, route_c_resolved: dict[str, Any]) -> dict[str, Any]:
+    state_file = route_c_resolved.get("route_c_profile_state_file")
+    account_id = str(route_c_resolved.get("route_c_profile_account_id", "") or "")
+    if not state_file or not account_id:
+        return {
+            "category": "no_profile_state",
+            "retry_now": False,
+            "timed_out": False,
+            "cooldown_seconds": 0,
+            "summary": "",
+            "cooldown_applied": False,
+        }
+
+    import codex_token_monitor_route_c_round_robin as round_robin
+
+    outcome = _classify_route_c_result(result, route_c_resolved)
+    if outcome["category"] == "success":
+        round_robin.record_account_success(
+            state_file=Path(state_file),
+            account_id=account_id,
+        )
+        outcome["cooldown_applied"] = False
+        return outcome
+
+    failure_meta = round_robin.record_account_failure(
+        state_file=Path(state_file),
+        account_id=account_id,
+        category=str(outcome["category"]),
+        reason=result.reason,
+        summary=result.summary,
+        timed_out=bool(outcome["timed_out"]),
+        cooldown_seconds=int(outcome["cooldown_seconds"]),
+        timeout_cooldown_seconds=int(route_c_resolved.get("timeout_cooldown_seconds", 0) or 0),
+        timeout_cooldown_after_failures=int(
+            route_c_resolved.get("timeout_cooldown_after_failures", 0) or 0
+        ),
+    )
+    outcome.update(failure_meta)
+    return outcome
+
+
+def _run_single_opencode_job(
     task_text: str,
     *,
     config: JobConfig,
     config_root: Path | None = None,
     directory: str | None = None,
+    route_c_resolved: dict[str, Any] | None = None,
 ) -> JobResult:
     job_id = str(uuid.uuid4())
-    provider_id = config.provider_id
-    model_id = config.model_id
+    if route_c_resolved is None:
+        route_c_resolved = _resolve_route_c_profile(config)
+    provider_id = route_c_resolved["provider_id"]
+    model_id = route_c_resolved["model_id"]
+    route_c_profile = route_c_resolved["route_c_profile"]
+    route_c_profile_account_id = route_c_resolved["route_c_profile_account_id"]
+    route_c_profile_account_index = route_c_resolved["route_c_profile_account_index"]
 
     jobs_dir = _resolve_jobs_dir(config, config_root=config_root)
     job_dir = jobs_dir / job_id
@@ -1761,6 +2030,9 @@ def run_opencode_job(
             result_path=str(result_path),
             stdout_path=str(stdout_path),
             stderr_path=str(stderr_path),
+            route_c_profile=route_c_profile,
+            route_c_profile_account_id=route_c_profile_account_id,
+            route_c_profile_account_index=route_c_profile_account_index,
             **debug_metadata,
         )
         _atomic_write_text(result_path, f"# Job Failed\n\n**Reason:** {e}\n")
@@ -1860,6 +2132,9 @@ def run_opencode_job(
             result_path=str(result_path),
             stdout_path=str(stdout_path),
             stderr_path=str(stderr_path),
+            route_c_profile=route_c_profile,
+            route_c_profile_account_id=route_c_profile_account_id,
+            route_c_profile_account_index=route_c_profile_account_index,
             **debug_metadata,
         )
         _atomic_write_text(result_path, f"# Job Failed\n\n**Reason:** {process_launch_error}\n")
@@ -2037,12 +2312,54 @@ def run_opencode_job(
         result_path=str(result_path),
         stdout_path=str(stdout_path),
         stderr_path=str(stderr_path),
+        route_c_profile=route_c_profile,
+        route_c_profile_account_id=route_c_profile_account_id,
+        route_c_profile_account_index=route_c_profile_account_index,
         **debug_metadata,
     )
 
     _atomic_write_json(done_path, asdict(result))
 
     return result
+
+
+def run_opencode_job(
+    task_text: str,
+    *,
+    config: JobConfig,
+    config_root: Path | None = None,
+    directory: str | None = None,
+) -> JobResult:
+    route_c_profile = (config.route_c_profile or "").strip()
+    if not route_c_profile:
+        return _run_single_opencode_job(
+            task_text,
+            config=config,
+            config_root=config_root,
+            directory=directory,
+            route_c_resolved=None,
+        )
+
+    attempts = 0
+    retry_limit = 0
+
+    while True:
+        route_c_resolved = _resolve_route_c_profile(config)
+        retry_limit = int(route_c_resolved.get("immediate_retry_attempts", 0) or 0)
+        result = _run_single_opencode_job(
+            task_text,
+            config=config,
+            config_root=config_root,
+            directory=directory,
+            route_c_resolved=route_c_resolved,
+        )
+        outcome = _record_route_c_result(result, route_c_resolved)
+        attempts += 1
+
+        if not outcome.get("retry_now"):
+            return result
+        if attempts > retry_limit:
+            return result
 
 
 def main() -> None:

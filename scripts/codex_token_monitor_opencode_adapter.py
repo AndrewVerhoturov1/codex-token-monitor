@@ -170,6 +170,8 @@ def _lookup_session_id(
                 [opencode_command, "session", "list", "--format", "json", "-n", "20"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 cwd=directory or None,
             )
         except OSError as exc:
@@ -482,6 +484,8 @@ def _maybe_export_session(
             _build_export_command(opencode_command=opencode_command, session_id=session_id),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=directory or None,
         )
     except OSError as exc:
@@ -637,6 +641,8 @@ def _run_opencode(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=cwd or None,
         )
         session_thread = None
@@ -665,6 +671,8 @@ def _run_opencode(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         cwd=cwd or None,
         bufsize=1,
     )

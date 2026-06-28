@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "jobs_dir": "_local/codex-token-monitor/opencode-jobs",
-  "timeout_seconds": 720,
+  "timeout_seconds": 180,
   "poll_interval_ms": 1000,
   "provider_id": "opencode",
   "model_id": "deepseek-v4-flash-free",
@@ -15,6 +15,23 @@
   "cleanup_success_after_days": 7,
   "cleanup_failure_after_days": 30,
   "cleanup_keep_recent": 20,
+  "route_c_profile": "ollama_5_round_robin",
+  "route_c_profiles": {
+    "ollama_5_round_robin": {
+      "state_file": "_local/codex-token-monitor/route_c_round_robin_state.json",
+      "quota_cooldown_seconds": 43200,
+      "timeout_cooldown_seconds": 1800,
+      "timeout_cooldown_after_failures": 2,
+      "immediate_retry_attempts": 4,
+      "accounts": [
+        {"account_id": "ollama1", "provider_id": "ollama_1", "model_id": "minimax-m2.5"},
+        {"account_id": "ollama2", "provider_id": "ollama_2", "model_id": "minimax-m2.5"},
+        {"account_id": "ollama3", "provider_id": "ollama_3", "model_id": "minimax-m2.5"},
+        {"account_id": "ollama4", "provider_id": "ollama_4", "model_id": "minimax-m2.5"},
+        {"account_id": "ollama5", "provider_id": "ollama_5", "model_id": "minimax-m2.5"}
+      ]
+    }
+  },
   "command_template": [
     "python",
     "scripts/codex_token_monitor_opencode_adapter.py",
