@@ -1036,6 +1036,8 @@ class ZworkerPromptPackResult:
     timings: dict[str, int] = field(default_factory=dict)
     prompt_lines: int = 0
     passport_lines: int = 0
+    self_check_passed: bool = True
+    self_check_errors: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -2095,6 +2097,121 @@ def zchat_prompt_pack(
         )
 
 
+ZWORKER_SELF_CHECK_INVARIANTS = {
+    "no_file_uris": "file://",
+    "no_windows_drives": r"[A-Za-z]:[/\\]",
+    "manual_url_present": "zworker_external_agent_manual.md",
+    "nav_url_present": "zworker_repo_navigation.md",
+    "no_package_ready": "PACKAGE_READY",
+    "no_contract_conflict": "CONTRACT_CONFLICT",
+    "no_blocked_missing_context": "BLOCKED_MISSING_CONTEXT",
+    "no_manifest_json": "manifest.json",
+}
+
+
+def _is_valid_external_https_url(url: str) -> tuple[bool, str]:
+    url = url.strip()
+    if not url:
+        return False, "empty URL"
+    if re.match(r"^file://", url, re.IGNORECASE):
+        return False, f"file:// URI not allowed: {url}"
+    if re.match(r"^[A-Za-z]:[/\\]", url):
+        return False, f"Windows absolute path not allowed: {url}"
+    if url.startswith("/"):
+        return False, f"Unix absolute path not allowed: {url}"
+    if url.startswith("./") or url.startswith("../"):
+        return False, f"relative path not allowed: {url}"
+    if url.startswith("\\\\"):
+        return False, f"UNC path not allowed: {url}"
+    if url.startswith("https://"):
+        return True, ""
+    if url.startswith("http://"):
+        return False, f"non-HTTPS URL not allowed (only HTTPS): {url}"
+    return False, f"not an absolute HTTPS URL: {url}"
+
+
+def _zworker_validate_source_urls(urls: list[str]) -> tuple[bool, list[str]]:
+    errors: list[str] = []
+    for url in urls:
+        valid, error = _is_valid_external_https_url(url)
+        if not valid:
+            errors.append(error)
+    return len(errors) == 0, errors
+
+
+def _zworker_prompt_self_check(
+    prompt_text: str,
+    manual_url: str,
+    nav_url: str,
+) -> tuple[bool, list[str]]:
+    errors: list[str] = []
+
+    if manual_url not in prompt_text:
+        errors.append(f"manual URL not found in prompt: {manual_url}")
+
+    if nav_url not in prompt_text:
+        errors.append(f"repo navigation URL not found in prompt: {nav_url}")
+
+    lines = prompt_text.splitlines()
+    in_files_section = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## Files to read") or stripped.startswith("### Files to read"):
+            in_files_section = True
+            continue
+        if in_files_section and stripped.startswith("##"):
+            in_files_section = False
+            continue
+        if in_files_section and stripped.startswith("- "):
+            url_candidate = stripped[2:].strip()
+            if (
+                url_candidate
+                and url_candidate
+                != "No specific repository files are required for this task."
+                and not url_candidate.startswith("https://")
+            ):
+                errors.append(
+                    f"non-HTTPS link in Files to read section: {url_candidate}"
+                )
+
+    if "file://" in prompt_text:
+        errors.append("prompt contains file:// URI")
+
+    if re.search(r"\]\(\.\./", prompt_text):
+        errors.append("prompt contains Markdown relative link (](../ )")
+
+    if re.search(r"\]\(\.\.\\", prompt_text):
+        errors.append("prompt contains Markdown relative link (](..\\ )")
+
+    if re.search(r"(?:^|\n|[ \t])\.\./", prompt_text):
+        errors.append("prompt contains relative path ../ (may appear in links)")
+
+    if re.search(r"(?:^|\n|[ \t])\.\.\\", prompt_text):
+        errors.append("prompt contains relative path ..\\ (may appear in links)")
+
+    if "C:/" in prompt_text:
+        errors.append("prompt contains local path C:/")
+    if "D:/" in prompt_text or "D:\\" in prompt_text:
+        errors.append("prompt contains local path D:/")
+
+    drive_matches = re.findall(r"\b[A-Za-z]:[/\\]", prompt_text)
+    for match in drive_matches:
+        errors.append(f"prompt contains Windows path: {match}")
+
+    for forbidden in [
+        "PACKAGE_READY",
+        "CONTRACT_CONFLICT",
+        "BLOCKED_MISSING_CONTEXT",
+        "manifest.json",
+        "checksums.sha256",
+        "payload/",
+    ]:
+        if forbidden in prompt_text:
+            errors.append(f"prompt contains forbidden text: {forbidden}")
+
+    return len(errors) == 0, errors
+
+
 def _zworker_task_to_slug(task: str) -> str:
     import re
     raw = task.strip().casefold()
@@ -2161,6 +2278,20 @@ def zworker_prompt_pack(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     resolved_urls = source_urls or []
+
+    url_valid, url_errors = _zworker_validate_source_urls(resolved_urls)
+    if not url_valid:
+        timings["prompt_pack_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
+        return ZworkerPromptPackResult(
+            request_id=request_name,
+            output_dir=str(output_dir) if output_dir else "",
+            status="failed",
+            error="Source URL validation failed: " + "; ".join(url_errors),
+            timings=timings,
+            self_check_passed=False,
+            self_check_errors=url_errors,
+        )
+
     normalized_allowed = _zchat_normalize_path_list(allowed_paths) or []
     normalized_forbidden = _zchat_normalize_path_list(forbidden_paths) or []
     normalized_expected = _zchat_normalize_path_list(expected_outputs) or []
@@ -2250,6 +2381,10 @@ def zworker_prompt_pack(
         passport_lines = passport_content.count("\n") + 1
         timings["prompt_pack_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
 
+        self_check_ok, self_check_errors = _zworker_prompt_self_check(
+            prompt_content, manual_url, nav_url
+        )
+
         return ZworkerPromptPackResult(
             request_id=request_name,
             output_dir=str(output_dir),
@@ -2258,15 +2393,19 @@ def zworker_prompt_pack(
             timings=timings,
             prompt_lines=prompt_lines,
             passport_lines=passport_lines,
+            self_check_passed=self_check_ok,
+            self_check_errors=self_check_errors,
         )
     except Exception as e:
         timings["prompt_pack_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
         return ZworkerPromptPackResult(
             request_id=request_name,
-            output_dir=str(output_dir),
+            output_dir=str(output_dir) if output_dir else "",
             status="failed",
             error=f"{type(e).__name__}: {e}",
             timings=timings,
+            self_check_passed=False,
+            self_check_errors=[f"{type(e).__name__}: {e}"],
         )
 
 

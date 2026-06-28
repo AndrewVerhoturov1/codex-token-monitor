@@ -1,0 +1,46 @@
+{
+  "manifest_version": "1.0",
+  "request_id": "ZCHAT-20260626-V2-E2E-QUARANTINE",
+  "created_at": "2026-06-26T13:08:00.000Z",
+  "mode": "zchat_prompt_pack",
+  "artifacts": [
+    "prompt.md",
+    "prompt_passport.md",
+    "request_manifest.json"
+  ],
+  "source_policy": "public_github_raw_first",
+  "branch_policy": "temporary_branch_only_if_public_insufficient",
+  "dependencies": [],
+  "source_urls": [
+    "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/README.md",
+    "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/.ai/zchat/readme.md"
+  ],
+  "allowed_paths": [
+    "docs/zchat_v2_e2e/"
+  ],
+  "forbidden_paths": [
+    "scripts/",
+    ".ai/zchat/",
+    ".env",
+    "config/"
+  ],
+  "expected_outputs": [
+    "manifest.json",
+    "checksums.sha256",
+    "payload/docs/zchat_v2_e2e/result.md",
+    "payload/docs/zchat_v2_e2e/context_readback.md",
+    "payload/docs/zchat_v2_e2e/change_summary.md",
+    "payload/docs/zchat_v2_e2e/verification/check_result.py"
+  ],
+  "metadata": {
+    "context_provided": true,
+    "constraints_provided": true,
+    "source_urls_count": 2,
+    "pack_label": "v2-e2e-quarantine",
+    "description": "Zchat manifest v2 quarantine-first E2E test — external chat produces ZIP with verification_files and context_readback",
+    "manifest_version_required": "2.0",
+    "zchat_result_type": "package",
+    "run_policy": "never_auto_run",
+    "quarantine_first": true
+  }
+}

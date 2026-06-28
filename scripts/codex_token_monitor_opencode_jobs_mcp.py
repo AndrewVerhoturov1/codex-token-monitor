@@ -243,9 +243,7 @@ def build_effective_job_config(
         config.provider_id = provider
     if model is not None:
         config.model_id = model
-    if visible_terminal is None:
-        config.debug_visible_terminal = True
-    else:
+    if visible_terminal is not None:
         config.debug_visible_terminal = visible_terminal
     if open_session_tui is not None:
         config.debug_open_session_tui = open_session_tui
@@ -264,7 +262,7 @@ def opencode_job_run_and_wait_impl(
     timeout_seconds: Any = None,
     provider_id: Any = None,
     model_id: Any = None,
-    debug_visible_terminal: Any = True,
+    debug_visible_terminal: Any = None,
     debug_open_session_tui: Any = None,
     opencode_attach_url: Any = None,
     export_session: Any = None,
@@ -329,7 +327,7 @@ def opencode_job_run_and_wait(
     timeout_seconds: int | None = None,
     provider_id: str | None = None,
     model_id: str | None = None,
-    debug_visible_terminal: bool | None = True,
+    debug_visible_terminal: bool | None = None,
     debug_open_session_tui: bool | None = None,
     opencode_attach_url: str | None = None,
     export_session: str | None = None,

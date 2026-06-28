@@ -6,6 +6,7 @@ import unittest.mock
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+AGENTS_SKILLS_ROOT = Path.home() / ".agents" / "skills"
 MODULE_PATH = ROOT / "scripts" / "codex_token_monitor_opencode_jobs.py"
 SPEC = importlib.util.spec_from_file_location("codex_token_monitor_opencode_jobs", MODULE_PATH)
 jobs = importlib.util.module_from_spec(SPEC)
@@ -268,6 +269,64 @@ class ZworkerNavigationDocsTests(unittest.TestCase):
     def test_navigation_has_branch_template(self) -> None:
         content = (ROOT / "docs" / "zworker_repo_navigation.md").read_text(encoding="utf-8")
         self.assertIn("<branch_name>/<path>", content)
+
+
+class ZworkerInvocationDocTests(unittest.TestCase):
+
+    def test_invocation_doc_exists_and_explains_route(self) -> None:
+        doc_path = ROOT / "docs" / "zworker_invocation.md"
+        self.assertTrue(doc_path.exists(), f"Invocation doc not found: {doc_path}")
+        content = doc_path.read_text(encoding="utf-8")
+        self.assertIn("/zworker", content)
+        self.assertIn("prompt.md", content)
+        self.assertIn("answer.md", content)
+        self.assertIn("ZIP", content)
+        self.assertIn("not direct task execution", content.lower())
+
+    def test_readme_links_invocation_doc(self) -> None:
+        content = (ROOT / ".ai" / "zworker" / "readme.md").read_text(encoding="utf-8")
+        self.assertIn("zworker_invocation.md", content)
+
+    def test_navigation_links_invocation_doc(self) -> None:
+        content = (ROOT / "docs" / "zworker_repo_navigation.md").read_text(encoding="utf-8")
+        self.assertIn("zworker_invocation.md", content)
+
+
+class ZworkerCodexSkillTests(unittest.TestCase):
+
+    def _load_skill(self, skill_name: str) -> str:
+        if not AGENTS_SKILLS_ROOT.exists():
+            self.skipTest(f"Skills root not found: {AGENTS_SKILLS_ROOT}")
+        path = AGENTS_SKILLS_ROOT / skill_name / "SKILL.md"
+        self.assertTrue(path.exists(), f"Skill not found: {path}")
+        return path.read_text(encoding="utf-8")
+
+    def test_zworker_skill_exists_and_is_conditional(self) -> None:
+        content = self._load_skill("opencode-zworker-control")
+        self.assertIn("/zworker", content)
+        self.assertIn("Load this skill only when the user explicitly invokes `/zworker`", content)
+        self.assertIn("Do not load this skill for ordinary local repo work.", content)
+        self.assertIn("Do not load this skill for ordinary OpenCode delegation.", content)
+        self.assertIn("Do not load this skill for ordinary GitHub tasks.", content)
+
+    def test_zworker_skill_describes_external_worker_not_direct_execution(self) -> None:
+        content = self._load_skill("opencode-zworker-control")
+        self.assertIn("not a request for Codex to solve the main task directly", content)
+        self.assertIn("zworker prompt-pack", content)
+        self.assertIn("ZIP with `answer.md`", content)
+
+    def test_zworker_skill_describes_answer_only_and_file_task_behavior(self) -> None:
+        content = self._load_skill("opencode-zworker-control")
+        self.assertIn("answer-only ZIP with just `answer.md`", content)
+        self.assertIn("normal result", content)
+        self.assertIn("answer-only ZIP is", content)
+        self.assertIn("insufficient", content)
+
+    def test_main_route_skill_links_zworker_skill_without_inlining_full_text(self) -> None:
+        content = self._load_skill("opencode-mcp-windows-control")
+        self.assertIn("opencode-zworker-control", content)
+        self.assertIn("/zworker", content)
+        self.assertNotIn("answer-only ZIP with just `answer.md` is a normal result", content)
 
 
 class ZworkerTemplatesTests(unittest.TestCase):
@@ -1170,6 +1229,368 @@ class ZworkerGiTests(unittest.TestCase):
         self.assertEqual(jobs._zworker_task_to_slug("  ADD LOGIN Feature  "), "add-login-feature")
         self.assertEqual(jobs._zworker_task_to_slug("Stylish Tetris!"), "stylish-tetris")
         self.assertEqual(jobs._zworker_task_to_slug(""), "task")
+
+
+class ZworkerSourceUrlValidationTests(unittest.TestCase):
+
+    def _pack(self, task: str, **kwargs) -> jobs.ZworkerPromptPackResult:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            return jobs.zworker_prompt_pack(task, output_dir=output_dir, **kwargs)
+
+    def test_accepts_valid_https_raw_url(self) -> None:
+        result = self._pack("Task", source_urls=[
+            "https://raw.githubusercontent.com/owner/repo/main/src/file.py",
+        ])
+        self.assertEqual(result.status, "completed")
+        self.assertTrue(result.self_check_passed)
+
+    def test_accepts_multiple_valid_https_urls(self) -> None:
+        result = self._pack("Task", source_urls=[
+            "https://raw.githubusercontent.com/A/repo/main/a.py",
+            "https://raw.githubusercontent.com/B/repo/main/b.py",
+        ])
+        self.assertEqual(result.status, "completed")
+
+    def test_rejects_relative_path(self) -> None:
+        result = self._pack("Task", source_urls=["src/file.py"])
+        self.assertEqual(result.status, "failed")
+        self.assertIn("not an absolute HTTPS URL", result.error)
+
+    def test_rejects_dot_slash_relative(self) -> None:
+        result = self._pack("Task", source_urls=["./src/file.py"])
+        self.assertEqual(result.status, "failed")
+        self.assertIn("relative path", result.error)
+
+    def test_rejects_dot_dot_traversal(self) -> None:
+        result = self._pack("Task", source_urls=["../utils/helpers.py"])
+        self.assertEqual(result.status, "failed")
+        self.assertIn("relative path", result.error)
+
+    def test_rejects_windows_c_drive_path(self) -> None:
+        result = self._pack("Task", source_urls=["C:/Users/andre/project/file.py"])
+        self.assertEqual(result.status, "failed")
+        self.assertIn("Windows absolute path", result.error)
+
+    def test_rejects_windows_d_drive_path(self) -> None:
+        result = self._pack("Task", source_urls=[R"D:\Codex\file.py"])
+        self.assertEqual(result.status, "failed")
+        self.assertIn("Windows absolute path", result.error)
+
+    def test_rejects_file_uri(self) -> None:
+        result = self._pack("Task", source_urls=["file:///C:/Users/andre/file.py"])
+        self.assertEqual(result.status, "failed")
+        self.assertIn("file:// URI", result.error)
+
+    def test_rejects_file_uri_unix(self) -> None:
+        result = self._pack("Task", source_urls=["file:///home/user/file.py"])
+        self.assertEqual(result.status, "failed")
+        self.assertIn("file:// URI", result.error)
+
+    def test_rejects_unix_absolute_path(self) -> None:
+        result = self._pack("Task", source_urls=["/home/user/project/file.py"])
+        self.assertEqual(result.status, "failed")
+        self.assertIn("Unix absolute path", result.error)
+
+    def test_rejects_unc_path(self) -> None:
+        result = self._pack("Task", source_urls=[R"\\server\share\file.py"])
+        self.assertEqual(result.status, "failed")
+        self.assertIn("UNC path", result.error)
+
+    def test_rejects_http_non_https(self) -> None:
+        result = self._pack("Task", source_urls=["http://example.com/file.py"])
+        self.assertEqual(result.status, "failed")
+        self.assertIn("non-HTTPS URL", result.error)
+
+    def test_rejects_empty_url(self) -> None:
+        result = self._pack("Task", source_urls=[""])
+        self.assertEqual(result.status, "failed")
+        self.assertIn("empty URL", result.error)
+
+    def test_rejects_mixed_valid_and_invalid(self) -> None:
+        result = self._pack("Task", source_urls=[
+            "https://raw.githubusercontent.com/owner/repo/main/a.py",
+            "src/bad.py",
+        ])
+        self.assertEqual(result.status, "failed")
+        self.assertIn("not an absolute HTTPS URL", result.error)
+
+    def test_standalone_task_no_urls_still_works(self) -> None:
+        result = self._pack("Standalone task")
+        self.assertEqual(result.status, "completed")
+        self.assertTrue(result.self_check_passed)
+
+
+class ZworkerPromptSelfCheckTests(unittest.TestCase):
+
+    def test_self_check_passes_for_valid_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            result = jobs.zworker_prompt_pack(
+                "Valid task",
+                output_dir=output_dir,
+                source_urls=["https://raw.githubusercontent.com/owner/repo/main/file.py"],
+            )
+            self.assertEqual(result.status, "completed")
+            self.assertTrue(result.self_check_passed, f"Self-check errors: {result.self_check_errors}")
+            self.assertEqual(len(result.self_check_errors), 0)
+
+    def test_self_check_errors_are_empty_for_clean_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            result = jobs.zworker_prompt_pack(
+                "Clean task",
+                output_dir=output_dir,
+            )
+            self.assertEqual(result.status, "completed")
+            self.assertTrue(result.self_check_passed)
+            self.assertEqual(len(result.self_check_errors), 0)
+
+    def test_self_check_detects_missing_manual_url(self) -> None:
+        prompt_text = """# Prompt
+
+## Files to read
+- https://example.com/file.py
+
+No manual link here.
+"""
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url="https://raw.githubusercontent.com/owner/repo/main/docs/zworker_external_agent_manual.md",
+            nav_url="https://raw.githubusercontent.com/owner/repo/main/docs/zworker_repo_navigation.md",
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("manual URL" in e for e in errors))
+
+    def test_self_check_detects_missing_nav_url(self) -> None:
+        prompt_text = """# Prompt
+- https://raw.githubusercontent.com/owner/repo/main/docs/zworker_external_agent_manual.md
+"""
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url="https://raw.githubusercontent.com/owner/repo/main/docs/zworker_external_agent_manual.md",
+            nav_url="https://raw.githubusercontent.com/owner/repo/main/docs/zworker_repo_navigation.md",
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("repo navigation URL" in e for e in errors))
+
+    def test_self_check_detects_file_uri(self) -> None:
+        prompt_text = """# Prompt
+## Files to read
+- file:///C:/Users/test/file.py
+"""
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=prompt_text,  # not in prompt
+            nav_url=prompt_text,
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("file://" in e for e in errors))
+
+    def test_self_check_detects_windows_drive_in_prompt(self) -> None:
+        prompt_text = "Check C:/Users/test/file.py for details"
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=prompt_text,
+            nav_url=prompt_text,
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("Windows path" in e for e in errors))
+
+    def test_self_check_detects_package_ready(self) -> None:
+        prompt_text = "PACKAGE_READY is forbidden"
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=prompt_text,
+            nav_url=prompt_text,
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("PACKAGE_READY" in e for e in errors))
+
+    def test_self_check_detects_manifest_json(self) -> None:
+        prompt_text = "Please include manifest.json in the ZIP."
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=prompt_text,
+            nav_url=prompt_text,
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("manifest.json" in e for e in errors))
+
+    def test_self_check_reported_on_zworker_prompt_pack_result(self) -> None:
+        instance = jobs.ZworkerPromptPackResult()
+        self.assertTrue(hasattr(instance, "self_check_passed"))
+        self.assertTrue(hasattr(instance, "self_check_errors"))
+
+    def test_self_check_rejects_markdown_relative_link_dotdot_slash(self) -> None:
+        prompt_text = "See [External Worker Manual](../../ZWORKER-MANUAL.md) for details"
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=prompt_text,
+            nav_url=prompt_text,
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("Markdown relative link" in e for e in errors),
+                        f"Expected Markdown relative link error, got: {errors}")
+
+    def test_self_check_rejects_markdown_relative_link_dotdot_backslash(self) -> None:
+        prompt_text = "See [codex-token-monitor](..\\..\\..\\..\\..\\)"
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=prompt_text,
+            nav_url=prompt_text,
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("Markdown relative link" in e for e in errors),
+                        f"Expected Markdown relative link error, got: {errors}")
+
+    def test_self_check_rejects_dotdot_slash_in_text(self) -> None:
+        prompt_text = "# Repo\n\n- Root: ../project\n"
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=prompt_text,
+            nav_url=prompt_text,
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("../" in e for e in errors),
+                        f"Expected ../ error, got: {errors}")
+
+    def test_self_check_rejects_dotdot_backslash_in_text(self) -> None:
+        prompt_text = "# Repo\n\n- Root: ..\\project\n"
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=prompt_text,
+            nav_url=prompt_text,
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("..\\" in e for e in errors),
+                        f"Expected ..\\ error, got: {errors}")
+
+    def test_self_check_rejects_c_drive_path(self) -> None:
+        prompt_text = "See C:/Users/andre/project/file.py"
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=prompt_text,
+            nav_url=prompt_text,
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("C:/" in e for e in errors),
+                        f"Expected C:/ error, got: {errors}")
+
+    def test_self_check_rejects_d_drive_path(self) -> None:
+        prompt_text = "See D:/Codex/file.py"
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=prompt_text,
+            nav_url=prompt_text,
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("D:/" in e for e in errors),
+                        f"Expected D:/ error, got: {errors}")
+
+    def test_self_check_rejects_d_drive_backslash_path(self) -> None:
+        prompt_text = "See D:\\Codex\\file.py"
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=prompt_text,
+            nav_url=prompt_text,
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("D:/" in e for e in errors),
+                        f"Expected D:/ error, got: {errors}")
+
+    def test_self_check_requires_exact_raw_manual_url(self) -> None:
+        manual_url = "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/docs/zworker_external_agent_manual.md"
+        nav_url = "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/docs/zworker_repo_navigation.md"
+        prompt_text = f"# Prompt\n- {manual_url}\n- {nav_url}\n"
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=manual_url,
+            nav_url=nav_url,
+        )
+        self.assertTrue(ok, f"Expected pass, got errors: {errors}")
+
+    def test_self_check_rejects_wrong_manual_url(self) -> None:
+        correct_manual = "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/docs/zworker_external_agent_manual.md"
+        correct_nav = "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/docs/zworker_repo_navigation.md"
+        prompt_text = "# Prompt\n- https://other-url.com/manual.md\n- {correct_nav}\n"
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=correct_manual,
+            nav_url=correct_nav,
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("manual URL not found" in e for e in errors))
+
+    def test_self_check_rejects_wrong_nav_url(self) -> None:
+        correct_manual = "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/docs/zworker_external_agent_manual.md"
+        correct_nav = "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/docs/zworker_repo_navigation.md"
+        prompt_text = f"# Prompt\n- {correct_manual}\n"
+        ok, errors = jobs._zworker_prompt_self_check(
+            prompt_text,
+            manual_url=correct_manual,
+            nav_url=correct_nav,
+        )
+        self.assertFalse(ok)
+        self.assertTrue(any("repo navigation URL not found" in e for e in errors))
+
+
+class ZworkerSkillExternalLinkRulesTests(unittest.TestCase):
+
+    def _load_skill(self) -> str:
+        skills_root = Path.home() / ".agents" / "skills"
+        if not skills_root.exists():
+            self.skipTest(f"Skills root not found: {skills_root}")
+        path = skills_root / "opencode-zworker-control" / "SKILL.md"
+        self.assertTrue(path.exists(), f"Skill not found: {path}")
+        return path.read_text(encoding="utf-8")
+
+    def test_skill_has_link_rules_section(self) -> None:
+        content = self._load_skill()
+        self.assertIn("External prompt link rules", content)
+
+    def test_skill_bans_relative_paths(self) -> None:
+        content = self._load_skill()
+        self.assertIn("Relative paths", content)
+        self.assertIn("src/file.py", content)
+
+    def test_skill_bans_windows_paths(self) -> None:
+        content = self._load_skill()
+        self.assertIn("Windows absolute paths", content)
+        self.assertIn("C:/Users", content)
+
+    def test_skill_bans_file_uris(self) -> None:
+        content = self._load_skill()
+        self.assertIn("File:// URIs", content)
+        self.assertIn("file:///", content)
+
+    def test_skill_bans_unix_absolute_paths(self) -> None:
+        content = self._load_skill()
+        self.assertIn("Unix absolute paths", content)
+
+    def test_skill_has_self_check_section(self) -> None:
+        content = self._load_skill()
+        self.assertIn("Prompt self-check", content)
+        self.assertIn("_zworker_prompt_self_check", content)
+
+    def test_skill_has_valid_invalid_examples(self) -> None:
+        content = self._load_skill()
+        self.assertIn("Valid vs invalid prompt examples", content)
+        self.assertIn("Valid source links", content)
+        self.assertIn("Invalid source links", content)
+
+    def test_skill_requires_https_links(self) -> None:
+        content = self._load_skill()
+        self.assertIn("absolute HTTPS URLs", content)
+        self.assertIn("raw.githubusercontent.com", content)
+
+    def test_skill_external_prompt_link_rules_bans_unc(self) -> None:
+        content = self._load_skill()
+        self.assertIn("SMB/UNC paths", content)
+
+    def test_skill_no_relative_in_external_prompt(self) -> None:
+        content = self._load_skill()
+        self.assertIn("FORBIDDEN in any external prompt", content)
 
 
 if __name__ == "__main__":

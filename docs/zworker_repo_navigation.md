@@ -10,6 +10,7 @@ A brief navigation map for the zworker external agent. Not a full repository ind
 |---|---|
 | External Agent Manual | `https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/docs/zworker_external_agent_manual.md` |
 | Repo Navigation (this file) | `https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/docs/zworker_repo_navigation.md` |
+| Codex Invocation Overview | `https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/docs/zworker_invocation.md` |
 
 ## Where Zworker Files Live
 
@@ -46,4 +47,5 @@ Revisions append `-ver2`, `-ver3`, etc.: `ZWORKER-20260627-143052-add-login-feat
 ## Notes
 
 - The external agent manual is the core reference for how to work.
+- The Codex-side `/zworker` invocation flow is documented in `docs/zworker_invocation.md`.
 - If something in the task description is unclear, ask for clarification.

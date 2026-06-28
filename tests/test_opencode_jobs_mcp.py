@@ -255,14 +255,14 @@ class OpenCodeJobsMcpAdapterTests(unittest.TestCase):
         self.assertEqual(kwargs["config_root"], ROOT / "config")
         self.assertEqual(response["job_id"], "job-123")
 
-    def test_impl_defaults_visible_terminal_on(self) -> None:
+    def test_impl_preserves_config_visible_terminal_when_not_passed(self) -> None:
         fake_result = _make_job_result()
         with mock.patch.object(jobs_mcp.jobs, "load_config", return_value=jobs.JobConfig(debug_visible_terminal=False)):
             with mock.patch.object(jobs_mcp.jobs, "run_opencode_job", return_value=fake_result) as run_job:
                 jobs_mcp.opencode_job_run_and_wait_impl(task_text="Run test")
 
         kwargs = run_job.call_args.kwargs
-        self.assertTrue(kwargs["config"].debug_visible_terminal)
+        self.assertFalse(kwargs["config"].debug_visible_terminal)
 
     def test_impl_allows_explicit_visible_terminal_off(self) -> None:
         fake_result = _make_job_result()
@@ -284,6 +284,18 @@ class OpenCodeJobsMcpAdapterTests(unittest.TestCase):
         self.assertEqual(response["status"], "blocked")
         self.assertEqual(response["reason"], "timed_out")
         self.assertTrue(response["timed_out"])
+
+    def test_impl_preserves_explicit_visible_terminal_true(self) -> None:
+        fake_result = _make_job_result()
+        with mock.patch.object(jobs_mcp.jobs, "load_config", return_value=jobs.JobConfig(debug_visible_terminal=False)):
+            with mock.patch.object(jobs_mcp.jobs, "run_opencode_job", return_value=fake_result) as run_job:
+                jobs_mcp.opencode_job_run_and_wait_impl(
+                    task_text="Run test",
+                    debug_visible_terminal=True,
+                )
+
+        kwargs = run_job.call_args.kwargs
+        self.assertTrue(kwargs["config"].debug_visible_terminal)
 
     def test_impl_handles_unknown_input_without_crashing(self) -> None:
         fake_result = _make_job_result()

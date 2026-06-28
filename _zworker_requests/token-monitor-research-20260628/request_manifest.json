@@ -1,0 +1,24 @@
+{
+  "request_id": "ZWORKER-20260628-023841-codex-token-monitor-token-monitor-aillm-open-sou",
+  "slug": "codex-token-monitor-token-monitor-aillm-open-sou",
+  "task_summary": "Нужно исследование по теме \"токен монитор\" для проекта codex-token-monitor. Объясни простыми словами, что такое token monitor в контексте AI/LLM-инструментов и мониторинга расхода токенов. Проверь, ес",
+  "manual_url": "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/docs/zworker_external_agent_manual.md",
+  "repo_navigation_url": "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/docs/zworker_repo_navigation.md",
+  "files_to_read": [],
+  "strict_zip_contract": false,
+  "requires_answer_md": true,
+  "created_at": "2026-06-28T02:38:41.562Z",
+  "allowed_paths": [],
+  "forbidden_paths": [],
+  "expected_outputs": [
+    "ZIP-архив с answer.md в корне. В answer.md должны быть: 1) краткое определение token monitor",
+    "2) список или таблица готовых решений из интернета с короткой оценкой релевантности",
+    "3) предложение по идеальной работе token monitor",
+    "4) ссылки на использованные веб-источники."
+  ],
+  "auto_apply_enabled": true,
+  "branch_may_be_needed": true,
+  "create_branch": false,
+  "branch_slug_id": "cdf699c3c228",
+  "branch_name": "zworker/context/ZWORKER-20260628-023841-codex-token-monitor-token-monitor-aillm-open-sou"
+}

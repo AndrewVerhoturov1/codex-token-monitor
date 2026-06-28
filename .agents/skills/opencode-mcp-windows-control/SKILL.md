@@ -885,7 +885,46 @@ OpenCode output should also stay compact:
 - no long logs;
 - no huge report restatements in chat when a file artifact exists.
 
-Route reminder:
+## Quiet commentary mode
+
+By default, Codex MUST NOT print intermediate commentary, progress messages,
+thinking updates, or verbose play-by-play explanations.
+
+Codex MAY show short working updates only when the current user message contains
+at least one show-mode control trigger.
+
+Show-mode triggers:
+- `+мысли`
+- `+комментарии`
+- `+прогресс`
+- `+объясняй`
+- `+подробно`
+
+Quiet-mode triggers (return to silent):
+- `-мысли`
+- `+молча`
+- `+тихо`
+- `+без_комментариев`
+
+Control trigger rules:
+- The last control trigger in the user message wins.
+- Control triggers are case-sensitive and must appear as whole tokens.
+- Control triggers MUST NOT be repeated to the user.
+- Control triggers MUST NOT be forwarded to external prompts unless they are
+  part of the useful payload.
+
+This is NOT a chain-of-thought request. When show-mode is active, only short
+working updates are permitted. Internal hidden reasoning chains are never
+allowed as visible output.
+
+The following are ALWAYS shown, regardless of quiet mode:
+- final answer;
+- blockers and task status;
+- errors and error explanations;
+- safety warnings;
+- direct questions to the user.
+
+## Route reminder
 
 ```text
 Small work -> standard OpenCode MCP / DeepSeek.

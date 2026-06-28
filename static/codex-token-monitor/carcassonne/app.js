@@ -1,951 +1,378 @@
 (function () {
   'use strict';
 
-  if (typeof window.Carcassonne === 'undefined') {
-    window.addEventListener('DOMContentLoaded', function () {
-      var el = document.getElementById('board-container');
-      if (el) el.innerHTML = '<div style="color:#e74c3c;padding:20px;">Error: game engine (game.js) failed to load. Please reload the page.</div>';
-    });
-    return;
-  }
-
-  var C = window.Carcassonne;
-
-  var TILE_SIZE = 80;
-  var FONT = '12px "Segoe UI", sans-serif';
-  var FONT_BOLD = 'bold 12px "Segoe UI", sans-serif';
-  var FONT_SMALL = '10px "Segoe UI", sans-serif';
-
   var state = null;
-  var dpr = 1;
+  var els = {};
+  var dirNames = ['n', 'e', 's', 'w'];
+  var featureNames = { city: 'Город', road: 'Дорога', monastery: 'Монастырь' };
+  var featureHints = {
+    city: '2 очка за тайл города + 2 за герб после завершения; на финальном счёте — по 1.',
+    road: '1 очко за тайл дороги после завершения и на финальном счёте.',
+    monastery: '9 очков, когда вокруг монастыря заняты все 8 клеток.'
+  };
 
-  var canvas, ctx;
-  var previewCanvas, previewCtx;
-  var offsetX = 0, offsetY = 0;
-  var scale = 1.0;
-  var dragging = false;
-  var dragStartX, dragStartY, dragOffsetStartX, dragOffsetStartY;
-  var hoveredCol = null, hoveredRow = null;
+  function byId(id) { return document.getElementById(id); }
 
   function init() {
-    canvas = document.getElementById('board-canvas');
-    ctx = canvas.getContext('2d');
-    previewCanvas = document.getElementById('preview-canvas');
-    previewCtx = previewCanvas.getContext('2d');
+    if (!window.Carcassonne) {
+      document.body.innerHTML = '<main class="fatal-error"><h1>Ошибка загрузки</h1><p>game.js не загрузился.</p></main>';
+      return;
+    }
 
-    resizeCanvas();
+    els.setupPanel = byId('setup-panel');
+    els.playerCount = byId('player-count');
+    els.playerNames = byId('player-names');
+    els.startGame = byId('start-game');
+    els.newGameTop = byId('new-game-top');
+    els.board = byId('board');
+    els.rotate = byId('rotate-tile');
+    els.skip = byId('skip-meeple');
+    els.currentTile = byId('current-tile');
+    els.tileHint = byId('tile-hint');
+    els.rotationStatus = byId('rotation-status');
+    els.deckCounter = byId('deck-counter');
+    els.phaseLabel = byId('phase-label');
+    els.currentPlayerTitle = byId('current-player-title');
+    els.featureActions = byId('feature-actions');
+    els.scoreboard = byId('scoreboard');
+    els.eventLog = byId('event-log');
 
-    window.addEventListener('resize', function () {
-      resizeCanvas();
+    els.playerCount.addEventListener('change', renderPlayerInputs);
+    els.startGame.addEventListener('click', startGame);
+    els.newGameTop.addEventListener('click', function () {
+      state = null;
+      els.setupPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       render();
     });
-
-    canvas.addEventListener('mousedown', onMouseDown);
-    canvas.addEventListener('mousemove', onMouseMove);
-    canvas.addEventListener('mouseup', onMouseUp);
-    canvas.addEventListener('mouseleave', onMouseUp);
-    canvas.addEventListener('wheel', onWheel, { passive: false });
-    canvas.addEventListener('click', onClick);
-
-    document.addEventListener('keydown', onKeyDown);
-
-    document.getElementById('btn-rotate').addEventListener('click', rotateTile);
-    document.getElementById('btn-skip-meeple').addEventListener('click', skipMeepleAction);
-    document.getElementById('btn-end-turn').addEventListener('click', endTurnAction);
-    document.getElementById('btn-restart').addEventListener('click', showSetup);
-    document.getElementById('btn-help').addEventListener('click', toggleHelp);
-    document.getElementById('btn-start-game').addEventListener('click', startGameFromSetup);
-    document.getElementById('btn-close-help').addEventListener('click', toggleHelp);
-
-    var playerCountEl = document.getElementById('player-count');
-    playerCountEl.addEventListener('change', updatePlayerNameInputs);
-
-    updatePlayerNameInputs();
-    showSetup();
-  }
-
-  function resizeCanvas() {
-    var container = document.getElementById('board-container');
-    var w = container.clientWidth;
-    var h = container.clientHeight || window.innerHeight - 160;
-    if (w < 400) w = 400;
-    if (h < 300) h = 300;
-    dpr = window.devicePixelRatio || 1;
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.imageSmoothingEnabled = true;
-  }
-
-  function showSetup() {
-    if (state && !state.gameOver) {
-      if (!confirm('A game is in progress. Starting a new game will discard the current session. Continue?')) {
-        return;
+    els.rotate.addEventListener('click', function () { rotateCurrentTileFromUi('button'); });
+    els.skip.addEventListener('click', function () {
+      if (!state) return;
+      window.Carcassonne.skipMeeple(state);
+      render();
+    });
+    document.addEventListener('keydown', function (event) {
+      var target = event.target;
+      var tag = target && target.tagName ? target.tagName.toLowerCase() : '';
+      if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+      if (event.key && event.key.toLowerCase() === 'r') {
+        event.preventDefault();
+        rotateCurrentTileFromUi('hotkey');
       }
-    }
-    document.getElementById('setup-modal').classList.remove('hidden');
-  }
+    });
 
-  function hideSetup() {
-    document.getElementById('setup-modal').classList.add('hidden');
-  }
-
-  function toggleHelp() {
-    var modal = document.getElementById('help-modal');
-    modal.classList.toggle('hidden');
-  }
-
-  function updatePlayerNameInputs() {
-    var count = parseInt(document.getElementById('player-count').value, 10) || 2;
-    if (count < 2) count = 2;
-    if (count > 5) count = 5;
-    document.getElementById('player-count').value = count;
-
-    var container = document.getElementById('player-names');
-    container.innerHTML = '';
-    var defaults = ['Alice', 'Bob', 'Charlie', 'Diana', 'Eve'];
-    for (var i = 0; i < count; i++) {
-      var div = document.createElement('div');
-      div.className = 'player-name-row';
-      var color = C.PLAYER_COLORS[i];
-      div.innerHTML = '<span class="color-swatch" style="background:' + color + '"></span>' +
-        '<label>Player ' + (i + 1) + ':</label>' +
-        '<input type="text" class="player-name-input" value="' + defaults[i] + '" data-index="' + i + '">';
-      container.appendChild(div);
-    }
-  }
-
-  function startGameFromSetup() {
-    var count = parseInt(document.getElementById('player-count').value, 10);
-    var inputs = document.querySelectorAll('.player-name-input');
-    var names = [];
-    for (var i = 0; i < count && i < inputs.length; i++) {
-      var name = inputs[i].value.trim();
-      if (!name) name = 'Player ' + (i + 1);
-      names.push(name);
-    }
-
-    state = C.createGame(names);
-    hideSetup();
-    centerBoard();
-    updateAllUI();
+    renderPlayerInputs();
     render();
   }
 
-  function centerBoard() {
-    var container = document.getElementById('board-container');
-    var cx = container.clientWidth / 2;
-    var cy = container.clientHeight / 2;
-    offsetX = cx - TILE_SIZE / 2;
-    offsetY = cy - TILE_SIZE / 2;
-  }
-
-  function boardToScreen(col, row) {
-    return {
-      x: offsetX + col * TILE_SIZE * scale,
-      y: offsetY + row * TILE_SIZE * scale
-    };
-  }
-
-  function screenToBoard(sx, sy) {
-    return {
-      col: Math.floor((sx - offsetX) / (TILE_SIZE * scale)),
-      row: Math.floor((sy - offsetY) / (TILE_SIZE * scale))
-    };
-  }
-
-  function onMouseDown(e) {
-    var rect = canvas.getBoundingClientRect();
-    var mx = e.clientX - rect.left;
-    var my = e.clientY - rect.top;
-
-    if (state && state.phase === 'meeple') {
-      var sb = screenToBoard(mx, my);
-      var key = C.posKey(sb.col, sb.row);
-      if (state.board[key] && state.board[key].meeple === null) {
-        handleMeepleClick(sb.col, sb.row, mx, my);
-        return;
-      }
-    }
-
-    dragging = true;
-    dragStartX = e.clientX;
-    dragStartY = e.clientY;
-    dragOffsetStartX = offsetX;
-    dragOffsetStartY = offsetY;
-  }
-
-  function onMouseMove(e) {
-    var rect = canvas.getBoundingClientRect();
-    var mx = e.clientX - rect.left;
-    var my = e.clientY - rect.top;
-
-    if (dragging) {
-      offsetX = dragOffsetStartX + (e.clientX - dragStartX);
-      offsetY = dragOffsetStartY + (e.clientY - dragStartY);
-      render();
-      return;
-    }
-
-    var sb = screenToBoard(mx, my);
-    if (sb.col !== hoveredCol || sb.row !== hoveredRow) {
-      hoveredCol = sb.col;
-      hoveredRow = sb.row;
-      render();
-    }
-  }
-
-  function onMouseUp(e) {
-    dragging = false;
-  }
-
-  function onWheel(e) {
-    e.preventDefault();
-    var rect = canvas.getBoundingClientRect();
-    var mx = e.clientX - rect.left;
-    var my = e.clientY - rect.top;
-
-    var oldScale = scale;
-    var delta = e.deltaY > 0 ? -0.1 : 0.1;
-    scale = Math.max(0.3, Math.min(3.0, scale + delta));
-
-    var ratio = scale / oldScale;
-    offsetX = mx - ratio * (mx - offsetX);
-    offsetY = my - ratio * (my - offsetY);
-
-    render();
-  }
-
-  function onClick(e) {
-    if (dragging) return;
-
-    var rect = canvas.getBoundingClientRect();
-    var mx = e.clientX - rect.left;
-    var my = e.clientY - rect.top;
-    var sb = screenToBoard(mx, my);
-
-    if (!state || state.gameOver) return;
-
-    if (state.phase === 'place') {
-      var canPlace = false;
-      for (var i = 0; i < state.validPlacements.length; i++) {
-        var vp = state.validPlacements[i];
-        if (vp.col === sb.col && vp.row === sb.row) {
-          canPlace = true;
-          break;
-        }
-      }
-      if (canPlace) {
-        C.placeTile(state, sb.col, sb.row);
-        updateAllUI();
-        render();
-      }
-    }
-  }
-
-  function handleMeepleClick(col, row, mx, my) {
-    var features = C.getTileFeatures(state, col, row);
-    if (features.length === 0) return;
-
-    var bs = boardToScreen(col, row);
-    var ts = TILE_SIZE * scale;
-    var relX = (mx - bs.x) / ts;
-    var relY = (my - bs.y) / ts;
-
-    var selectedFeature = null;
-
-    for (var i = 0; i < features.length; i++) {
-      var f = features[i];
-      if (f.type === 'monastery') {
-        var cx = 0.5, cy = 0.5, r = 0.15;
-        var dx = relX - cx, dy = relY - cy;
-        if (dx * dx + dy * dy <= r * r + 0.02) {
-          selectedFeature = f;
-          break;
-        }
-      } else if (f.type === 'city') {
-        for (var j = 0; j < f.edges.length; j++) {
-          var d = f.edges[j];
-          var reg = getEdgeRegion(d, ts);
-          var ex = bs.x + reg.cx * ts;
-          var ey = bs.y + reg.cy * ts;
-          var dist = Math.sqrt((mx - ex) * (mx - ex) + (my - ey) * (my - ey));
-          if (dist < ts * 0.18) {
-            selectedFeature = f;
-            break;
-          }
-        }
-        if (selectedFeature) break;
-      } else if (f.type === 'road') {
-        for (var k = 0; k < f.edges.length; k++) {
-          var rd = f.edges[k];
-          var reg2 = getEdgeRegion(rd, ts);
-          var rx = bs.x + reg2.cx * ts;
-          var ry = bs.y + reg2.cy * ts;
-          var dist2 = Math.sqrt((mx - rx) * (mx - rx) + (my - ry) * (my - ry));
-          if (dist2 < ts * 0.18) {
-            selectedFeature = f;
-            break;
-          }
-        }
-        if (selectedFeature) break;
-      }
-    }
-
-    if (!selectedFeature && features.length > 0) {
-      for (var fi = 0; fi < features.length; fi++) {
-        if (features[fi].type === 'field') {
-          selectedFeature = features[fi];
-          break;
-        }
-      }
-    }
-
-    if (!selectedFeature) return;
-
-    var featureEdge = selectedFeature.type === 'monastery' ? 0 :
-      selectedFeature.type === 'field' ? getClosestFieldEdge(selectedFeature, relX, relY) :
-        (selectedFeature.edges && selectedFeature.edges.length > 0 ? selectedFeature.edges[0] : 0);
-
-    if (C.canPlaceMeepleOnFeature(state, col, row, selectedFeature.type, featureEdge)) {
-      C.placeMeeple(state, col, row, selectedFeature.type, featureEdge);
-      updateAllUI();
-      render();
-    }
-  }
-
-  function getEdgeRegion(dir, ts) {
-    switch (dir) {
-      case C.DIR_N: return { cx: 0.5, cy: 0.12 };
-      case C.DIR_E: return { cx: 0.88, cy: 0.5 };
-      case C.DIR_S: return { cx: 0.5, cy: 0.88 };
-      case C.DIR_W: return { cx: 0.12, cy: 0.5 };
-    }
-    return { cx: 0.5, cy: 0.5 };
-  }
-
-  function getClosestFieldEdge(feature, relX, relY) {
-    if (!feature.edges || feature.edges.length === 0) return 0;
-    var bestDist = Infinity;
-    var bestEdge = feature.edges[0];
-    for (var i = 0; i < feature.edges.length; i++) {
-      var d = feature.edges[i];
-      var reg = getEdgeRegion(d);
-      var dx = relX - reg.cx;
-      var dy = relY - reg.cy;
-      var dist = dx * dx + dy * dy;
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestEdge = d;
-      }
-    }
-    return bestEdge;
-  }
-
-  function rotateTile() {
+  function rotateCurrentTileFromUi(source) {
     if (!state || state.phase !== 'place') return;
-    state.currentRotation = (state.currentRotation + 1) % 4;
-    state.validPlacements = C.getValidPlacements(state, state.currentTile, state.currentRotation);
-    updateAllUI();
+    var before = placementsSignature(state.validPlacements);
+    var ok = window.Carcassonne.rotateCurrentTile(state);
+    if (!ok) return;
+    var after = placementsSignature(state.validPlacements);
+    state.lastRotateSource = source;
+    state.lastRotateChangedCells = before !== after;
     render();
+    pulse(els.rotate, 'just-rotated');
+    pulse(els.currentTile, 'preview-rotated');
+    pulse(els.board, 'valids-updated');
   }
 
-  function skipMeepleAction() {
-    if (!state || state.phase !== 'meeple') return;
-    C.skipMeeple(state);
-    endTurnAction();
+  function pulse(el, className) {
+    if (!el) return;
+    el.classList.remove(className);
+    // Force reflow so repeated rotations restart the CSS animation.
+    void el.offsetWidth;
+    el.classList.add(className);
   }
 
-  function endTurnAction() {
-    if (!state || state.gameOver) return;
-    if (state.phase === 'meeple' || state.phase === 'place') {
-      if (state.phase === 'place' && !state.placedMeepleThisTurn) {
-        return;
-      }
-      C.endTurn(state);
-      updateAllUI();
-      render();
-      if (state.phase === 'place') {
-        centerBoard();
-        render();
-      }
+  function placementsSignature(placements) {
+    return placements.map(function (pos) { return pos.col + ':' + pos.row; }).sort().join('|');
+  }
+
+  function renderPlayerInputs() {
+    var count = Number(els.playerCount.value || 2);
+    els.playerNames.innerHTML = '';
+    for (var i = 0; i < count; i += 1) {
+      var row = document.createElement('label');
+      row.className = 'player-name-row';
+      var dot = document.createElement('span');
+      dot.className = 'player-dot';
+      dot.style.backgroundColor = ['#b82f30', '#2f68b8', '#2f7d45', '#7a4ab0', '#c56d17'][i];
+      var input = document.createElement('input');
+      input.type = 'text';
+      input.value = 'Игрок ' + (i + 1);
+      input.maxLength = 24;
+      input.setAttribute('data-player-name', String(i));
+      row.appendChild(dot);
+      row.appendChild(input);
+      els.playerNames.appendChild(row);
     }
   }
 
-  function onKeyDown(e) {
-    if (!state || state.gameOver) return;
-
-    if (e.key === 'r' || e.key === 'R') {
-      rotateTile();
-    } else if (e.key === ' ' || e.key === 'Spacebar') {
-      e.preventDefault();
-      skipMeepleAction();
-    } else if (e.key === 'Enter') {
-      e.preventDefault();
-      endTurnAction();
-    }
-  }
-
-  function updateAllUI() {
-    updatePlayerPanel();
-    updateGameInfo();
-    updatePreview();
-    updateControls();
-    updateLog();
-  }
-
-  function updatePlayerPanel() {
-    if (!state) return;
-    var panel = document.getElementById('players-panel');
-    var html = '';
-    for (var i = 0; i < state.players.length; i++) {
-      var p = state.players[i];
-      var active = (i === state.currentPlayer && !state.gameOver) ? ' active' : '';
-      var winner = (state.gameOver && state.getWinner && i === 0) ? ' winner' : '';
-      var sortedPlayers = state.gameOver ? C.getAllFinalScores(state) : null;
-      var isWinner = state.gameOver && sortedPlayers && i === sortedPlayers[0].index;
-
-      html += '<div class="player-card' + active + (isWinner ? ' winner' : '') + '" style="border-left: 4px solid ' + C.getPlayerColor(i) + ';">';
-      html += '<div class="player-name">' + escHtml(p.name) + '</div>';
-      html += '<div class="player-score">' + p.score + ' pts</div>';
-      html += '<div class="player-meeples">Meeples: ' + p.meeples + '</div>';
-      html += '</div>';
-    }
-    panel.innerHTML = html;
-  }
-
-  function updateGameInfo() {
-    if (!state) return;
-    document.getElementById('tiles-left').textContent = Math.max(0, state.deck.length - state.deckIndex);
-    var phaseNames = { draw: 'Drawing', place: 'Place Tile', meeple: 'Place Meeple', gameover: 'Game Over' };
-    var phaseText = phaseNames[state.phase] || state.phase;
-    if (state.currentPlayer < state.players.length && !state.gameOver) {
-      phaseText += ' - ' + state.players[state.currentPlayer].name;
-    }
-    document.getElementById('game-phase').textContent = phaseText;
-  }
-
-  function updatePreview() {
-    if (!state || !state.currentTile || state.gameOver) {
-      previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
-      return;
-    }
-    previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
-    previewCtx.save();
-    previewCtx.translate(previewCanvas.width / 2, previewCanvas.height / 2);
-    drawTile(previewCtx, state.currentTile, state.currentRotation, previewCanvas.width * 0.42);
-    previewCtx.restore();
-    previewCtx.fillStyle = '#aaa';
-    previewCtx.font = FONT_SMALL;
-    previewCtx.textAlign = 'center';
-    previewCtx.fillText('Rotation: ' + (state.currentRotation * 90) + '\u00B0', previewCanvas.width / 2, previewCanvas.height - 8);
-    var rotDisplay = document.getElementById('rotation-display');
-    if (rotDisplay) rotDisplay.textContent = 'Rotation: ' + (state.currentRotation * 90) + '\u00B0';
-  }
-
-  function updateControls() {
-    var rotateBtn = document.getElementById('btn-rotate');
-    var skipBtn = document.getElementById('btn-skip-meeple');
-    var endBtn = document.getElementById('btn-end-turn');
-
-    if (!state || state.gameOver) {
-      rotateBtn.disabled = true;
-      skipBtn.disabled = true;
-      endBtn.disabled = true;
-    } else {
-      rotateBtn.disabled = state.phase !== 'place';
-      skipBtn.disabled = state.phase !== 'meeple';
-      endBtn.disabled = (state.phase !== 'meeple');
-    }
-  }
-
-  function updateLog() {
-    if (!state) return;
-    var entries = document.getElementById('log-entries');
-    var html = '';
-    var limit = Math.min(20, state.log.length);
-    for (var i = 0; i < limit; i++) {
-      html += '<div class="log-entry">' + escHtml(state.log[i].text) + '</div>';
-    }
-    entries.innerHTML = html;
+  function startGame() {
+    var inputs = Array.prototype.slice.call(els.playerNames.querySelectorAll('input'));
+    var names = inputs.map(function (input, index) {
+      return input.value.trim() || ('Игрок ' + (index + 1));
+    });
+    state = window.Carcassonne.createGame(names);
+    state.lastRotateSource = '';
+    state.lastRotateChangedCells = false;
+    render();
   }
 
   function render() {
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, canvas.width / dpr, canvas.height / dpr);
-
-    ctx.fillStyle = '#1a1a2e';
-    ctx.fillRect(0, 0, canvas.width / dpr, canvas.height / dpr);
-
-    if (!state) return;
-
-    drawGrid();
-
-    var boardKeys = Object.keys(state.board);
-    for (var i = 0; i < boardKeys.length; i++) {
-      var pos = C.parseKey(boardKeys[i]);
-      drawPlacedTile(pos.col, pos.row);
-    }
-
-    if (state.phase === 'place' && state.currentTile && !state.gameOver) {
-      drawValidPlacementHighlights();
-    }
-
-    for (var j = 0; j < boardKeys.length; j++) {
-      var pos2 = C.parseKey(boardKeys[j]);
-      drawMeepleOnTile(pos2.col, pos2.row);
-    }
-
-    if (state.phase === 'place' && state.currentTile && !state.gameOver) {
-      drawHoverPreview();
-    }
-
-    if (state.gameOver) {
-      drawGameOverOverlay();
-    }
+    renderHeader();
+    renderBoard();
+    renderCurrentTile();
+    renderFeatureActions();
+    renderScoreboard();
+    renderLog();
   }
 
-  function drawGrid() {
-    var ts = TILE_SIZE * scale;
-    var cw = canvas.width / dpr;
-    var ch = canvas.height / dpr;
-    var startCol = Math.floor((0 - offsetX) / ts) - 1;
-    var startRow = Math.floor((0 - offsetY) / ts) - 1;
-    var endCol = Math.ceil((cw - offsetX) / ts) + 1;
-    var endRow = Math.ceil((ch - offsetY) / ts) + 1;
-
-    ctx.strokeStyle = '#2a2a4a';
-    ctx.lineWidth = 0.5;
-
-    for (var col = startCol; col <= endCol; col++) {
-      var x = offsetX + col * ts;
-      ctx.beginPath();
-      ctx.moveTo(x, offsetY + startRow * ts);
-      ctx.lineTo(x, offsetY + endRow * ts);
-      ctx.stroke();
+  function renderHeader() {
+    if (!state) {
+      els.phaseLabel.textContent = 'Фаза: подготовка';
+      els.currentPlayerTitle.textContent = 'Нажмите «Начать»';
+      els.deckCounter.textContent = '0 в мешке';
+      els.rotate.disabled = true;
+      els.skip.disabled = true;
+      return;
     }
-    for (var row = startRow; row <= endRow; row++) {
-      var y = offsetY + row * ts;
-      ctx.beginPath();
-      ctx.moveTo(offsetX + startCol * ts, y);
-      ctx.lineTo(offsetX + endCol * ts, y);
-      ctx.stroke();
-    }
+    var player = state.players[state.currentPlayer];
+    var phaseText = state.phase === 'place' ? 'размещение тайла' : state.phase === 'meeple' ? 'мипл' : 'финал';
+    els.phaseLabel.textContent = 'Фаза: ' + phaseText;
+    els.currentPlayerTitle.textContent = state.gameOver ? 'Игра окончена' : ('Ходит ' + player.name);
+    els.deckCounter.textContent = state.deck.length + ' в мешке';
+    els.rotate.disabled = state.phase !== 'place';
+    els.skip.disabled = state.phase !== 'meeple';
   }
 
-  function drawPlacedTile(col, row) {
-    var key = C.posKey(col, row);
-    var placed = state.board[key];
-    if (!placed) return;
-
-    var bs = boardToScreen(col, row);
-    var ts = TILE_SIZE * scale;
-
-    ctx.save();
-    ctx.translate(bs.x, bs.y);
-    drawTile(ctx, placed.tile, placed.rotation, ts);
-    ctx.restore();
+  function collectBoardPositions() {
+    var positions = [];
+    if (state) {
+      Object.keys(state.board).forEach(function (boardKey) {
+        var parts = boardKey.split(',');
+        positions.push({ col: Number(parts[0]), row: Number(parts[1]) });
+      });
+      state.validPlacements.forEach(function (pos) { positions.push(pos); });
+    }
+    if (positions.length === 0) positions.push({ col: 0, row: 0 });
+    return positions;
   }
 
-  function drawTile(context, tileDef, rotation, size) {
-    var s = size;
-    var h = s / 2;
+  function renderBoard() {
+    els.board.innerHTML = '';
+    els.board.dataset.rotation = state ? String(state.currentRotation || 0) : '0';
+    els.board.dataset.validCount = state ? String(state.validPlacements.length) : '0';
+    els.board.dataset.rotationRevision = state ? String(state.rotationRevision || 0) : '0';
+    var positions = collectBoardPositions();
+    var cols = positions.map(function (p) { return p.col; });
+    var rows = positions.map(function (p) { return p.row; });
+    var minCol = Math.min.apply(null, cols) - 1;
+    var maxCol = Math.max.apply(null, cols) + 1;
+    var minRow = Math.min.apply(null, rows) - 1;
+    var maxRow = Math.max.apply(null, rows) + 1;
+    var colCount = maxCol - minCol + 1;
+    var rowCount = maxRow - minRow + 1;
+    els.board.style.gridTemplateColumns = 'repeat(' + colCount + ', var(--tile-size))';
+    els.board.style.gridTemplateRows = 'repeat(' + rowCount + ', var(--tile-size))';
 
-    context.fillStyle = '#7ec850';
-    context.fillRect(0, 0, s, s);
-
-    var edges = C.edgeArray(tileDef, rotation);
-
-    var hasCity = false;
-    var hasRoad = false;
-    for (var d = 0; d < 4; d++) {
-      if (edges[d] === C.EDGE_CITY) hasCity = true;
-      if (edges[d] === C.EDGE_ROAD) hasRoad = true;
-    }
-
-    if (hasCity) {
-      drawCityFeature(context, edges, s);
-    }
-
-    if (hasRoad) {
-      drawRoadFeature(context, edges, s);
-    }
-
-    if (tileDef.center === 'M') {
-      drawMonastery(context, h, s);
-    }
-
-    if (tileDef.shield) {
-      drawShield(context, h, s);
-    }
-
-    context.strokeStyle = '#333';
-    context.lineWidth = 1;
-    context.strokeRect(0.5, 0.5, s - 1, s - 1);
-  }
-
-  function drawCityFeature(context, edges, s) {
-    var h = s / 2;
-    var sp = s * 0.22;
-    var cityInside = s * 0.18;
-
-    context.save();
-    context.beginPath();
-
-    var hasN = edges[C.DIR_N] === C.EDGE_CITY;
-    var hasE = edges[C.DIR_E] === C.EDGE_CITY;
-    var hasS = edges[C.DIR_S] === C.EDGE_CITY;
-    var hasW = edges[C.DIR_W] === C.EDGE_CITY;
-
-    if (hasN) {
-      context.fillStyle = '#c8956c';
-      context.fillRect(0, 0, s, sp);
-      context.fillStyle = '#8b6914';
-      context.fillRect(0, 0, s, cityInside);
-      context.fillStyle = '#6b6b6b';
-      context.fillRect(0, 0, s, 3);
-    }
-    if (hasE) {
-      context.fillStyle = '#c8956c';
-      context.fillRect(s - sp, 0, sp, s);
-      context.fillStyle = '#8b6914';
-      context.fillRect(s - cityInside, 0, cityInside, s);
-      context.fillStyle = '#6b6b6b';
-      context.fillRect(s - 3, 0, 3, s);
-    }
-    if (hasS) {
-      context.fillStyle = '#c8956c';
-      context.fillRect(0, s - sp, s, sp);
-      context.fillStyle = '#8b6914';
-      context.fillRect(0, s - cityInside, s, cityInside);
-      context.fillStyle = '#6b6b6b';
-      context.fillRect(0, s - 3, s, 3);
-    }
-    if (hasW) {
-      context.fillStyle = '#c8956c';
-      context.fillRect(0, 0, sp, s);
-      context.fillStyle = '#8b6914';
-      context.fillRect(0, 0, cityInside, s);
-      context.fillStyle = '#6b6b6b';
-      context.fillRect(0, 0, 3, s);
-    }
-
-    context.restore();
-  }
-
-  function drawRoadFeature(context, edges, s) {
-    var rw = s * 0.12;
-    var h = s / 2;
-    var roadColor = '#d4b896';
-    var roadBorder = '#a08060';
-
-    context.save();
-
-    for (var d = 0; d < 4; d++) {
-      if (edges[d] === C.EDGE_ROAD) {
-        context.fillStyle = roadColor;
-        context.strokeStyle = roadBorder;
-        context.lineWidth = 1;
-
-        switch (d) {
-          case C.DIR_N:
-            context.fillRect(h - rw, 0, rw * 2, h);
-            context.strokeRect(h - rw, 0, rw * 2, h);
-            break;
-          case C.DIR_E:
-            context.fillRect(h, h - rw, h, rw * 2);
-            context.strokeRect(h, h - rw, h, rw * 2);
-            break;
-          case C.DIR_S:
-            context.fillRect(h - rw, h, rw * 2, h);
-            context.strokeRect(h - rw, h, rw * 2, h);
-            break;
-          case C.DIR_W:
-            context.fillRect(0, h - rw, h, rw * 2);
-            context.strokeRect(0, h - rw, h, rw * 2);
-            break;
-        }
-      }
-    }
-
-    drawRoadConnectors(context, edges, s);
-
-    context.restore();
-  }
-
-  function drawRoadConnectors(context, edges, s) {
-    var rw = s * 0.12;
-    var h = s / 2;
-    var roadColor = '#d4b896';
-    var roadBorder = '#a08060';
-    var count = 0;
-    for (var d = 0; d < 4; d++) {
-      if (edges[d] === C.EDGE_ROAD) count++;
-    }
-
-    if (count >= 2) {
-      context.fillStyle = roadColor;
-      context.strokeStyle = roadBorder;
-      context.lineWidth = 1;
-
-      if (edges[C.DIR_N] === C.EDGE_ROAD && edges[C.DIR_S] === C.EDGE_ROAD) {
-        context.fillRect(h - rw, 0, rw * 2, s);
-        context.strokeRect(h - rw, 0, rw * 2, s);
-      }
-      if (edges[C.DIR_E] === C.EDGE_ROAD && edges[C.DIR_W] === C.EDGE_ROAD) {
-        context.fillRect(0, h - rw, s, rw * 2);
-        context.strokeRect(0, h - rw, s, rw * 2);
-      }
-      if (edges[C.DIR_N] === C.EDGE_ROAD && edges[C.DIR_E] === C.EDGE_ROAD) {
-        context.beginPath();
-        context.moveTo(h - rw, 0);
-        context.lineTo(h - rw, h - rw);
-        context.lineTo(s, h - rw);
-        context.lineTo(s, h + rw);
-        context.lineTo(h + rw, h + rw);
-        context.lineTo(h + rw, 0);
-        context.closePath();
-        context.fill();
-        context.stroke();
-
-        context.beginPath();
-        context.moveTo(0, h - rw);
-        context.lineTo(h - rw, h - rw);
-        context.lineTo(h - rw, s);
-        context.lineTo(h + rw, s);
-        context.lineTo(h + rw, h + rw);
-        context.lineTo(0, h + rw);
-        context.closePath();
-        context.fill();
-        context.stroke();
-      }
-      if (edges[C.DIR_N] === C.EDGE_ROAD && edges[C.DIR_W] === C.EDGE_ROAD) {
-        context.beginPath();
-        context.moveTo(h + rw, 0);
-        context.lineTo(h + rw, h - rw);
-        context.lineTo(0, h - rw);
-        context.lineTo(0, h + rw);
-        context.lineTo(h - rw, h + rw);
-        context.lineTo(h - rw, 0);
-        context.closePath();
-        context.fill();
-        context.stroke();
-
-        context.beginPath();
-        context.moveTo(s, h - rw);
-        context.lineTo(h + rw, h - rw);
-        context.lineTo(h + rw, s);
-        context.lineTo(h - rw, s);
-        context.lineTo(h - rw, h + rw);
-        context.lineTo(s, h + rw);
-        context.closePath();
-        context.fill();
-        context.stroke();
-      }
-      if (edges[C.DIR_S] === C.EDGE_ROAD && edges[C.DIR_E] === C.EDGE_ROAD) {
-        context.beginPath();
-        context.moveTo(h - rw, s);
-        context.lineTo(h - rw, h + rw);
-        context.lineTo(s, h + rw);
-        context.lineTo(s, h - rw);
-        context.lineTo(h + rw, h - rw);
-        context.lineTo(h + rw, s);
-        context.closePath();
-        context.fill();
-        context.stroke();
-
-        context.beginPath();
-        context.moveTo(0, h + rw);
-        context.lineTo(h - rw, h + rw);
-        context.lineTo(h - rw, 0);
-        context.lineTo(h + rw, 0);
-        context.lineTo(h + rw, h - rw);
-        context.lineTo(0, h - rw);
-        context.closePath();
-        context.fill();
-        context.stroke();
-      }
-      if (edges[C.DIR_S] === C.EDGE_ROAD && edges[C.DIR_W] === C.EDGE_ROAD) {
-        context.beginPath();
-        context.moveTo(h + rw, s);
-        context.lineTo(h + rw, h + rw);
-        context.lineTo(0, h + rw);
-        context.lineTo(0, h - rw);
-        context.lineTo(h - rw, h - rw);
-        context.lineTo(h - rw, s);
-        context.closePath();
-        context.fill();
-        context.stroke();
-
-        context.beginPath();
-        context.moveTo(s, h + rw);
-        context.lineTo(h + rw, h + rw);
-        context.lineTo(h + rw, 0);
-        context.lineTo(h - rw, 0);
-        context.lineTo(h - rw, h - rw);
-        context.lineTo(s, h - rw);
-        context.closePath();
-        context.fill();
-        context.stroke();
+    for (var row = minRow; row <= maxRow; row += 1) {
+      for (var col = minCol; col <= maxCol; col += 1) {
+        els.board.appendChild(renderCell(col, row));
       }
     }
   }
 
-  function drawMonastery(context, h, s) {
-    var ms = s * 0.08;
-    context.fillStyle = '#8b7355';
-    context.fillRect(h - ms * 1.5, h - ms * 1.5, ms * 3, ms * 3);
-    context.fillStyle = '#6b5335';
-    context.fillRect(h - ms, h - ms * 2, ms * 2, ms * 4);
-    context.fillStyle = '#a08060';
-    context.fillRect(h - ms * 0.4, h - ms * 2.5, ms * 0.8, ms * 1);
-    context.fillRect(h - ms * 0.4, h + ms * 1.5, ms * 0.8, ms * 0.6);
-    context.strokeStyle = '#4a3828';
-    context.lineWidth = 0.5;
-    context.strokeRect(h - ms * 1.5, h - ms * 1.5, ms * 3, ms * 3);
-  }
+  function renderCell(col, row) {
+    var cell = document.createElement('button');
+    cell.type = 'button';
+    cell.className = 'board-cell';
+    cell.setAttribute('aria-label', 'Клетка ' + col + ':' + row);
 
-  function drawShield(context, h, s) {
-    var sh = s * 0.1;
-    var sw = s * 0.08;
-    context.fillStyle = '#4488cc';
-    context.beginPath();
-    context.moveTo(h - sw, h);
-    context.lineTo(h, h  - sh);
-    context.lineTo(h + sw, h);
-    context.lineTo(h, h + sh);
-    context.closePath();
-    context.fill();
-    context.strokeStyle = '#ffd700';
-    context.lineWidth = 1.5;
-    context.stroke();
-    context.fillStyle = '#ffd700';
-    context.beginPath();
-    context.arc(h, h, sw * 0.3, 0, Math.PI * 2);
-    context.fill();
-  }
-
-  function drawValidPlacementHighlights() {
-    var ts = TILE_SIZE * scale;
-    for (var i = 0; i < state.validPlacements.length; i++) {
-      var vp = state.validPlacements[i];
-      var bs = boardToScreen(vp.col, vp.row);
-      ctx.fillStyle = 'rgba(46, 204, 113, 0.25)';
-      ctx.fillRect(bs.x + 1, bs.y + 1, ts - 2, ts - 2);
-      ctx.strokeStyle = 'rgba(46, 204, 113, 0.6)';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(bs.x + 1, bs.y + 1, ts - 2, ts - 2);
-    }
-  }
-
-  function drawHoverPreview() {
-    var ts = TILE_SIZE * scale;
-    var hx = hoveredCol, hy = hoveredRow;
-    if (hx === null || hy === null) return;
-
-    var valid = false;
-    for (var i = 0; i < state.validPlacements.length; i++) {
-      var vp = state.validPlacements[i];
-      if (vp.col === hx && vp.row === hy) {
-        valid = true;
-        break;
-      }
+    if (!state) return cell;
+    var boardKey = col + ',' + row;
+    var placed = state.board[boardKey];
+    if (placed) {
+      cell.className = 'board-cell occupied';
+      cell.disabled = true;
+      var tile = renderTile(placed.tile, placed.rotation, placed.meeple, false);
+      var coord = document.createElement('span');
+      coord.className = 'coord';
+      coord.textContent = col + ':' + row;
+      tile.appendChild(coord);
+      cell.appendChild(tile);
+      return cell;
     }
 
-    if (!valid) return;
-
-    var bs = boardToScreen(hx, hy);
-    ctx.save();
-    ctx.globalAlpha = 0.6;
-    ctx.translate(bs.x, bs.y);
-    drawTile(ctx, state.currentTile, state.currentRotation, ts);
-    ctx.restore();
-  }
-
-  function drawMeepleOnTile(col, row) {
-    var key = C.posKey(col, row);
-    var placed = state.board[key];
-    if (!placed || !placed.meeple) return;
-
-    var bs = boardToScreen(col, row);
-    var ts = TILE_SIZE * scale;
-    var h = ts / 2;
-
-    var px, py;
-
-    var ft = placed.meeple.featureType;
-    var fe = placed.meeple.featureEdge;
-
-    if (ft === 'monastery') {
-      px = bs.x + h;
-      py = bs.y + h;
-    } else if (ft === 'city') {
-      var reg = getEdgeRegion(fe, ts);
-      px = bs.x + reg.cx * ts;
-      py = bs.y + reg.cy * ts;
-    } else if (ft === 'road') {
-      var reg2 = getEdgeRegion(fe, ts);
-      px = bs.x + reg2.cx * ts;
-      py = bs.y + reg2.cy * ts;
-    } else if (ft === 'field') {
-      var reg3 = getEdgeRegion(fe, ts);
-      px = bs.x + reg3.cx * ts;
-      py = bs.y + reg3.cy * ts;
+    var valid = state.phase === 'place' && state.validPlacements.some(function (pos) {
+      return pos.col === col && pos.row === row;
+    });
+    if (valid) {
+      cell.className = 'board-cell valid';
+      cell.title = 'Законная клетка для текущего поворота ' + (state.currentRotation * 90) + '°';
+      cell.addEventListener('click', function () {
+        window.Carcassonne.placeTile(state, col, row);
+        render();
+      });
     } else {
-      px = bs.x + h;
-      py = bs.y + h;
+      cell.disabled = true;
+    }
+    return cell;
+  }
+
+  function renderTile(tileDef, rotation, meeple, large) {
+    var tile = document.createElement('div');
+    tile.className = 'tile' + (large ? ' large' : '');
+    tile.title = tileDef.title + ' · поворот ' + (rotation * 90) + '°';
+    tile.dataset.rotation = String(rotation);
+    tile.style.setProperty('--tile-rotation', (rotation * 90) + 'deg');
+
+    var art = document.createElement('span');
+    art.className = 'tile-art';
+    tileDef.edges.forEach(function (edge, index) {
+      var edgeEl = document.createElement('span');
+      edgeEl.className = 'tile-edge ' + dirNames[index] + ' edge-' + edge;
+      art.appendChild(edgeEl);
+    });
+    var core = document.createElement('span');
+    core.className = 'tile-core core-' + tileDef.center;
+    core.textContent = centerIcon(tileDef.center);
+    art.appendChild(core);
+    if (tileDef.shield) {
+      var shield = document.createElement('span');
+      shield.className = 'tile-shield';
+      shield.textContent = '✦';
+      art.appendChild(shield);
+    }
+    tile.appendChild(art);
+
+    var compass = document.createElement('span');
+    compass.className = 'rotation-compass';
+    compass.textContent = '▲';
+    tile.appendChild(compass);
+
+    if (large) {
+      var badge = document.createElement('span');
+      badge.className = 'rotation-badge';
+      badge.textContent = (rotation * 90) + '°';
+      tile.appendChild(badge);
     }
 
-    var color = C.getPlayerColor(placed.meeple.player);
-    var mr = ts * 0.1;
-    if (mr < 5) mr = 5;
-    if (mr > 12) mr = 12;
-
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(px, py, mr, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = mr * 0.25;
-    ctx.stroke();
-
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold ' + (mr * 1.2) + 'px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(placed.meeple.player + 1, px, py);
+    if (meeple) {
+      var m = document.createElement('span');
+      m.className = 'meeple';
+      m.style.backgroundColor = state.players[meeple.player].color;
+      m.title = state.players[meeple.player].name + ' · ' + (featureNames[meeple.type] || meeple.type);
+      tile.appendChild(m);
+    }
+    return tile;
   }
 
-  function drawGameOverOverlay() {
-    var cw = canvas.width / dpr;
-    var ch = canvas.height / dpr;
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-    ctx.fillRect(0, 0, cw, ch);
+  function centerIcon(center) {
+    if (center === 'C') return '♜';
+    if (center === 'R') return '•';
+    if (center === 'M') return '⌂';
+    if (center === 'X') return '✣';
+    return '✿';
+  }
 
-    var sorted = C.getAllFinalScores(state);
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 28px "Segoe UI", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('Game Over', cw / 2, ch / 2 - 40);
-
-    ctx.font = 'bold 20px "Segoe UI", sans-serif';
-    var winner = sorted[0];
-    ctx.fillText('Winner: ' + escHtml(winner.name) + ' (' + winner.score + ' pts)', cw / 2, ch / 2 + 10);
-
-    ctx.font = '14px "Segoe UI", sans-serif';
-    for (var i = 0; i < sorted.length; i++) {
-      var p = sorted[i];
-      ctx.fillText((i + 1) + '. ' + escHtml(p.name) + ': ' + p.score + ' pts', cw / 2, ch / 2 + 40 + i * 24);
+  function renderCurrentTile() {
+    els.currentTile.innerHTML = '';
+    if (!state || !state.currentTile) {
+      els.currentTile.textContent = state && state.gameOver ? 'Партия завершена' : 'Нет тайла';
+      els.tileHint.textContent = state && state.gameOver ? 'Финальный счёт уже добавлен.' : 'Начните новую игру.';
+      els.rotationStatus.textContent = state && state.gameOver ? 'Игра завершена.' : 'Поворот появится после начала партии.';
+      return;
+    }
+    els.currentTile.appendChild(renderTile(state.currentTile, state.currentRotation, null, true));
+    var rotationText = state.currentRotation * 90;
+    var rotateSource = state.lastRotateSource === 'hotkey' ? 'клавишей R' : state.lastRotateSource === 'button' ? 'кнопкой' : 'автоматически при доборе';
+    var cellsText = state.validPlacements.length + ' ' + plural(state.validPlacements.length, 'клетка', 'клетки', 'клеток');
+    els.rotationStatus.innerHTML = '<strong>Поворот: ' + rotationText + '°</strong><span>Законные клетки: ' + cellsText + '</span><small>Последний поворот: ' + rotateSource + '. Подсветка поля пересчитана.</small>';
+    if (state.phase === 'place') {
+      els.tileHint.textContent = 'Поворачивайте тайл кнопкой или R: превью вращается, а зелёные клетки на поле обновляются под текущий поворот.';
+    } else {
+      els.tileHint.textContent = 'Теперь можно поставить одного мипла на только что выложенный тайл или пропустить.';
     }
   }
 
-  function escHtml(str) {
-    var div = document.createElement('div');
-    div.appendChild(document.createTextNode(str));
-    return div.innerHTML;
+  function plural(n, one, two, five) {
+    var mod10 = n % 10;
+    var mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return one;
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return two;
+    return five;
   }
 
-  window.addEventListener('DOMContentLoaded', init);
-})();
+  function renderFeatureActions() {
+    els.featureActions.innerHTML = '';
+    if (!state || state.phase !== 'meeple') return;
+    var options = window.Carcassonne.getFeatureOptions(state);
+    if (options.length === 0) {
+      var empty = document.createElement('p');
+      empty.className = 'hint';
+      empty.textContent = 'На этом тайле нет объектов для мипла.';
+      els.featureActions.appendChild(empty);
+      return;
+    }
+    options.forEach(function (option) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary-button feature-button';
+      button.disabled = !option.available;
+      button.innerHTML = '<strong>' + (featureNames[option.type] || option.type) + '</strong><br><span>' + featureHints[option.type] + '</span>';
+      button.addEventListener('click', function () {
+        window.Carcassonne.placeMeeple(state, option);
+        render();
+      });
+      els.featureActions.appendChild(button);
+    });
+  }
+
+  function renderScoreboard() {
+    els.scoreboard.innerHTML = '';
+    if (!state) {
+      els.scoreboard.innerHTML = '<p class="hint">Счёт появится после начала партии.</p>';
+      return;
+    }
+    state.players.forEach(function (player) {
+      var row = document.createElement('div');
+      row.className = 'score-row' + (state.currentPlayer === player.id && !state.gameOver ? ' active' : '');
+      var dot = document.createElement('span');
+      dot.className = 'player-dot';
+      dot.style.backgroundColor = player.color;
+      var text = document.createElement('div');
+      text.innerHTML = '<div class="score-name">' + escapeHtml(player.name) + '</div><div class="score-meta">Миплов: ' + player.meeples + '</div>';
+      var score = document.createElement('div');
+      score.className = 'score-points';
+      score.textContent = String(player.score);
+      row.appendChild(dot);
+      row.appendChild(text);
+      row.appendChild(score);
+      els.scoreboard.appendChild(row);
+    });
+  }
+
+  function renderLog() {
+    els.eventLog.innerHTML = '';
+    if (!state) {
+      els.eventLog.innerHTML = '<li>Журнал появится после начала партии.</li>';
+      return;
+    }
+    state.log.slice(0, 28).forEach(function (item) {
+      var li = document.createElement('li');
+      li.textContent = item.text;
+      els.eventLog.appendChild(li);
+    });
+  }
+
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"]/g, function (char) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char];
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', init);
+}());

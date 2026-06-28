@@ -4,881 +4,503 @@
   var EDGE_CITY = 'C';
   var EDGE_ROAD = 'R';
   var EDGE_FIELD = 'F';
-
-  var DIR_N = 0;
-  var DIR_E = 1;
-  var DIR_S = 2;
-  var DIR_W = 3;
-
-  var NEIGHBOR_DELTA = [
-    { dc: 0, dr: -1 },
-    { dc: 1, dr: 0 },
-    { dc: 0, dr: 1 },
-    { dc: -1, dr: 0 }
+  var DIRS = [
+    { name: 'N', dc: 0, dr: -1 },
+    { name: 'E', dc: 1, dr: 0 },
+    { name: 'S', dc: 0, dr: 1 },
+    { name: 'W', dc: -1, dr: 0 }
   ];
+  var PLAYER_COLORS = ['#d33f49', '#2f76d2', '#248c4f', '#7f4ac8', '#dd8a18'];
 
-  var START_TILE_ID = 'starter';
-
-  function posKey(c, r) { return c + ',' + r; }
-
-  function parseKey(key) {
-    var parts = key.split(',');
-    return { col: parseInt(parts[0], 10), row: parseInt(parts[1], 10) };
+  function key(col, row) { return col + ',' + row; }
+  function parseKey(value) {
+    var parts = value.split(',');
+    return { col: Number(parts[0]), row: Number(parts[1]) };
   }
-
-  function neighborPos(c, r, dir) {
-    var d = NEIGHBOR_DELTA[dir];
-    return { col: c + d.dc, row: r + d.dr };
+  function opposite(dir) { return (dir + 2) % 4; }
+  function neighbor(col, row, dir) {
+    return { col: col + DIRS[dir].dc, row: row + DIRS[dir].dr };
   }
-
-  function neighborKey(c, r, dir) {
-    var d = NEIGHBOR_DELTA[dir];
-    return (c + d.dc) + ',' + (r + d.dr);
+  function localDirFromWorld(rotation, worldDir) { return (worldDir - rotation + 4) % 4; }
+  function worldDirFromLocal(rotation, localDir) { return (localDir + rotation) % 4; }
+  function edgeAt(tile, rotation, worldDir) { return tile.edges[localDirFromWorld(rotation, worldDir)]; }
+  function copyEdges(tile, rotation) {
+    var edges = [];
+    for (var dir = 0; dir < 4; dir += 1) edges.push(edgeAt(tile, rotation, dir));
+    return edges;
   }
-
-  function oppositeDir(dir) {
-    return (dir + 2) % 4;
-  }
-
-  function effectiveEdge(tileDef, rotation, dir) {
-    var idx = (dir - rotation + 4) % 4;
-    return tileDef.edges[idx];
-  }
-
-  function edgeArray(tileDef, rotation) {
-    var arr = [];
-    for (var d = 0; d < 4; d++) {
-      arr[d] = effectiveEdge(tileDef, rotation, d);
+  function groupForLocalDir(tile, featureType, localDir) {
+    var groups = featureType === 'road' ? tile.roads : tile.cities;
+    for (var i = 0; i < groups.length; i += 1) {
+      if (groups[i].indexOf(localDir) !== -1) return i;
     }
-    return arr;
+    return -1;
   }
-
-  function shuffle(arr) {
-    for (var i = arr.length - 1; i > 0; i--) {
-      var j = Math.floor(Math.random() * (i + 1));
-      var tmp = arr[i];
-      arr[i] = arr[j];
-      arr[j] = tmp;
-    }
+  function uniqueCountFromNodes(nodes) {
+    var seen = {};
+    nodes.forEach(function (nodeId) {
+      seen[nodeId.split('|')[0]] = true;
+    });
+    return Object.keys(seen).length;
   }
-
-  var TILE_DEFS = [
-    { id: 'm1', edges: [EDGE_FIELD, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'M', shield: false },
-    { id: 'm2', edges: [EDGE_ROAD, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'M', shield: false },
-    { id: 'm3', edges: [EDGE_ROAD, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'M', shield: false },
-
-    { id: 'c1', edges: [EDGE_CITY, EDGE_CITY, EDGE_CITY, EDGE_CITY], center: 'C', shield: true },
-
-    { id: 'c2', edges: [EDGE_CITY, EDGE_CITY, EDGE_CITY, EDGE_FIELD], center: 'C', shield: false },
-    { id: 'c3', edges: [EDGE_CITY, EDGE_CITY, EDGE_CITY, EDGE_FIELD], center: 'C', shield: true },
-
-    { id: 'c4', edges: [EDGE_CITY, EDGE_CITY, EDGE_FIELD, EDGE_FIELD], center: 'C', shield: false },
-    { id: 'c5', edges: [EDGE_CITY, EDGE_CITY, EDGE_FIELD, EDGE_FIELD], center: 'C', shield: true },
-    { id: 'c6', edges: [EDGE_CITY, EDGE_CITY, EDGE_FIELD, EDGE_FIELD], center: 'C', shield: false },
-
-    { id: 'c7', edges: [EDGE_CITY, EDGE_FIELD, EDGE_CITY, EDGE_FIELD], center: 'F', shield: false },
-    { id: 'c8', edges: [EDGE_CITY, EDGE_FIELD, EDGE_CITY, EDGE_FIELD], center: 'F', shield: false },
-
-    { id: 'c9', edges: [EDGE_CITY, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'C', shield: false },
-    { id: 'c10', edges: [EDGE_CITY, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'C', shield: false },
-    { id: 'c11', edges: [EDGE_CITY, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'C', shield: false },
-    { id: 'c12', edges: [EDGE_CITY, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'C', shield: false },
-
-    { id: 'cr1', edges: [EDGE_CITY, EDGE_ROAD, EDGE_FIELD, EDGE_FIELD], center: 'C', shield: false },
-    { id: 'cr2', edges: [EDGE_CITY, EDGE_ROAD, EDGE_FIELD, EDGE_FIELD], center: 'C', shield: false },
-    { id: 'cr3', edges: [EDGE_CITY, EDGE_ROAD, EDGE_FIELD, EDGE_ROAD], center: 'C', shield: false },
-    { id: 'cr4', edges: [EDGE_CITY, EDGE_ROAD, EDGE_ROAD, EDGE_FIELD], center: 'C', shield: false },
-    { id: 'cr5', edges: [EDGE_CITY, EDGE_ROAD, EDGE_FIELD, EDGE_ROAD], center: 'C', shield: false },
-    { id: 'cr6', edges: [EDGE_CITY, EDGE_ROAD, EDGE_ROAD, EDGE_FIELD], center: 'C', shield: false },
-
-    { id: 'r1', edges: [EDGE_ROAD, EDGE_FIELD, EDGE_ROAD, EDGE_FIELD], center: 'R', shield: false },
-    { id: 'r2', edges: [EDGE_ROAD, EDGE_FIELD, EDGE_ROAD, EDGE_FIELD], center: 'R', shield: false },
-    { id: 'r3', edges: [EDGE_ROAD, EDGE_FIELD, EDGE_ROAD, EDGE_FIELD], center: 'R', shield: false },
-    { id: 'r4', edges: [EDGE_ROAD, EDGE_FIELD, EDGE_ROAD, EDGE_FIELD], center: 'R', shield: false },
-    { id: 'r5', edges: [EDGE_ROAD, EDGE_ROAD, EDGE_FIELD, EDGE_FIELD], center: 'R', shield: false },
-    { id: 'r6', edges: [EDGE_ROAD, EDGE_ROAD, EDGE_FIELD, EDGE_FIELD], center: 'R', shield: false },
-    { id: 'r7', edges: [EDGE_ROAD, EDGE_ROAD, EDGE_FIELD, EDGE_FIELD], center: 'R', shield: false },
-    { id: 'r8', edges: [EDGE_ROAD, EDGE_ROAD, EDGE_FIELD, EDGE_FIELD], center: 'R', shield: false },
-    { id: 'r9', edges: [EDGE_ROAD, EDGE_ROAD, EDGE_FIELD, EDGE_FIELD], center: 'R', shield: false },
-    { id: 'rx', edges: [EDGE_ROAD, EDGE_ROAD, EDGE_ROAD, EDGE_ROAD], center: 'X', shield: false },
-
-    { id: 'f1', edges: [EDGE_FIELD, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'F', shield: false },
-    { id: 'f2', edges: [EDGE_ROAD, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'F', shield: false },
-    { id: 'f3', edges: [EDGE_ROAD, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'F', shield: false },
-    { id: 'f4', edges: [EDGE_ROAD, EDGE_ROAD, EDGE_FIELD, EDGE_FIELD], center: 'R', shield: false },
-    { id: 'f5', edges: [EDGE_ROAD, EDGE_ROAD, EDGE_FIELD, EDGE_FIELD], center: 'R', shield: false },
-    { id: 'f6', edges: [EDGE_ROAD, EDGE_FIELD, EDGE_ROAD, EDGE_FIELD], center: 'R', shield: false },
-    { id: 'f7', edges: [EDGE_ROAD, EDGE_FIELD, EDGE_ROAD, EDGE_FIELD], center: 'R', shield: false }
-  ];
-
-  function buildDeck() {
-    var deck = TILE_DEFS.slice();
-    shuffle(deck);
-    return deck;
-  }
-
-  function createStartTile() {
+  function cloneTileDef(def) {
     return {
-      id: START_TILE_ID,
-      edges: [EDGE_ROAD, EDGE_FIELD, EDGE_ROAD, EDGE_FIELD],
-      center: 'R',
-      shield: false
+      id: def.id,
+      title: def.title,
+      edges: def.edges.slice(),
+      center: def.center,
+      roads: def.roads.map(function (g) { return g.slice(); }),
+      cities: def.cities.map(function (g) { return g.slice(); }),
+      monastery: !!def.monastery,
+      shield: !!def.shield
     };
   }
-
-  function createGame(playerNames) {
-    var players = [];
-    for (var i = 0; i < playerNames.length; i++) {
-      players.push({
-        index: i,
-        name: playerNames[i],
-        score: 0,
-        meeples: 7,
-        color: PLAYER_COLORS[i]
-      });
+  function expandTiles(patterns) {
+    var result = [];
+    patterns.forEach(function (def) {
+      for (var i = 0; i < def.count; i += 1) {
+        var copy = cloneTileDef(def);
+        copy.id = def.id + '-' + (i + 1);
+        result.push(copy);
+      }
+    });
+    return result;
+  }
+  function shuffle(list) {
+    for (var i = list.length - 1; i > 0; i -= 1) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = list[i];
+      list[i] = list[j];
+      list[j] = tmp;
     }
+    return list;
+  }
 
-    var deck = buildDeck();
-    var startTile = createStartTile();
+  var TILE_PATTERNS = [
+    { id: 'city-full', title: 'Большой город', count: 2, edges: [EDGE_CITY, EDGE_CITY, EDGE_CITY, EDGE_CITY], center: 'C', cities: [[0, 1, 2, 3]], roads: [], shield: true },
+    { id: 'city-cap', title: 'Городская стена', count: 5, edges: [EDGE_CITY, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'C', cities: [[0]], roads: [], shield: false },
+    { id: 'city-cap-road', title: 'Город и дорога', count: 4, edges: [EDGE_CITY, EDGE_FIELD, EDGE_ROAD, EDGE_FIELD], center: 'R', cities: [[0]], roads: [[2]], shield: false },
+    { id: 'city-corner', title: 'Угол города', count: 4, edges: [EDGE_CITY, EDGE_CITY, EDGE_FIELD, EDGE_FIELD], center: 'C', cities: [[0, 1]], roads: [], shield: false },
+    { id: 'city-corner-shield', title: 'Угол города с гербом', count: 2, edges: [EDGE_CITY, EDGE_CITY, EDGE_FIELD, EDGE_FIELD], center: 'C', cities: [[0, 1]], roads: [], shield: true },
+    { id: 'city-line', title: 'Две стены города', count: 3, edges: [EDGE_CITY, EDGE_FIELD, EDGE_CITY, EDGE_FIELD], center: 'F', cities: [[0], [2]], roads: [], shield: false },
+    { id: 'city-three', title: 'Три стороны города', count: 3, edges: [EDGE_CITY, EDGE_CITY, EDGE_CITY, EDGE_FIELD], center: 'C', cities: [[0, 1, 2]], roads: [], shield: true },
+    { id: 'road-straight', title: 'Прямая дорога', count: 8, edges: [EDGE_ROAD, EDGE_FIELD, EDGE_ROAD, EDGE_FIELD], center: 'R', cities: [], roads: [[0, 2]], shield: false },
+    { id: 'road-curve', title: 'Поворот дороги', count: 8, edges: [EDGE_ROAD, EDGE_ROAD, EDGE_FIELD, EDGE_FIELD], center: 'R', cities: [], roads: [[0, 1]], shield: false },
+    { id: 'road-t', title: 'Развилка', count: 4, edges: [EDGE_ROAD, EDGE_ROAD, EDGE_ROAD, EDGE_FIELD], center: 'X', cities: [], roads: [[0], [1], [2]], shield: false },
+    { id: 'road-cross', title: 'Перекрёсток', count: 2, edges: [EDGE_ROAD, EDGE_ROAD, EDGE_ROAD, EDGE_ROAD], center: 'X', cities: [], roads: [[0], [1], [2], [3]], shield: false },
+    { id: 'monastery', title: 'Монастырь', count: 3, edges: [EDGE_FIELD, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'M', cities: [], roads: [], monastery: true, shield: false },
+    { id: 'monastery-road', title: 'Монастырь с дорогой', count: 3, edges: [EDGE_ROAD, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'M', cities: [], roads: [[0]], monastery: true, shield: false },
+    { id: 'field', title: 'Луга', count: 5, edges: [EDGE_FIELD, EDGE_FIELD, EDGE_FIELD, EDGE_FIELD], center: 'F', cities: [], roads: [], shield: false },
+    { id: 'city-road-left', title: 'Город и поворот дороги', count: 4, edges: [EDGE_CITY, EDGE_ROAD, EDGE_FIELD, EDGE_ROAD], center: 'R', cities: [[0]], roads: [[1, 3]], shield: false },
+    { id: 'city-road-corner', title: 'Город и дорога у стены', count: 3, edges: [EDGE_CITY, EDGE_ROAD, EDGE_ROAD, EDGE_FIELD], center: 'R', cities: [[0]], roads: [[1, 2]], shield: false }
+  ];
 
-    var board = {};
-    board[posKey(0, 0)] = {
-      tile: startTile,
-      rotation: 0,
-      meeple: null
-    };
+  var START_TILE = {
+    id: 'start',
+    title: 'Стартовый тайл',
+    edges: [EDGE_CITY, EDGE_ROAD, EDGE_ROAD, EDGE_ROAD],
+    center: 'R',
+    roads: [[1, 2, 3]],
+    cities: [[0]],
+    monastery: false,
+    shield: false
+  };
 
+  function createDeck() { return shuffle(expandTiles(TILE_PATTERNS)); }
+
+  function addLog(state, text) {
+    state.log.unshift({ text: text, at: new Date().toISOString() });
+    if (state.log.length > 80) state.log.length = 80;
+  }
+
+  function createPlayers(names) {
+    return names.map(function (name, index) {
+      return {
+        id: index,
+        name: name || ('Игрок ' + (index + 1)),
+        color: PLAYER_COLORS[index],
+        score: 0,
+        meeples: 7
+      };
+    });
+  }
+
+  function createGame(names) {
+    var playerNames = names && names.length ? names.slice(0, 5) : ['Игрок 1', 'Игрок 2'];
+    if (playerNames.length < 2) playerNames = ['Игрок 1', 'Игрок 2'];
     var state = {
-      players: players,
-      playerCount: playerNames.length,
+      players: createPlayers(playerNames),
       currentPlayer: 0,
-      phase: 'draw',
-      board: board,
-      deck: deck,
-      deckIndex: 0,
+      board: {},
+      deck: createDeck(),
       currentTile: null,
       currentRotation: 0,
       validPlacements: [],
-      gameOver: false,
+      phase: 'setup',
+      lastPlaced: null,
       log: [],
-      placedMeepleThisTurn: false,
-      consecutivePasses: 0
+      skippedTiles: 0,
+      rotationRevision: 0,
+      gameOver: false
     };
-
-    addLog(state, 'Game started with ' + playerNames.length + ' players.');
-
-    var firstTile = deck[0];
-    state.deckIndex = 1;
-    state.currentTile = firstTile;
-    state.currentRotation = 0;
-    state.validPlacements = getValidPlacements(state, firstTile, 0);
-
-    if (state.validPlacements.length === 0) {
-      state.rotation = 0;
-      for (var r = 0; r < 4 && state.validPlacements.length === 0; r++) {
-        state.currentRotation = r;
-        state.validPlacements = getValidPlacements(state, firstTile, r);
-      }
-    }
-
-    state.phase = 'place';
-    addLog(state, 'Player 1 (' + playerNames[0] + '): place the tile.');
-
+    state.board[key(0, 0)] = { tile: cloneTileDef(START_TILE), rotation: 0, meeple: null };
+    addLog(state, 'Партия началась. Стартовый тайл лежит в центре поля.');
+    drawNextTile(state);
     return state;
   }
 
-  function addLog(state, msg) {
-    state.log.unshift({
-      text: msg,
-      turn: state.currentPlayer,
-      time: Date.now()
-    });
-    if (state.log.length > 50) {
-      state.log.length = 50;
+  function boardHasNeighbor(board, col, row) {
+    for (var dir = 0; dir < 4; dir += 1) {
+      var n = neighbor(col, row, dir);
+      if (board[key(n.col, n.row)]) return true;
     }
+    return false;
   }
 
-  function getValidPlacements(state, tileDef, rotation) {
-    var valid = [];
-    var board = state.board;
-    var candidates = {};
-
-    var boardKeys = Object.keys(board);
-    for (var i = 0; i < boardKeys.length; i++) {
-      var pos = parseKey(boardKeys[i]);
-      for (var d = 0; d < 4; d++) {
-        var n = neighborPos(pos.col, pos.row, d);
-        var nk = posKey(n.col, n.row);
-        if (!(nk in board)) {
-          candidates[nk] = true;
-        }
-      }
+  function canPlaceTile(board, tile, rotation, col, row) {
+    if (board[key(col, row)]) return false;
+    if (!boardHasNeighbor(board, col, row)) return false;
+    for (var dir = 0; dir < 4; dir += 1) {
+      var n = neighbor(col, row, dir);
+      var neighborTile = board[key(n.col, n.row)];
+      if (!neighborTile) continue;
+      if (edgeAt(tile, rotation, dir) !== edgeAt(neighborTile.tile, neighborTile.rotation, opposite(dir))) return false;
     }
-
-    var candKeys = Object.keys(candidates);
-    for (var j = 0; j < candKeys.length; j++) {
-      var ck = candKeys[j];
-      var cp = parseKey(ck);
-      if (isValidPlacement(board, tileDef, rotation, cp.col, cp.row)) {
-        valid.push({ col: cp.col, row: cp.row });
-      }
-    }
-
-    return valid;
-  }
-
-  function isValidPlacement(board, tileDef, rotation, col, row) {
-    var key = posKey(col, row);
-    if (key in board) return false;
-
-    var hasAdjacent = false;
-    for (var d = 0; d < 4; d++) {
-      var nk = neighborKey(col, row, d);
-      if (nk in board) {
-        hasAdjacent = true;
-        var nTile = board[nk];
-        var myEdge = effectiveEdge(tileDef, rotation, d);
-        var nEdge = effectiveEdge(nTile.tile, nTile.rotation, oppositeDir(d));
-        if (myEdge !== nEdge) {
-          return false;
-        }
-      }
-    }
-
-    return hasAdjacent;
-  }
-
-  function canPlaceTileAt(state, col, row) {
-    if (!state.currentTile) return false;
-    return isValidPlacement(state.board, state.currentTile, state.currentRotation, col, row);
-  }
-
-  function placeTile(state, col, row) {
-    var key = posKey(col, row);
-    state.board[key] = {
-      tile: state.currentTile,
-      rotation: state.currentRotation,
-      meeple: null
-    };
-    state.placedMeepleThisTurn = false;
-    addLog(state, 'Player ' + (state.currentPlayer + 1) + ' placed tile at (' + col + ',' + row + ').');
-    state.phase = 'meeple';
-  }
-
-  function getFieldConnectedEdges(tileDef, rotation, entryEdge) {
-    var edges = edgeArray(tileDef, rotation);
-    var center = tileDef.center;
-
-    if (edges[entryEdge] !== EDGE_FIELD) return [];
-
-    var fieldEdges = [];
-    for (var d = 0; d < 4; d++) {
-      if (edges[d] === EDGE_FIELD) fieldEdges.push(d);
-    }
-
-    if (center === 'F' || center === 'M' || center === 'X') {
-      return fieldEdges;
-    }
-
-    var barrierEdges = [];
-    for (var d = 0; d < 4; d++) {
-      if ((center === 'R' && edges[d] === EDGE_ROAD) ||
-          (center === 'C' && edges[d] === EDGE_CITY)) {
-        barrierEdges.push(d);
-      }
-    }
-
-    if (barrierEdges.length <= 1) return fieldEdges;
-
-    var sorted = barrierEdges.slice().sort(function (a, b) { return a - b; });
-
-    for (var i = 0; i < sorted.length; i++) {
-      var b1 = sorted[i];
-      var b2 = sorted[(i + 1) % sorted.length];
-
-      var groupEdges = [];
-      for (var d = (b1 + 1) % 4; d !== b2; d = (d + 1) % 4) {
-        if (edges[d] === EDGE_FIELD) groupEdges.push(d);
-      }
-
-      if (groupEdges.indexOf(entryEdge) !== -1) {
-        return groupEdges;
-      }
-    }
-
-    return [];
-  }
-
-  function findFieldComponent(state, col, row, startEdge) {
-    var fieldEdges = {};
-    var processed = {};
-
-    var tile = state.board[posKey(col, row)];
-    if (!tile) return { fieldEdges: {}, tiles: {} };
-
-    var edges = edgeArray(tile.tile, tile.rotation);
-    if (edges[startEdge] !== EDGE_FIELD) {
-      for (var d = 0; d < 4; d++) {
-        if (edges[d] === EDGE_FIELD) { startEdge = d; break; }
-      }
-      if (edges[startEdge] !== EDGE_FIELD) return { fieldEdges: {}, tiles: {} };
-    }
-
-    var queue = [{ col: col, row: row, entryEdge: startEdge }];
-
-    while (queue.length > 0) {
-      var item = queue.shift();
-      var pk = posKey(item.col, item.row);
-      var visitKey = pk + '|' + item.entryEdge;
-
-      if (processed[visitKey]) continue;
-      processed[visitKey] = true;
-
-      var pt = state.board[pk];
-      if (!pt) continue;
-
-      var connected = getFieldConnectedEdges(pt.tile, pt.rotation, item.entryEdge);
-
-      for (var i = 0; i < connected.length; i++) {
-        var outEdge = connected[i];
-        var edgeKey = posKey(item.col, item.row, outEdge);
-        fieldEdges[edgeKey] = true;
-
-        var n = neighborPos(item.col, item.row, outEdge);
-        var nk = posKey(n.col, n.row);
-        if (!(nk in state.board)) continue;
-
-        var nt = state.board[nk];
-        var inEdge = oppositeDir(outEdge);
-        var ntEdge = effectiveEdge(nt.tile, nt.rotation, inEdge);
-
-        if (ntEdge === EDGE_FIELD) {
-          queue.push({ col: n.col, row: n.row, entryEdge: inEdge });
-        }
-      }
-    }
-
-    var tiles = {};
-    var edgeKeys = Object.keys(fieldEdges);
-    for (var j = 0; j < edgeKeys.length; j++) {
-      var parts = edgeKeys[j].split(',');
-      tiles[parts[0] + ',' + parts[1]] = true;
-    }
-
-    return { fieldEdges: fieldEdges, tiles: tiles };
-  }
-
-  function getTileFeatures(state, col, row) {
-    var key = posKey(col, row);
-    var placed = state.board[key];
-    if (!placed) return [];
-
-    var effEdges = edgeArray(placed.tile, placed.rotation);
-    var features = [];
-
-    if (placed.tile.center === 'M') {
-      features.push({ type: 'monastery', label: 'Monastery' });
-    }
-
-    var cityEdges = [];
-    var roadEdges = [];
-    var fieldEdges = [];
-    for (var d = 0; d < 4; d++) {
-      if (effEdges[d] === EDGE_CITY) cityEdges.push(d);
-      if (effEdges[d] === EDGE_ROAD) roadEdges.push(d);
-      if (effEdges[d] === EDGE_FIELD) fieldEdges.push(d);
-    }
-
-    if (cityEdges.length > 0) {
-      features.push({ type: 'city', edges: cityEdges, label: 'City (' + cityEdges.length + ' edges)' });
-    }
-
-    if (roadEdges.length > 0) {
-      features.push({ type: 'road', edges: roadEdges, label: 'Road (' + roadEdges.length + ' edges)' });
-    }
-
-    if (fieldEdges.length > 0) {
-      features.push({ type: 'field', edges: fieldEdges, label: 'Field' });
-    }
-
-    return features;
-  }
-
-  function getFeatureComponentKey(state, pos, featureType, startEdge) {
-    if (featureType === 'monastery') {
-      return 'monastery:' + posKey(pos.col, pos.row);
-    }
-
-    if (featureType === 'field') {
-      var fieldResult = findFieldComponent(state, pos.col, pos.row, startEdge);
-      if (!fieldResult || Object.keys(fieldResult.fieldEdges).length === 0) return '';
-      var keys = Object.keys(fieldResult.fieldEdges);
-      keys.sort();
-      return 'field:' + keys.join('|');
-    }
-
-    var component = findComponent(state, pos.col, pos.row, startEdge);
-    if (!component || component.size === 0) return '';
-
-    var keys = [];
-    component.forEach(function (k) { keys.push(k); });
-    keys.sort();
-    return featureType + ':' + keys.join('|');
-  }
-
-  function canPlaceMeepleOnFeature(state, col, row, featureType, featureEdge) {
-    var placed = state.board[posKey(col, row)];
-    if (!placed || placed.meeple) return false;
-
-    var player = state.players[state.currentPlayer];
-    if (player.meeples <= 0) return false;
-
-    if (state.placedMeepleThisTurn) return false;
-
-    var claimedFeatures = getAllClaimedFeatureKeys(state);
-
-    var ourKey;
-    if (featureType === 'monastery') {
-      ourKey = 'monastery:' + posKey(col, row);
-    } else {
-      ourKey = getFeatureComponentKey(state, { col: col, row: row }, featureType, featureEdge);
-    }
-
-    if (ourKey && claimedFeatures[ourKey]) return false;
-
     return true;
   }
 
-  function getAllClaimedFeatureKeys(state) {
-    var claimed = {};
-    var boardKeys = Object.keys(state.board);
+  function candidatePositions(board) {
+    var result = {};
+    Object.keys(board).forEach(function (boardKey) {
+      var pos = parseKey(boardKey);
+      for (var dir = 0; dir < 4; dir += 1) {
+        var n = neighbor(pos.col, pos.row, dir);
+        var nk = key(n.col, n.row);
+        if (!board[nk]) result[nk] = { col: n.col, row: n.row };
+      }
+    });
+    return Object.keys(result).map(function (itemKey) { return result[itemKey]; });
+  }
 
-    for (var i = 0; i < boardKeys.length; i++) {
-      var bk = boardKeys[i];
-      var pt = state.board[bk];
-      if (pt.meeple) {
-        var ck = getFeatureComponentKey(state, parseKey(bk), pt.meeple.featureType, pt.meeple.featureEdge);
-        if (ck) claimed[ck] = true;
+  function getValidPlacements(state, tile, rotation) {
+    return candidatePositions(state.board).filter(function (pos) {
+      return canPlaceTile(state.board, tile, rotation, pos.col, pos.row);
+    });
+  }
+
+  function getAllValidRotations(state, tile) {
+    var rotations = [];
+    for (var rotation = 0; rotation < 4; rotation += 1) {
+      var placements = getValidPlacements(state, tile, rotation);
+      if (placements.length > 0) rotations.push({ rotation: rotation, placements: placements });
+    }
+    return rotations;
+  }
+
+  function drawNextTile(state) {
+    state.lastPlaced = null;
+    state.currentTile = null;
+    state.validPlacements = [];
+    if (state.deck.length === 0) {
+      finishGame(state);
+      return;
+    }
+    while (state.deck.length > 0) {
+      var tile = state.deck.shift();
+      var rotations = getAllValidRotations(state, tile);
+      if (rotations.length === 0) {
+        state.skippedTiles += 1;
+        addLog(state, 'Тайл «' + tile.title + '» сброшен: нет законного места.');
+        continue;
+      }
+      state.currentTile = tile;
+      state.currentRotation = rotations[0].rotation;
+      state.validPlacements = rotations[0].placements;
+      state.rotationRevision = 0;
+      state.phase = 'place';
+      addLog(state, state.players[state.currentPlayer].name + ': разместите «' + tile.title + '».');
+      return;
+    }
+    finishGame(state);
+  }
+
+  function rotateCurrentTile(state) {
+    if (state.phase !== 'place' || !state.currentTile) return false;
+    state.currentRotation = (state.currentRotation + 1) % 4;
+    state.validPlacements = getValidPlacements(state, state.currentTile, state.currentRotation);
+    state.rotationRevision = (state.rotationRevision || 0) + 1;
+    return true;
+  }
+
+  function placeTile(state, col, row) {
+    if (state.phase !== 'place' || !state.currentTile) return false;
+    if (!canPlaceTile(state.board, state.currentTile, state.currentRotation, col, row)) return false;
+    state.board[key(col, row)] = { tile: state.currentTile, rotation: state.currentRotation, meeple: null };
+    state.lastPlaced = { col: col, row: row };
+    state.phase = 'meeple';
+    addLog(state, state.players[state.currentPlayer].name + ' поставил(а) тайл на ' + col + ':' + row + '.');
+    return true;
+  }
+
+  function componentNodeId(tileKey, groupIndex) { return tileKey + '|' + groupIndex; }
+
+  function findComponent(state, startCol, startRow, featureType, groupIndex) {
+    var startKey = key(startCol, startRow);
+    var queue = [componentNodeId(startKey, groupIndex)];
+    var nodes = {};
+    var tileKeys = {};
+    var meeples = [];
+    var openEdges = 0;
+    var shieldTiles = {};
+
+    while (queue.length > 0) {
+      var nodeId = queue.shift();
+      if (nodes[nodeId]) continue;
+      nodes[nodeId] = true;
+      var parts = nodeId.split('|');
+      var tileKey = parts[0];
+      var group = Number(parts[1]);
+      var placed = state.board[tileKey];
+      if (!placed) continue;
+      tileKeys[tileKey] = true;
+      if (featureType === 'city' && placed.tile.shield) shieldTiles[tileKey] = true;
+      if (placed.meeple && placed.meeple.type === featureType && placed.meeple.groupIndex === group) {
+        meeples.push({ player: placed.meeple.player, tileKey: tileKey });
+      }
+
+      var localEdges = featureType === 'road' ? placed.tile.roads[group] : placed.tile.cities[group];
+      for (var i = 0; i < localEdges.length; i += 1) {
+        var localDir = localEdges[i];
+        var worldDir = worldDirFromLocal(placed.rotation, localDir);
+        var pos = parseKey(tileKey);
+        var n = neighbor(pos.col, pos.row, worldDir);
+        var nk = key(n.col, n.row);
+        var neighborTile = state.board[nk];
+        if (!neighborTile) {
+          openEdges += 1;
+          continue;
+        }
+        var neighborWorldDir = opposite(worldDir);
+        if (edgeAt(neighborTile.tile, neighborTile.rotation, neighborWorldDir) !== (featureType === 'road' ? EDGE_ROAD : EDGE_CITY)) {
+          openEdges += 1;
+          continue;
+        }
+        var neighborLocalDir = localDirFromWorld(neighborTile.rotation, neighborWorldDir);
+        var neighborGroup = groupForLocalDir(neighborTile.tile, featureType, neighborLocalDir);
+        if (neighborGroup >= 0) {
+          var nextId = componentNodeId(nk, neighborGroup);
+          if (!nodes[nextId]) queue.push(nextId);
+        }
       }
     }
 
-    return claimed;
+    return {
+      type: featureType,
+      nodes: Object.keys(nodes).sort(),
+      tileKeys: Object.keys(tileKeys).sort(),
+      meeples: meeples,
+      openEdges: openEdges,
+      shieldCount: Object.keys(shieldTiles).length,
+      complete: openEdges === 0
+    };
   }
 
-  function placeMeeple(state, col, row, featureType, featureEdge) {
-    var key = posKey(col, row);
-    var placed = state.board[key];
-    if (!placed) return false;
+  function monasteryInfo(state, col, row) {
+    var filled = 0;
+    for (var dc = -1; dc <= 1; dc += 1) {
+      for (var dr = -1; dr <= 1; dr += 1) {
+        if (dc === 0 && dr === 0) continue;
+        if (state.board[key(col + dc, row + dr)]) filled += 1;
+      }
+    }
+    return { adjacent: filled, complete: filled === 8 };
+  }
 
-    if (!canPlaceMeepleOnFeature(state, col, row, featureType, featureEdge)) return false;
+  function getTileFeatures(state, col, row) {
+    var placed = state.board[key(col, row)];
+    if (!placed) return [];
+    var features = [];
+    var i;
+    for (i = 0; i < placed.tile.cities.length; i += 1) {
+      features.push({ type: 'city', groupIndex: i, label: 'город ' + (placed.tile.cities.length > 1 ? (i + 1) : '') });
+    }
+    for (i = 0; i < placed.tile.roads.length; i += 1) {
+      features.push({ type: 'road', groupIndex: i, label: 'дорога ' + (placed.tile.roads.length > 1 ? (i + 1) : '') });
+    }
+    if (placed.tile.monastery) features.push({ type: 'monastery', groupIndex: 0, label: 'монастырь' });
+    return features;
+  }
 
-    placed.meeple = {
-      player: state.currentPlayer,
-      featureType: featureType,
-      featureEdge: featureEdge
-    };
+  function canPlaceMeeple(state, feature) {
+    if (state.phase !== 'meeple' || !state.lastPlaced) return false;
+    var placed = state.board[key(state.lastPlaced.col, state.lastPlaced.row)];
+    if (!placed || placed.meeple) return false;
+    if (state.players[state.currentPlayer].meeples <= 0) return false;
+    if (feature.type === 'monastery') return true;
+    var component = findComponent(state, state.lastPlaced.col, state.lastPlaced.row, feature.type, feature.groupIndex);
+    return component.meeples.length === 0;
+  }
 
-    state.players[state.currentPlayer].meeples--;
-    state.placedMeepleThisTurn = true;
-
-    addLog(state, 'Player ' + (state.currentPlayer + 1) + ' placed a meeple on ' + featureType + '.');
+  function placeMeeple(state, feature) {
+    if (!canPlaceMeeple(state, feature)) return false;
+    var placed = state.board[key(state.lastPlaced.col, state.lastPlaced.row)];
+    placed.meeple = { player: state.currentPlayer, type: feature.type, groupIndex: feature.groupIndex };
+    state.players[state.currentPlayer].meeples -= 1;
+    addLog(state, state.players[state.currentPlayer].name + ' поставил(а) мипла на ' + featureLabel(feature.type) + '.');
+    endTurn(state);
     return true;
   }
 
   function skipMeeple(state) {
-    state.placedMeepleThisTurn = true;
-    addLog(state, 'Player ' + (state.currentPlayer + 1) + ' skipped meeple placement.');
+    if (state.phase !== 'meeple') return false;
+    addLog(state, state.players[state.currentPlayer].name + ' не ставит мипла.');
+    endTurn(state);
+    return true;
+  }
+
+  function featureLabel(type) {
+    if (type === 'city') return 'город';
+    if (type === 'road') return 'дорогу';
+    if (type === 'monastery') return 'монастырь';
+    return type;
+  }
+
+  function featurePoints(component, finalScoring) {
+    if (component.type === 'road') return component.tileKeys.length;
+    if (component.type === 'city') {
+      var tiles = component.tileKeys.length;
+      if (finalScoring) return tiles + component.shieldCount;
+      return (tiles * 2) + (component.shieldCount * 2);
+    }
+    return 0;
+  }
+
+  function awardFeature(state, component, points, reason) {
+    if (!component.meeples.length || points <= 0) return [];
+    var counts = {};
+    component.meeples.forEach(function (m) { counts[m.player] = (counts[m.player] || 0) + 1; });
+    var max = Math.max.apply(null, Object.keys(counts).map(function (p) { return counts[p]; }));
+    var winners = Object.keys(counts).filter(function (p) { return counts[p] === max; }).map(Number);
+    winners.forEach(function (playerId) {
+      state.players[playerId].score += points;
+      addLog(state, state.players[playerId].name + ' получает ' + points + ' очк. за ' + reason + '.');
+    });
+    return winners;
+  }
+
+  function returnMeeplesFromComponent(state, component) {
+    component.nodes.forEach(function (nodeId) {
+      var tileKey = nodeId.split('|')[0];
+      var placed = state.board[tileKey];
+      if (placed && placed.meeple && placed.meeple.type === component.type) {
+        state.players[placed.meeple.player].meeples += 1;
+        placed.meeple = null;
+      }
+    });
+  }
+
+  function canonicalComponentKey(component) { return component.type + ':' + component.nodes.join(';'); }
+
+  function scoreCompletedFeatures(state) {
+    var checked = {};
+    Object.keys(state.board).forEach(function (tileKey) {
+      var placed = state.board[tileKey];
+      if (!placed.meeple) return;
+      var pos = parseKey(tileKey);
+      if (placed.meeple.type === 'monastery') {
+        var info = monasteryInfo(state, pos.col, pos.row);
+        if (info.complete) {
+          state.players[placed.meeple.player].score += 9;
+          state.players[placed.meeple.player].meeples += 1;
+          placed.meeple = null;
+          addLog(state, state.players[state.currentPlayer].name + ' завершил(а) монастырь: +9 очк. владельцу.');
+        }
+        return;
+      }
+      var component = findComponent(state, pos.col, pos.row, placed.meeple.type, placed.meeple.groupIndex);
+      var compKey = canonicalComponentKey(component);
+      if (checked[compKey]) return;
+      checked[compKey] = true;
+      if (!component.complete) return;
+      var points = featurePoints(component, false);
+      awardFeature(state, component, points, component.type === 'city' ? 'завершённый город' : 'завершённую дорогу');
+      returnMeeplesFromComponent(state, component);
+    });
   }
 
   function endTurn(state) {
-    if (!state.placedMeepleThisTurn && state.phase === 'meeple') {
-      skipMeeple(state);
-    }
+    scoreCompletedFeatures(state);
+    if (state.gameOver) return;
+    state.currentPlayer = (state.currentPlayer + 1) % state.players.length;
+    drawNextTile(state);
+  }
 
-    var scores = scorePlacement(state);
-
-    for (var i = 0; i < scores.length; i++) {
-      var s = scores[i];
-      state.players[s.player].score += s.points;
-      addLog(state, state.players[s.player].name + ' scored ' + s.points + ' pts from ' + s.reason + '.');
-    }
-
-    state.currentPlayer = (state.currentPlayer + 1) % state.playerCount;
-
-    if (state.deckIndex >= state.deck.length) {
-      var finalScores = finalScoring(state);
-      for (var j = 0; j < finalScores.length; j++) {
-        var fs = finalScores[j];
-        state.players[fs.player].score += fs.points;
-        addLog(state, state.players[fs.player].name + ' scored ' + fs.points + ' pts (final) from ' + fs.reason + '.');
-      }
-      state.gameOver = true;
-      state.phase = 'gameover';
-      return;
-    }
-
-    while (state.deckIndex < state.deck.length) {
-      state.currentTile = state.deck[state.deckIndex];
-      state.deckIndex++;
-      state.currentRotation = 0;
-      state.validPlacements = getValidPlacements(state, state.currentTile, 0);
-
-      if (state.validPlacements.length === 0) {
-        for (var r = 1; r < 4; r++) {
-          state.currentRotation = r;
-          state.validPlacements = getValidPlacements(state, state.currentTile, r);
-          if (state.validPlacements.length > 0) break;
-        }
-      }
-
-      if (state.validPlacements.length > 0) {
-        state.consecutivePasses = 0;
-        state.phase = 'place';
-        addLog(state, 'Player ' + (state.currentPlayer + 1) + ' (' + state.players[state.currentPlayer].name + '): place the tile.');
-        return;
-      }
-
-      addLog(state, 'Player ' + (state.currentPlayer + 1) + ' (' + state.players[state.currentPlayer].name + ') has no valid placements. Tile discarded.');
-      state.consecutivePasses++;
-
-      if (state.consecutivePasses >= state.playerCount * 2) {
-        state.gameOver = true;
-        state.phase = 'gameover';
-        return;
-      }
-
-      state.currentPlayer = (state.currentPlayer + 1) % state.playerCount;
-    }
-
-    state.gameOver = true;
+  function finishGame(state) {
+    if (state.gameOver) return;
     state.phase = 'gameover';
-  }
+    state.currentTile = null;
+    state.validPlacements = [];
+    state.gameOver = true;
+    var checked = {};
 
-  function findComponent(state, col, row, edge) {
-    var tile = state.board[posKey(col, row)];
-    if (!tile) return null;
-
-    var type = effectiveEdge(tile.tile, tile.rotation, edge);
-    if (type === EDGE_FIELD) return null;
-
-    var component = {};
-    var queue = [posKey(col, row)];
-    var processed = {};
-
-    while (queue.length > 0) {
-      var pk = queue.shift();
-      if (processed[pk]) continue;
-      processed[pk] = true;
-
-      var pos = parseKey(pk);
-      var pt = state.board[pk];
-      if (!pt) continue;
-
-      var edges = edgeArray(pt.tile, pt.rotation);
-      var sameEdges = [];
-      for (var d = 0; d < 4; d++) {
-        if (edges[d] === type) {
-          sameEdges.push(d);
-        }
-      }
-
-      for (var i = 0; i < sameEdges.length; i++) {
-        var e = sameEdges[i];
-        component[posKey(pos.col, pos.row, e)] = true;
-
-        var nk = neighborKey(pos.col, pos.row, e);
-        if (nk in state.board && !processed[nk]) {
-          var nt = state.board[nk];
-          var ne = oppositeDir(e);
-          var neType = effectiveEdge(nt.tile, nt.rotation, ne);
-          if (neType === type) {
-            queue.push(nk);
-          }
-        }
-      }
-    }
-
-    return component;
-  }
-
-  function isComponentCompleted(state, component) {
-    var keys = Object.keys(component);
-    for (var i = 0; i < keys.length; i++) {
-      var parts = keys[i].split(',');
-      var col = parseInt(parts[0], 10);
-      var row = parseInt(parts[1], 10);
-      var edge = parseInt(parts[2], 10);
-      var nk = neighborKey(col, row, edge);
-      if (!(nk in state.board)) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  function isMonasteryCompleted(state, col, row) {
-    for (var dc = -1; dc <= 1; dc++) {
-      for (var dr = -1; dr <= 1; dr++) {
-        if (dc === 0 && dr === 0) continue;
-        var nk = posKey(col + dc, row + dr);
-        if (!(nk in state.board)) return false;
-      }
-    }
-    return true;
-  }
-
-  function countMonasteryNeighbors(state, col, row) {
-    var count = 0;
-    for (var dc = -1; dc <= 1; dc++) {
-      for (var dr = -1; dr <= 1; dr++) {
-        if (dc === 0 && dr === 0) continue;
-        var nk = posKey(col + dc, row + dr);
-        if (nk in state.board) count++;
-      }
-    }
-    return count;
-  }
-
-  function scorePlacement(state) {
-    var scores = [];
-
-    var boardKeys = Object.keys(state.board);
-    for (var i = 0; i < boardKeys.length; i++) {
-      var pk = boardKeys[i];
-      var placed = state.board[pk];
-      if (!placed.meeple) continue;
-
-      var pos = parseKey(pk);
-      var mp = placed.meeple;
-
-      if (mp.featureType === 'monastery') {
-        if (isMonasteryCompleted(state, pos.col, pos.row)) {
-          var pts = 9;
-          scores.push({ player: mp.player, points: pts, reason: 'monastery at (' + pos.col + ',' + pos.row + ')' });
-          placed.meeple = null;
-          state.players[mp.player].meeples++;
-        }
-      } else if (mp.featureType === 'road' || mp.featureType === 'city') {
-        var component = findComponent(state, pos.col, pos.row, mp.featureEdge);
-        if (component && isComponentCompleted(state, component)) {
-          var tileCount = componentTileCount(component);
-          var shields = countShieldsInComponent(state, component);
-          var pts = 0;
-          if (mp.featureType === 'road') {
-            pts = tileCount;
-          } else if (mp.featureType === 'city') {
-            pts = tileCount * 2 + shields * 2;
-          }
-          if (pts > 0) {
-            scores.push({ player: mp.player, points: pts, reason: mp.featureType + ' at (' + pos.col + ',' + pos.row + ')' });
-          }
-          placed.meeple = null;
-          state.players[mp.player].meeples++;
-        }
-      }
-    }
-
-    return combineScores(scores);
-  }
-
-  function componentTileCount(component) {
-    var tiles = {};
-    var keys = Object.keys(component);
-    for (var i = 0; i < keys.length; i++) {
-      var parts = keys[i].split(',');
-      tiles[parts[0] + ',' + parts[1]] = true;
-    }
-    return Object.keys(tiles).length;
-  }
-
-  function countShieldsInComponent(state, component) {
-    var tiles = {};
-    var keys = Object.keys(component);
-    for (var i = 0; i < keys.length; i++) {
-      var parts = keys[i].split(',');
-      tiles[parts[0] + ',' + parts[1]] = true;
-    }
-    var count = 0;
-    var tileKeys = Object.keys(tiles);
-    for (var j = 0; j < tileKeys.length; j++) {
-      var pt = state.board[tileKeys[j]];
-      if (pt && pt.tile.shield) {
-        count++;
-      }
-    }
-    return count;
-  }
-
-  function combineScores(scores) {
-    var combined = [];
-    var byPlayer = {};
-    for (var i = 0; i < scores.length; i++) {
-      var s = scores[i];
-      if (!byPlayer[s.player]) {
-        byPlayer[s.player] = { player: s.player, points: 0, reason: '' };
-      }
-      byPlayer[s.player].points += s.points;
-      if (byPlayer[s.player].reason) {
-        byPlayer[s.player].reason += ', ';
-      }
-      byPlayer[s.player].reason += s.reason;
-    }
-    var pKeys = Object.keys(byPlayer);
-    for (var j = 0; j < pKeys.length; j++) {
-      combined.push(byPlayer[pKeys[j]]);
-    }
-    return combined;
-  }
-
-  function finalScoring(state) {
-    var scores = [];
-
-    var boardKeys = Object.keys(state.board);
-    for (var i = 0; i < boardKeys.length; i++) {
-      var pk = boardKeys[i];
-      var placed = state.board[pk];
-      if (!placed.meeple) continue;
-
-      var pos = parseKey(pk);
-      var mp = placed.meeple;
-
-      if (mp.featureType === 'monastery') {
-        var nCount = countMonasteryNeighbors(state, pos.col, pos.row);
-        var pts = nCount + 1;
-        scores.push({ player: mp.player, points: pts, reason: 'incomplete monastery' });
+    Object.keys(state.board).forEach(function (tileKey) {
+      var placed = state.board[tileKey];
+      if (!placed.meeple) return;
+      var pos = parseKey(tileKey);
+      if (placed.meeple.type === 'monastery') {
+        var info = monasteryInfo(state, pos.col, pos.row);
+        var points = 1 + info.adjacent;
+        state.players[placed.meeple.player].score += points;
+        state.players[placed.meeple.player].meeples += 1;
+        addLog(state, state.players[placed.meeple.player].name + ' получает ' + points + ' очк. за незавершённый монастырь.');
         placed.meeple = null;
-      } else if (mp.featureType === 'road') {
-        var compR = findComponent(state, pos.col, pos.row, mp.featureEdge);
-        if (compR) {
-          var tc = componentTileCount(compR);
-          scores.push({ player: mp.player, points: tc, reason: 'incomplete road' });
-        }
-        placed.meeple = null;
-      } else if (mp.featureType === 'city') {
-        var compC = findComponent(state, pos.col, pos.row, mp.featureEdge);
-        if (compC) {
-          var tc = componentTileCount(compC);
-          var sh = countShieldsInComponent(state, compC);
-          scores.push({ player: mp.player, points: tc + sh, reason: 'incomplete city' });
-        }
-        placed.meeple = null;
-      } else if (mp.featureType === 'field') {
-        var adjCities = findAdjacentCompletedCities(state, pos.col, pos.row, mp.featureEdge);
-        var pts = adjCities * 3;
-        if (pts > 0) {
-          scores.push({ player: mp.player, points: pts, reason: 'field with ' + adjCities + ' completed cities' });
-        }
-        placed.meeple = null;
+        return;
       }
-    }
+      var component = findComponent(state, pos.col, pos.row, placed.meeple.type, placed.meeple.groupIndex);
+      var compKey = canonicalComponentKey(component);
+      if (checked[compKey]) return;
+      checked[compKey] = true;
+      var finalPoints = featurePoints(component, true);
+      awardFeature(state, component, finalPoints, component.type === 'city' ? 'незавершённый город' : 'незавершённую дорогу');
+      returnMeeplesFromComponent(state, component);
+    });
 
-    return combineScores(scores);
+    var leaders = state.players.slice().sort(function (a, b) { return b.score - a.score; });
+    addLog(state, 'Игра окончена. Победитель: ' + leaders[0].name + ' (' + leaders[0].score + ' очк.).');
   }
 
-  function findAdjacentCompletedCities(state, col, row, startEdge) {
-    var fieldResult = findFieldComponent(state, col, row, startEdge);
-    if (!fieldResult || Object.keys(fieldResult.tiles).length === 0) return 0;
-
-    var countedCities = {};
-    var cityCount = 0;
-
-    var tileKeys = Object.keys(fieldResult.tiles);
-    for (var i = 0; i < tileKeys.length; i++) {
-      var pk = tileKeys[i];
-      var pos = parseKey(pk);
-      var pt = state.board[pk];
-      if (!pt) continue;
-
-      var edges = edgeArray(pt.tile, pt.rotation);
-      for (var d = 0; d < 4; d++) {
-        if (edges[d] === EDGE_CITY) {
-          var cityComp = findComponent(state, pos.col, pos.row, d);
-          if (cityComp && isComponentCompleted(state, cityComp)) {
-            var cityKey = getSortedComponentKey(cityComp);
-            if (!countedCities[cityKey]) {
-              countedCities[cityKey] = true;
-              cityCount++;
-            }
-          }
-        }
-      }
-    }
-
-    return cityCount;
+  function getFeatureOptions(state) {
+    if (state.phase !== 'meeple' || !state.lastPlaced) return [];
+    return getTileFeatures(state, state.lastPlaced.col, state.lastPlaced.row).map(function (feature) {
+      return {
+        type: feature.type,
+        groupIndex: feature.groupIndex,
+        label: feature.label.replace(/\s+$/, ''),
+        available: canPlaceMeeple(state, feature)
+      };
+    });
   }
 
-  function getSortedComponentKey(component) {
-    var keys = Object.keys(component);
-    keys.sort();
-    return keys.join('|');
-  }
-
-  function getCurrentPlayer(state) {
-    return state.players[state.currentPlayer];
-  }
-
-  function getWinner(state) {
-    if (!state.gameOver) return null;
-    var sorted = state.players.slice().sort(function (a, b) { return b.score - a.score; });
-    return sorted[0];
-  }
-
-  function getAllFinalScores(state) {
-    return state.players.slice().sort(function (a, b) { return b.score - a.score; });
-  }
-
-  var PLAYER_COLORS = ['#e74c3c', '#3498db', '#2ecc71', '#f39c12', '#9b59b6'];
-  var PLAYER_COLORS_LIGHT = ['#f5b7b1', '#aed6f1', '#a9dfbf', '#f9e79f', '#d7bde2'];
-
-  function getPlayerColor(idx) {
-    return PLAYER_COLORS[idx % PLAYER_COLORS.length];
-  }
-
-  function getPlayerColorLight(idx) {
-    return PLAYER_COLORS_LIGHT[idx % PLAYER_COLORS_LIGHT.length];
-  }
-
-  function getEdgeDescription(d) {
-    return ['N', 'E', 'S', 'W'][d];
+  function sortedPlayers(state) {
+    return state.players.slice().sort(function (a, b) {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.id - b.id;
+    });
   }
 
   window.Carcassonne = {
-    EDGE_CITY: EDGE_CITY,
-    EDGE_ROAD: EDGE_ROAD,
-    EDGE_FIELD: EDGE_FIELD,
-    DIR_N: DIR_N,
-    DIR_E: DIR_E,
-    DIR_S: DIR_S,
-    DIR_W: DIR_W,
-    TILE_DEFS: TILE_DEFS,
-
-    posKey: posKey,
-    parseKey: parseKey,
-    neighborPos: neighborPos,
-    effectiveEdge: effectiveEdge,
-    edgeArray: edgeArray,
-
+    constants: { EDGE_CITY: EDGE_CITY, EDGE_ROAD: EDGE_ROAD, EDGE_FIELD: EDGE_FIELD },
     createGame: createGame,
-    getValidPlacements: getValidPlacements,
-    isValidPlacement: isValidPlacement,
-    canPlaceTileAt: canPlaceTileAt,
+    rotateCurrentTile: rotateCurrentTile,
     placeTile: placeTile,
-    getTileFeatures: getTileFeatures,
-    canPlaceMeepleOnFeature: canPlaceMeepleOnFeature,
     placeMeeple: placeMeeple,
     skipMeeple: skipMeeple,
-    endTurn: endTurn,
-    findComponent: findComponent,
-    isComponentCompleted: isComponentCompleted,
-    finalScoring: finalScoring,
-    getCurrentPlayer: getCurrentPlayer,
-    getWinner: getWinner,
-    getAllFinalScores: getAllFinalScores,
-    getPlayerColor: getPlayerColor,
-    getPlayerColorLight: getPlayerColorLight,
-    getEdgeDescription: getEdgeDescription,
-    getAllClaimedFeatureKeys: getAllClaimedFeatureKeys,
-    getFeatureComponentKey: getFeatureComponentKey,
-    PLAYER_COLORS: PLAYER_COLORS
+    copyEdges: copyEdges,
+    getValidPlacements: getValidPlacements,
+    getFeatureOptions: getFeatureOptions,
+    getTileFeatures: getTileFeatures,
+    sortedPlayers: sortedPlayers,
+    canPlaceMeeple: canPlaceMeeple,
+    edgeAt: edgeAt
   };
-})();
+}());

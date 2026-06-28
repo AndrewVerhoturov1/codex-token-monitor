@@ -1,0 +1,43 @@
+{
+  "request_id": "ZWORKER-20260628-030151-html-carcassonne",
+  "slug": "html-carcassonne",
+  "task_summary": "Сделать HTML-версию игры Carcassonne для этого репозитория. Внешний агент сам ищет в интернете правила, механику и подходящие открытые референсы. Результат должен быть пригоден для локального запуска ",
+  "manual_url": "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/docs/zworker_external_agent_manual.md",
+  "repo_navigation_url": "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/docs/zworker_repo_navigation.md",
+  "files_to_read": [
+    "https://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/README.md\nhttps://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/scripts/codex_token_monitor_server.py\nhttps://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/static/codex-token-monitor/index.html\nhttps://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/static/codex-token-monitor/carcassonne/index.html\nhttps://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/static/codex-token-monitor/carcassonne/app.js\nhttps://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/static/codex-token-monitor/carcassonne/game.js\nhttps://raw.githubusercontent.com/AndrewVerhoturov1/codex-token-monitor/main/static/codex-token-monitor/carcassonne/styles.css"
+  ],
+  "strict_zip_contract": false,
+  "requires_answer_md": true,
+  "created_at": "2026-06-28T03:01:51.464Z",
+  "allowed_paths": [
+    "static/codex-token-monitor/carcassonne/**"
+  ],
+  "forbidden_paths": [
+    ".git/**",
+    ".ai/**",
+    "_zworker_requests/**",
+    "_zchat_requests/**",
+    "node_modules/**",
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "scripts/**",
+    "README.md"
+  ],
+  "expected_outputs": [
+    "ZIP with answer.md at root and repo-relative files under static/codex-token-monitor/carcassonne/. Implement index.html",
+    "styles.css",
+    "app.js",
+    "and any additional in-scope assets only if truly needed. In answer.md include what was implemented",
+    "what rules were simplified",
+    "how to run it at http://127.0.0.1:8765/carcassonne/ (or equivalent served path)",
+    "and a Sources Read Report listing internet and repo sources actually used."
+  ],
+  "auto_apply_enabled": true,
+  "branch_may_be_needed": false,
+  "create_branch": false,
+  "branch_slug_id": "",
+  "branch_name": ""
+}

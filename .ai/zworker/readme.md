@@ -7,6 +7,8 @@ Unlike Zchat, zworker does NOT use the daemon/background worker concept, state m
 complex ZIP contracts with manifests and checksums. It is a simpler pipeline for producing
 ZIP responses with `answer.md` at root and repo files at repo-relative paths.
 
+For the Codex-side `/zworker` invocation flow, see [docs/zworker_invocation.md](../../docs/zworker_invocation.md).
+
 ## Differences from Zchat
 
 | Feature | Zchat | Zworker |
