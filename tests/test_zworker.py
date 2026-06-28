@@ -19,20 +19,6 @@ _git_utils_module = importlib.util.module_from_spec(_GIT_SPEC)
 assert _GIT_SPEC.loader is not None
 _GIT_SPEC.loader.exec_module(_git_utils_module)
 
-_ORIGINAL_ZCHAT_SKIP_URL_CHECK: bool | None = None
-
-
-def setUpModule() -> None:
-    global _ORIGINAL_ZCHAT_SKIP_URL_CHECK
-    _ORIGINAL_ZCHAT_SKIP_URL_CHECK = getattr(jobs, "_ZCHAT_SKIP_URL_CHECK", False)
-    jobs._ZCHAT_SKIP_URL_CHECK = True
-
-
-def tearDownModule() -> None:
-    if _ORIGINAL_ZCHAT_SKIP_URL_CHECK is not None:
-        jobs._ZCHAT_SKIP_URL_CHECK = _ORIGINAL_ZCHAT_SKIP_URL_CHECK
-
-
 class ZworkerRequestIdTests(unittest.TestCase):
 
     def test_zworker_request_name_format(self) -> None:

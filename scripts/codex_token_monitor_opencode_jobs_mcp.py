@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import sys
 from pathlib import Path
@@ -144,78 +144,6 @@ def job_result_to_mcp_response(result: jobs.JobResult) -> dict[str, Any]:
         "session_transcript_path": str(Path(result.session_transcript_path).resolve(strict=False)) if result.session_transcript_path else "",
     }
 
-
-def zchat_prompt_pack_result_to_mcp_response(result: jobs.ZchatPromptPackResult) -> dict[str, Any]:
-    return {
-        "mode": result.mode,
-        "request_id": result.request_id,
-        "output_dir": str(Path(result.output_dir).resolve(strict=False)) if result.output_dir else "",
-        "artifacts": result.artifacts,
-        "status": result.status,
-        "error": result.error,
-    }
-
-
-def zchat_import_pack_result_to_mcp_response(result: jobs.ZchatImportPackResult) -> dict[str, Any]:
-    return {
-        "mode": result.mode,
-        "package_id": result.package_id,
-        "verdict": result.verdict,
-        "status": result.status,
-        "error": result.error,
-        "report_path": str(Path(result.report_path).resolve(strict=False)) if result.report_path else "",
-        "files_imported": result.files_imported,
-        "files_skipped": result.files_skipped,
-    }
-
-
-def zchat_verify_pack_result_to_mcp_response(result: jobs.ZchatVerifyPackResult) -> dict[str, Any]:
-    return {
-        "mode": result.mode,
-        "verdict": result.verdict,
-        "status": result.status,
-        "error": result.error,
-        "report_path": str(Path(result.report_path).resolve(strict=False)) if result.report_path else "",
-    }
-
-
-def zchat_decision_pack_result_to_mcp_response(result: jobs.ZchatDecisionPackResult) -> dict[str, Any]:
-    return {
-        "mode": result.mode,
-        "decision_id": result.decision_id,
-        "verdict": result.verdict,
-        "status": result.status,
-        "error": result.error,
-        "decision_path": str(Path(result.decision_path).resolve(strict=False)) if result.decision_path else "",
-        "manifest_path": str(Path(result.manifest_path).resolve(strict=False)) if result.manifest_path else "",
-        "journal_path": str(Path(result.journal_path).resolve(strict=False)) if result.journal_path else "",
-    }
-
-
-def zchat_receive_pack_result_to_mcp_response(result: jobs.ZchatReceivePackResult) -> dict[str, Any]:
-    return {
-        "mode": result.mode,
-        "package_id": result.package_id,
-        "verdict": result.verdict,
-        "status": result.status,
-        "error": result.error,
-        "report_path": str(Path(result.report_path).resolve(strict=False)) if result.report_path else "",
-        "quarantine_dir": str(Path(result.quarantine_dir).resolve(strict=False)) if result.quarantine_dir else "",
-        "files_received": result.files_received,
-    }
-
-
-def zchat_inspect_verification_pack_result_to_mcp_response(result: jobs.ZchatInspectVerificationPackResult) -> dict[str, Any]:
-    return {
-        "mode": result.mode,
-        "verdict": result.verdict,
-        "status": result.status,
-        "error": result.error,
-        "report_path": str(Path(result.report_path).resolve(strict=False)) if result.report_path else "",
-        "findings": result.findings,
-    }
-
-
 def build_effective_job_config(
     *,
     timeout_seconds: Any = None,
@@ -347,166 +275,6 @@ def opencode_job_run_and_wait(
     )
 
 
-@mcp.tool(
-    name="opencode_zchat_prompt_pack",
-    description=(
-        "Create a zchat prompt artifact pack: prompt.md, prompt_passport.md, request_manifest.json. "
-        "Encodes the policy: use public GitHub raw URLs first; create temporary branch only if "
-        "public context is insufficient. Supports allowed_paths, forbidden_paths, expected_outputs "
-        "as comma-separated strings or plain text."
-    ),
-)
-def opencode_zchat_prompt_pack(
-    task_text: str,
-    context: str | None = None,
-    constraints: str | None = None,
-    source_urls: str | None = None,
-    output_dir: str | None = None,
-    allowed_paths: str | None = None,
-    forbidden_paths: str | None = None,
-    expected_outputs: str | None = None,
-) -> dict[str, Any]:
-    normalized_task = _normalize_text(task_text)
-    if normalized_task is None:
-        return {"mode": jobs.ZCHAT_MODE_PROMPT_PACK, "status": "failed", "error": "task_text is required"}
-    url_list = None
-    if source_urls:
-        url_list = [u.strip() for u in source_urls.split(",") if u.strip()]
-    output = None
-    if output_dir:
-        output = Path(output_dir)
-    result = jobs.zchat_prompt_pack(
-        normalized_task,
-        output_dir=output,
-        context=_normalize_text(context) or "",
-        constraints=_normalize_text(constraints) or "",
-        source_urls=url_list,
-        allowed_paths=allowed_paths,
-        forbidden_paths=forbidden_paths,
-        expected_outputs=expected_outputs,
-    )
-    return zchat_prompt_pack_result_to_mcp_response(result)
-
-
-@mcp.tool(
-    name="opencode_zchat_import_pack",
-    description=(
-        "Import a zchat ZIP intake package with strict contract validation. "
-        "ZIP must contain manifest.json + checksums.sha256 + payload/. "
-        "Enforces path traversal protection, secret protection, and scope boundaries. "
-        "On success, applies payload to working tree and writes import_report.md."
-    ),
-)
-def opencode_zchat_import_pack(
-    zip_path: str,
-    target_root: str | None = None,
-) -> dict[str, Any]:
-    normalized_zip = _normalize_text(zip_path)
-    if normalized_zip is None:
-        return {"mode": jobs.ZCHAT_MODE_IMPORT_PACK, "status": "failed", "verdict": jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL, "error": "zip_path is required"}
-    zip_file = Path(normalized_zip)
-    if not zip_file.exists():
-        return {"mode": jobs.ZCHAT_MODE_IMPORT_PACK, "status": "failed", "verdict": jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL, "error": f"ZIP file not found: {zip_file}"}
-    root = Path(target_root) if target_root else jobs.REPO_ROOT
-    result = jobs.zchat_import_pack(zip_file, target_root=root)
-    return zchat_import_pack_result_to_mcp_response(result)
-
-
-@mcp.tool(
-    name="opencode_zchat_verify_pack",
-    description=(
-        "Verify a zchat pack directory and produce verify_report.md with a machine verdict: "
-        "accepted_for_review / rejected_structural / rejected_scope / needs_codex_decision."
-    ),
-)
-def opencode_zchat_verify_pack(
-    pack_dir: str,
-) -> dict[str, Any]:
-    normalized_dir = _normalize_text(pack_dir)
-    if normalized_dir is None:
-        return {"mode": jobs.ZCHAT_MODE_VERIFY_PACK, "status": "failed", "verdict": jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL, "error": "pack_dir is required"}
-    dir_path = Path(normalized_dir)
-    result = jobs.zchat_verify_pack(dir_path)
-    return zchat_verify_pack_result_to_mcp_response(result)
-
-
-@mcp.tool(
-    name="opencode_zchat_decision_pack",
-    description=(
-        "Final Codex decision stage for a zchat request. Produces codex_decision.md and "
-        "decision_manifest.json. Verdicts: accepted / rejected / needs_revision. "
-        "Accepted decisions are journaled to accepted/<id>/; rejected to rejected/<id>/; "
-        "needs_revision to reviews/<id>/."
-    ),
-)
-def opencode_zchat_decision_pack(
-    subject_id: str,
-    verdict: str,
-    rationale: str | None = None,
-    evidence: str | None = None,
-    reviewer: str | None = None,
-) -> dict[str, Any]:
-    normalized_subject = _normalize_text(subject_id)
-    if normalized_subject is None:
-        return {"mode": jobs.ZCHAT_MODE_DECISION_PACK, "status": "failed", "error": "subject_id is required"}
-    normalized_verdict = _normalize_text(verdict)
-    if normalized_verdict is None:
-        return {"mode": jobs.ZCHAT_MODE_DECISION_PACK, "status": "failed", "error": "verdict is required"}
-    result = jobs.zchat_decision_pack(
-        subject_id=normalized_subject,
-        reviewer=_normalize_text(reviewer) or "codex",
-        verdict=normalized_verdict,
-        rationale=_normalize_text(rationale) or "",
-        evidence=_normalize_text(evidence) or "",
-    )
-    return zchat_decision_pack_result_to_mcp_response(result)
-
-
-@mcp.tool(
-    name="opencode_zchat_receive_pack",
-    description=(
-        "Receive a zchat ZIP intake package (v2). Extracts to quarantine runtime inbox ONLY, "
-        "NEVER writes payload to repo. Performs structural/checksum/path-policy validation, "
-        "writes receive_report.md, returns machine-readable verdict. "
-        "Planned pipeline: receive -> inspect_verification -> decision -> apply (apply not yet implemented)."
-    ),
-)
-def opencode_zchat_receive_pack(
-    zip_path: str,
-    target_root: str | None = None,
-) -> dict[str, Any]:
-    normalized_zip = _normalize_text(zip_path)
-    if normalized_zip is None:
-        return {"mode": jobs.ZCHAT_MODE_RECEIVE_PACK, "status": "failed", "verdict": jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL, "error": "zip_path is required"}
-    zip_file = Path(normalized_zip)
-    if not zip_file.exists():
-        return {"mode": jobs.ZCHAT_MODE_RECEIVE_PACK, "status": "failed", "verdict": jobs.ZCHAT_VERDICT_REJECTED_STRUCTURAL, "error": f"ZIP file not found: {zip_file}"}
-    root = Path(target_root) if target_root else jobs.REPO_ROOT
-    result = jobs.zchat_receive_pack(zip_file, target_root=root)
-    return zchat_receive_pack_result_to_mcp_response(result)
-
-
-@mcp.tool(
-    name="opencode_zchat_inspect_verification_pack",
-    description=(
-        "Read verification_files as text from a quarantine directory, do NOT execute them. "
-        "Scans for dangerous patterns: deletion, writes outside scope, .env/secrets access, "
-        "git commit/push, network/install/download, shell/subprocess/os.system, config mutation, "
-        ".git access, absolute paths, path traversal. "
-        "Returns verdict: safe_to_run / unsafe / needs_human_decision / not_present and report."
-    ),
-)
-def opencode_zchat_inspect_verification_pack(
-    quarantine_dir: str,
-) -> dict[str, Any]:
-    normalized_dir = _normalize_text(quarantine_dir)
-    if normalized_dir is None:
-        return {"mode": jobs.ZCHAT_MODE_INSPECT_VERIFICATION_PACK, "status": "failed", "verdict": jobs.ZCHAT_INSPECT_NOT_PRESENT, "error": "quarantine_dir is required"}
-    dir_path = Path(normalized_dir)
-    result = jobs.zchat_inspect_verification_pack(dir_path)
-    return zchat_inspect_verification_pack_result_to_mcp_response(result)
-
-
 def zworker_prompt_pack_result_to_mcp_response(result: jobs.ZworkerPromptPackResult) -> dict[str, Any]:
     response = {
         "mode": result.mode,
@@ -588,7 +356,7 @@ def zworker_revision_prompt_result_to_mcp_response(result: jobs.ZworkerRevisionP
     name="opencode_zworker_prompt_pack",
     description=(
         "Create a zworker prompt artifact pack: prompt.md, prompt_passport.md, request_manifest.json. "
-        "Lightweight route parallel to zchat. No manifest/checksum contract (strict_zip_contract=false). "
+        "No manifest/checksum contract (strict_zip_contract=false). "
         "ZIP layout uses root_repo_paths (answer.md at root, repo files at repo-relative paths). "
         "Supports allowed_paths, forbidden_paths, expected_outputs as comma-separated strings or plain text. "
         "Validates request_id slug matches task when provided."

@@ -88,7 +88,7 @@ Write answer.md in clear **Russian** unless the task says otherwise.
 
 ## No Manifest, No Checksums
 
-Unlike zchat, zworker does NOT require:
+Zworker does NOT require:
 - `manifest.json`
 - `checksums.sha256`
 - `payload/` directory structure

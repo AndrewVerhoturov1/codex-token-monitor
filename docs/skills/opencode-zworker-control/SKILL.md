@@ -71,7 +71,7 @@ The prompt must not contain:
 - `payload`;
 - `receive_pack`;
 - `verify_pack`;
-- old zchat bureaucracy.
+
 
 If the task requires repository understanding, Codex/OpenCode should provide
 exact externally-openable HTTPS links for the external worker.

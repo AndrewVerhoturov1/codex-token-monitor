@@ -18,11 +18,6 @@ A brief navigation map for the zworker external agent. Not a full repository ind
 - `.ai/zworker/templates/` — prompt, passport, manifest templates
 - `.ai/zworker/runtime/` — runtime artifacts (requests, inbox, revisions)
 
-## Zchat Legacy
-
-- `.ai/zchat/` — the older zchat system (separate, not used by zworker)
-- `docs/zchat_*` — zchat documentation (legacy reference)
-
 ## How to Read Public Raw URLs
 
 Files committed to the default branch can be read via:

@@ -2,24 +2,11 @@
 
 ## What is Zworker
 
-Zworker is a lightweight parallel route alongside Zchat for external-to-Codex task delivery.
-Unlike Zchat, zworker does NOT use the daemon/background worker concept, state machines, or
-complex ZIP contracts with manifests and checksums. It is a simpler pipeline for producing
-ZIP responses with `answer.md` at root and repo files at repo-relative paths.
+Zworker is a lightweight route for external-to-Codex task delivery.
+It is a simple pipeline for producing ZIP responses with `answer.md` at root
+and repo files at repo-relative paths.
 
 For the Codex-side `/zworker` invocation flow, see [docs/zworker_invocation.md](../../docs/zworker_invocation.md).
-
-## Differences from Zchat
-
-| Feature | Zchat | Zworker |
-|---|---|---|
-| ZIP contract | manifest.json + checksums.sha256 + payload/ | answer.md at root, no manifest, no checksums |
-| strict_zip_contract | true | false |
-| zip_layout | payload/{repo_relative_path} | root_repo_paths |
-| Request prefix | ZCHAT- | ZWORKER- |
-| Pipeline stages | prompt/receive/inspect/verify/decision | prompt / unpack / process / revision |
-| Branch policy | temporary_branch_only_if_public_insufficient | temporary_branch_only_if_public_insufficient (metadata only, no branch creation) |
-| Canonical URL check | Required | Not required |
 
 ## Current Implementation (Stage 1 + Stage 2)
 
