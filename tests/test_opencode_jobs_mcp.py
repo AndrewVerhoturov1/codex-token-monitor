@@ -205,6 +205,9 @@ class OpenCodeJobsMcpAdapterTests(unittest.TestCase):
                 "export_session_reason",
                 "session_export_path",
                 "session_transcript_path",
+                "route_c_profile",
+                "route_c_profile_account_id",
+                "route_c_profile_account_index",
             },
         )
         self.assertTrue(response["done_path"].endswith("done.json"))

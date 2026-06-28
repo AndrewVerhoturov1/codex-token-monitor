@@ -135,8 +135,8 @@ def _run_job(tmpdir: Path, worker_path: Path, mode: str, config_overrides: dict 
 
 class OpenCodeJobsCoreTests(unittest.TestCase):
 
-    def test_job_config_default_timeout_is_720_seconds(self) -> None:
-        self.assertEqual(jobs.JobConfig().timeout_seconds, 720)
+    def test_job_config_default_timeout_is_180_seconds(self) -> None:
+        self.assertEqual(jobs.JobConfig().timeout_seconds, 180)
 
     def test_build_adapter_command_includes_logs_directory_and_debug_flag(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -511,6 +511,9 @@ class OpenCodeJobsCoreTests(unittest.TestCase):
                 "export_session_reason",
                 "session_export_path",
                 "session_transcript_path",
+                "route_c_profile",
+                "route_c_profile_account_id",
+                "route_c_profile_account_index",
             }
             self.assertEqual(set(done.keys()), expected_keys)
 
