@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenCode Windows Control"
+  short_description: "Safe bounded delegation to OpenCode Windows"
+  default_prompt: "Use $opencode-mcp-windows-control to run a bounded local OpenCode task on Windows."

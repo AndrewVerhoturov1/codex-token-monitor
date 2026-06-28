@@ -1,0 +1,63 @@
+---
+name: opencode-mcp-windows-control
+description: Direct OpenCode MCP control. Delegate repo work from Codex to OpenCode through mcp__opencode only. The old Windows request-script/runner bridge is disabled.
+---
+
+# OpenCode Direct MCP Control
+
+## Path
+
+Allowed:
+
+```text
+Codex -> mcp__opencode.* -> OpenCode
+```
+
+Forbidden legacy bridge:
+
+```text
+Codex -> opencode-new-request-windows.ps1 -> opencode-runner-windows.ps1 -> opencode.exe
+```
+
+## Default workflow
+
+1. Send one clear task with `mcp__opencode.opencode_run` or `mcp__opencode.opencode_ask`.
+2. Let OpenCode inspect, read, check, or write.
+3. Use OpenCode's answer as the report.
+4. Do not run old scripts, old runner, or local repo inspection from Codex unless the user explicitly asks.
+
+## OpenCode-first
+
+If a task needs repo search, reading several files, project mapping, simple checks, or a compact report, delegate it to OpenCode instead of doing many local Codex steps.
+
+## Batching
+
+Group related work into one OpenCode MCP task. Prefer one useful OpenCode task over many small Codex actions.
+
+## Legacy forbidden
+
+Do not use as workflow:
+
+```text
+C:\Users\andre\.agents\tools\opencode-windows\opencode-new-request-windows.ps1
+C:\Users\andre\.agents\tools\opencode-windows\opencode-runner-windows.ps1
+```
+
+Do not use old opencode-windows request/report folders as workflow state.
+Do not restore the old Windows bridge as fallback unless the user explicitly asks.
+
+## Smoke/debug only
+
+Use mainly:
+
+- `mcp__opencode.opencode_run`
+- `mcp__opencode.opencode_ask`
+
+Use health/session/events/log tools only for smoke, debug, broken MCP behavior, or session-visibility checks.
+Do not call health/session checks by default for normal work.
+
+## Safety
+
+Unless the user explicitly asks for that workflow, do not use GitHub MCP, `gh`, WSL, Docker, git commit, git push, PR, or merge.
+
+For write tasks, keep the task bounded to one target file or explicitly allowed paths, and ask OpenCode to report changes.

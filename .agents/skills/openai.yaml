@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenCode Kimi Runtime Launch"
+  short_description: "Run OpenCode on kimi-k2.5-thinking safely."
+  default_prompt: "Use $opencode-kimi-runtime-launch to run OpenCode on local kimi-k2.5-thinking through a temporary FreeGLMKimiAPI provider."
