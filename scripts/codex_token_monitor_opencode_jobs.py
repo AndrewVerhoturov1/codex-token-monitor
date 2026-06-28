@@ -2658,7 +2658,33 @@ def zworker_process_result(
                 f"- answer.md read: yes\n"
             )
     else:
-        if not auto_apply_enabled:
+        expected = manifest.get("expected_outputs", []) or []
+        allowed = manifest.get("allowed_paths", []) or []
+        is_informational = not expected and not allowed
+
+        if repo_files_found == 0 and is_informational:
+            auto_applied = True
+            decision = "accepted"
+            if not sources_report_found:
+                sources_note = (
+                    "**Note**: answer.md found and read but no Sources Read Report section was found. "
+                    "Consider requesting a revision if source traceability matters."
+                )
+            elif not sources_report_valid:
+                issues_text = "; ".join(sources_report_issues)
+                sources_note = (
+                    f"**Note**: Sources Read Report found but incomplete ({issues_text}). "
+                    f"Consider requesting a revision if source traceability matters."
+                )
+            else:
+                sources_note = "Sources Read Report: valid"
+            human_readable = (
+                f"## Process Result: ACCEPTED (INFORMATIONAL)\n\n"
+                f"**Reason**: Answer-only informational task. No repo files expected.\n\n"
+                f"### answer.md\n- {sources_note}\n"
+                f"- answer.md read: yes\n"
+            )
+        elif not auto_apply_enabled:
             decision = "needs_clarification"
             requires_clarification = True
             human_readable = (

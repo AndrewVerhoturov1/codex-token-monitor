@@ -902,6 +902,166 @@ class ZworkerProcessResultTests(unittest.TestCase):
             self.assertEqual(output.status, "completed")
             self.assertTrue(output.auto_applied)
 
+    def test_answer_only_informational_task_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            request_id = "ZWORKER-20260628-120000-info"
+            self._make_request_dir(base, request_id, {
+                "allowed_paths": [],
+                "expected_outputs": [],
+            })
+            self._make_unpack_dir(base, request_id, {
+                "answer.md": (
+                    "# Analysis\n\n"
+                    "## Sources Read Report\n\n"
+                    "### Read fully\n- docs/README.md\n\n"
+                    "### Read partially\n- none\n\n"
+                    "### Not read\n- none\n\n"
+                    "### External search used\nNo\n\n"
+                    "The codebase is well structured.\n"
+                ),
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", base / "inbox"):
+                    output = jobs.zworker_process_result(
+                        request_id,
+                        unpack_dir=base / "inbox" / request_id,
+                        target_root=base,
+                    )
+            self.assertEqual(output.status, "completed")
+            self.assertTrue(output.answer_read)
+            self.assertTrue(output.sources_report_found)
+            self.assertTrue(output.sources_report_valid)
+            self.assertEqual(output.decision, "accepted")
+            self.assertTrue(output.auto_applied)
+            self.assertFalse(output.requires_revision)
+            self.assertIn("INFORMATIONAL", output.human_readable_summary)
+
+    def test_file_producing_task_without_files_needs_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            request_id = "ZWORKER-20260628-120000-fileprod"
+            self._make_request_dir(base, request_id, {
+                "allowed_paths": ["src/"],
+                "expected_outputs": ["src/utils.py"],
+            })
+            self._make_unpack_dir(base, request_id, {
+                "answer.md": (
+                    "# Answer\n\n"
+                    "## Sources Read Report\n\n"
+                    "### Read fully\n- docs/README.md\n\n"
+                    "### Read partially\n- none\n\n"
+                    "### Not read\n- none\n\n"
+                    "### External search used\nNo\n\n"
+                    "I wrote the utility but forgot to include it.\n"
+                ),
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", base / "inbox"):
+                    output = jobs.zworker_process_result(
+                        request_id,
+                        unpack_dir=base / "inbox" / request_id,
+                        target_root=base,
+                    )
+            self.assertTrue(output.requires_revision)
+            self.assertEqual(output.decision, "needs_revision")
+            self.assertFalse(output.auto_applied)
+            self.assertIn("No repo-candidate files found", output.human_readable_summary)
+
+    def test_informational_task_missing_sources_report_advisory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            request_id = "ZWORKER-20260628-120000-nosrc"
+            self._make_request_dir(base, request_id, {
+                "allowed_paths": [],
+                "expected_outputs": [],
+            })
+            self._make_unpack_dir(base, request_id, {
+                "answer.md": "# Quick answer\n\nNo sources report here.\n",
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", base / "inbox"):
+                    output = jobs.zworker_process_result(
+                        request_id,
+                        unpack_dir=base / "inbox" / request_id,
+                        target_root=base,
+                    )
+            self.assertEqual(output.status, "completed")
+            self.assertFalse(output.sources_report_found)
+            self.assertEqual(output.decision, "accepted")
+            self.assertTrue(output.auto_applied)
+            self.assertFalse(output.requires_revision)
+            self.assertIn("Note", output.human_readable_summary)
+            self.assertIn("INFORMATIONAL", output.human_readable_summary)
+
+    def test_fake_local_claims_in_answer_remain_problem(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            request_id = "ZWORKER-20260628-120000-fake"
+            self._make_request_dir(base, request_id, {
+                "allowed_paths": ["src/"],
+                "expected_outputs": ["src/component.py"],
+            })
+            self._make_unpack_dir(base, request_id, {
+                "answer.md": (
+                    "# Answer\n\n"
+                    "## Sources Read Report\n\n"
+                    "### Read fully\n- docs/README.md\n\n"
+                    "### Read partially\n- src/existing.py\n\n"
+                    "### Not read\n- none\n\n"
+                    "### External search used\nNo\n\n"
+                    "I created src/component.py with the new feature.\n"
+                    "The file is ready for review.\n"
+                ),
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", base / "inbox"):
+                    output = jobs.zworker_process_result(
+                        request_id,
+                        unpack_dir=base / "inbox" / request_id,
+                        target_root=base,
+                    )
+            self.assertTrue(output.requires_revision)
+            self.assertEqual(output.decision, "needs_revision")
+            self.assertIn("No repo-candidate files found", output.human_readable_summary)
+
+    def test_zip_with_repo_files_goes_into_file_review_not_informational(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            request_id = "ZWORKER-20260628-120000-filereview"
+            self._make_request_dir(base, request_id, {
+                "allowed_paths": [],
+                "expected_outputs": [],
+            })
+            self._make_unpack_dir(base, request_id, {
+                "answer.md": (
+                    "# Answer\n\n"
+                    "## Sources Read Report\n\n"
+                    "### Read fully\n- docs/README.md\n\n"
+                    "### Read partially\n- none\n\n"
+                    "### Not read\n- none\n\n"
+                    "### External search used\nNo\n\n"
+                ),
+                "src/file.py": "print('file review')\n",
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", base / "inbox"):
+                    output = jobs.zworker_process_result(
+                        request_id,
+                        unpack_dir=base / "inbox" / request_id,
+                        target_root=base,
+                    )
+            self.assertEqual(output.decision, "accepted")
+            self.assertTrue(output.auto_applied)
+            self.assertEqual(output.auto_apply_files, 1)
+            self.assertEqual(output.repo_files_in_scope, 1)
+            self.assertNotIn("INFORMATIONAL", output.human_readable_summary)
+
 
 class ZworkerRevisionPromptTests(unittest.TestCase):
 
