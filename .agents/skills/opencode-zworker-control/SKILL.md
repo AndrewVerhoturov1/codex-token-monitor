@@ -10,6 +10,9 @@ description: Conditional skill for the explicit `/zworker` external worker route
 Load this skill only when the user explicitly invokes `/zworker` or asks to
 use the external worker route.
 
+If the user explicitly invokes `/zworker-auto`, do not use this skill as the
+main workflow skill. Use the dedicated `zworker-auto` skill instead.
+
 Do not load this skill for ordinary local repo work.
 Do not load this skill for ordinary OpenCode delegation.
 Do not load this skill for ordinary GitHub tasks.

@@ -496,6 +496,9 @@ Conditional skills:
 - `opencode-zworker-control`
   Load only for `/zworker` or an explicit external worker route request. Do not load it by default.
 
+- `zworker-auto`
+  Load only for `/zworker-auto` or an explicit request to run the fully automated ChatGPT Web zworker route. Do not load it by default.
+
 - `opencode-deepseek-pro-jobs-control`
   Load only when Route C / DeepSeek 4 Pro via OpenCode Jobs is deliberately selected.
 
