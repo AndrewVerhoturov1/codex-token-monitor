@@ -13,6 +13,17 @@ Do not load for ordinary repo work.
 
 Codex MUST already have read `opencode-mcp-windows-control`.
 
+## Model
+
+For cleanup tasks through this skill, use the explicit default model:
+
+- providerID: `deepseek`
+- modelID: `deepseek-v4-flash`
+
+Do not call `opencode_provider_models` or switch models unless that exact
+provider/model is rejected, unavailable, or the user explicitly requests a
+different model.
+
 ## Mandatory cleanup loop
 
 Cleanup always uses:

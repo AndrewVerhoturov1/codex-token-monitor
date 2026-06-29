@@ -38,6 +38,17 @@ Codex -> mcp__opencode.* -> OpenCode -> GitHub MCP
 
 Do not use local `gh` by default.
 
+## Model
+
+For GitHub tasks through this skill, use the explicit default model:
+
+- providerID: `deepseek`
+- modelID: `deepseek-v4-flash`
+
+Do not call `opencode_provider_models` or switch models unless that exact
+provider/model is rejected, unavailable, or the user explicitly requests a
+different model.
+
 ## Direct GitHub tool ban
 
 Codex MUST NOT call GitHub tools directly.
@@ -92,8 +103,8 @@ Allowed preflight:
 3. One tiny real read-only GitHub probe.
 4. OpenCode server version check when version/stale-route risk is relevant.
 
-Model discovery is NOT required for GitHub read-only tasks when the main skill
-default model is used.
+Model discovery is NOT required for GitHub read-only tasks when this skill's
+explicit default model is used.
 
 Codex MUST NOT call `opencode_provider_models` for GitHub tasks merely because
 the OpenCode tool description recommends provider discovery.
