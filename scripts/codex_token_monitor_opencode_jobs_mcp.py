@@ -367,6 +367,19 @@ def zworker_revision_prompt_result_to_mcp_response(result: jobs.ZworkerRevisionP
     }
 
 
+def zworker_auto_result_to_mcp_response(result: jobs.ZworkerAutoRunResult) -> dict[str, Any]:
+    return {
+        "mode": result.mode,
+        "request_id": result.request_id,
+        "status": result.status,
+        "final_decision": result.final_decision,
+        "revision_count": result.revision_count,
+        "error": result.error,
+        "events_log_path": str(Path(result.events_log_path).resolve(strict=False)) if result.events_log_path else "",
+        "state_file_path": str(Path(result.state_file_path).resolve(strict=False)) if result.state_file_path else "",
+    }
+
+
 @mcp.tool(
     name="opencode_zworker_prompt_pack",
     description=(
@@ -490,6 +503,67 @@ def opencode_zworker_revision_prompt(
         revision_number=revision_number,
     )
     return zworker_revision_prompt_result_to_mcp_response(result)
+
+
+@mcp.tool(
+    name="opencode_zworker_auto_run",
+    description=(
+        "Run zworker-auto mode: orchestrates prompt_pack -> web-runner -> zip pre-validation -> "
+        "result_unpack -> process_result with up to N auto-revisions for needs_revision. "
+        "Stops on accepted / needs_clarification / revision limit / failures. "
+        "Creates runtime state/events in .ai/zworker/runtime/auto/. "
+        "Resume-safe: does not resend prompt if state is PROMPT_SENT unless force_resend=true. "
+        "Supports passing a pre-existing ZIP (e.g., from manual ChatGPT download) via zip_path. "
+        "Supports attach-mode via cdp_url to connect to an already-running Chrome with remote debugging."
+    ),
+)
+def opencode_zworker_auto_run(
+    task_text: str,
+    directory: str | None = None,
+    timeout_seconds: int | None = None,
+    provider_id: str | None = None,
+    model_id: str | None = None,
+    debug_visible_terminal: bool | None = None,
+    debug_open_session_tui: bool | None = None,
+    opencode_attach_url: str | None = None,
+    export_session: str | None = None,
+    config_path: str | None = None,
+    route_c_profile: str | None = None,
+    cdp_url: str | None = None,
+) -> dict[str, Any]:
+    normalized_task = _normalize_text(task_text)
+    if normalized_task is None:
+        return {"mode": jobs.ZWORKER_MODE_AUTO, "status": "failed", "error": "task_text is required"}
+
+    url_list: list[str] = []
+    if source_urls:
+        url_list = [u.strip() for u in source_urls.split(",") if u.strip()]
+
+    resolved_zip_path = None
+    if zip_path:
+        normalized_zip = _normalize_text(zip_path)
+        if normalized_zip:
+            resolved_zip_path = Path(normalized_zip)
+
+    auto_config = jobs.ZworkerAutoRunConfig(
+        task=normalized_task,
+        context=_normalize_text(context) or "",
+        constraints=_normalize_text(constraints) or "",
+        source_urls=url_list,
+        allowed_paths=allowed_paths or "",
+        forbidden_paths=forbidden_paths or "",
+        expected_outputs=expected_outputs or "",
+        request_id=_normalize_text(request_id) or "",
+        max_revisions=max_revisions,
+        provider_id=provider_id,
+        model_id=model_id,
+        resume_from_state=_normalize_text(resume_from_request_id) or "",
+        force_resend=force_resend,
+        cdp_url=_normalize_text(cdp_url) or "",
+    )
+
+    result = jobs.zworker_auto_run(auto_config, zip_path=resolved_zip_path, use_web_runner=use_web_runner)
+    return zworker_auto_result_to_mcp_response(result)
 
 
 def main() -> None:

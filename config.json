@@ -11,6 +11,37 @@
           "name": "Gemma 4 e2b-it q8_0 (local)"
         }
       }
+    },
+    "oc_ollama_probe_1": {
+      "name": "Ollama Probe 1",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "c33bb9c2c940492c9902462b2a0e9d62.NfG3PlGR7PjXqcD8Ew6J594P",
+        "baseURL": "https://ollama.com/v1"
+      },
+      "models": {
+        "minimax-m2.5": {
+          "name": "MiniMax M2.5"
+        }
+      }
+    },
+    "oc_ollama_probe_2": {
+      "name": "Ollama Probe 2",
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "apiKey": "0f1ba4f810854b6b95cf37901d230112.Bni7pAagWHEvttPXDUaPzU-4",
+        "baseURL": "https://ollama.com/v1"
+      },
+      "models": {
+        "minimax-m2.5": {
+          "name": "MiniMax M2.5"
+        }
+      }
+    },
+    "ollama-cloud": {
+      "options": {
+        "apiKey": "c33bb9c2c940492c9902462b2a0e9d62.NfG3PlGR7PjXqcD8Ew6J594P"
+      }
     }
   },
   "$schema": "https://opencode.ai/config.json",

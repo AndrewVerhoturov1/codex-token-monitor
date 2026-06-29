@@ -57,16 +57,40 @@ ZWORKER_MODE_PROMPT_PACK = "zworker_prompt_pack"
 ZWORKER_MODE_RESULT_UNPACK = "zworker_result_unpack"
 ZWORKER_MODE_PROCESS_RESULT = "zworker_process_result"
 ZWORKER_MODE_REVISION_PROMPT = "zworker_revision_prompt"
+ZWORKER_MODE_AUTO = "zworker_auto"
 ZWORKER_VALID_MODES = frozenset({
     ZWORKER_MODE_PROMPT_PACK,
     ZWORKER_MODE_RESULT_UNPACK,
     ZWORKER_MODE_PROCESS_RESULT,
     ZWORKER_MODE_REVISION_PROMPT,
+    ZWORKER_MODE_AUTO,
 })
+
+ZWORKER_AUTO_STATE_PROMPT_SENT = "PROMPT_SENT"
+ZWORKER_AUTO_STATE_AWAITING_ZIP = "AWAITING_ZIP"
+ZWORKER_AUTO_STATE_ZIP_RECEIVED = "ZIP_RECEIVED"
+ZWORKER_AUTO_STATE_PROCESSED = "PROCESSED"
+ZWORKER_AUTO_STATE_REVISION_REQUESTED = "REVISION_REQUESTED"
+ZWORKER_AUTO_STATE_ACCEPTED = "ACCEPTED"
+ZWORKER_AUTO_STATE_CLARIFICATION_REQUIRED = "CLARIFICATION_REQUIRED"
+ZWORKER_AUTO_STATE_FAILED = "FAILED"
+ZWORKER_AUTO_VALID_STATES = frozenset({
+    ZWORKER_AUTO_STATE_PROMPT_SENT,
+    ZWORKER_AUTO_STATE_AWAITING_ZIP,
+    ZWORKER_AUTO_STATE_ZIP_RECEIVED,
+    ZWORKER_AUTO_STATE_PROCESSED,
+    ZWORKER_AUTO_STATE_REVISION_REQUESTED,
+    ZWORKER_AUTO_STATE_ACCEPTED,
+    ZWORKER_AUTO_STATE_CLARIFICATION_REQUIRED,
+    ZWORKER_AUTO_STATE_FAILED,
+})
+
+ZWORKER_AUTO_DEFAULT_MAX_REVISIONS = 2
 
 ZWORKER_RUNTIME_REQUESTS = REPO_ROOT / ".ai" / "zworker" / "runtime" / "requests"
 ZWORKER_RUNTIME_INBOX = REPO_ROOT / ".ai" / "zworker" / "runtime" / "inbox"
 ZWORKER_RUNTIME_REVISIONS = REPO_ROOT / ".ai" / "zworker" / "runtime" / "revisions"
+ZWORKER_RUNTIME_AUTO = REPO_ROOT / ".ai" / "zworker" / "runtime" / "auto"
 ZWORKER_TEMPLATE_DIR = REPO_ROOT / ".ai" / "zworker" / "templates"
 
 @dataclass
@@ -798,6 +822,37 @@ class ZworkerRevisionPromptResult:
     error: str = ""
     artifacts: list[str] = field(default_factory=list)
     prompt_lines: int = 0
+    timings: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class ZworkerAutoRunConfig:
+    task: str = ""
+    context: str = ""
+    constraints: str = ""
+    source_urls: list[str] = field(default_factory=list)
+    allowed_paths: str = ""
+    forbidden_paths: str = ""
+    expected_outputs: str = ""
+    request_id: str = ""
+    max_revisions: int = ZWORKER_AUTO_DEFAULT_MAX_REVISIONS
+    provider_id: str = "opencode"
+    model_id: str = "deepseek-v4-flash-free"
+    resume_from_state: str = ""
+    force_resend: bool = False
+    cdp_url: str = ""
+
+
+@dataclass
+class ZworkerAutoRunResult:
+    mode: str = ZWORKER_MODE_AUTO
+    request_id: str = ""
+    status: str = ""
+    final_decision: str = ""
+    revision_count: int = 0
+    error: str = ""
+    events_log_path: str = ""
+    state_file_path: str = ""
     timings: dict[str, int] = field(default_factory=dict)
 
 
@@ -1772,6 +1827,408 @@ def zworker_revision_prompt(
     )
 
 
+def _zworker_validate_zip_precheck(
+    zip_path: Path,
+) -> tuple[bool, str]:
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            entries = [info.filename.replace("\\", "/") for info in zf.infolist() if not info.is_dir()]
+    except zipfile.BadZipFile:
+        return False, "Bad ZIP file"
+    except OSError as e:
+        return False, f"Cannot read ZIP: {e}"
+
+    if not entries:
+        return False, "ZIP is empty"
+
+    root_entries = [e for e in entries if "/" not in e and "\\" not in e]
+    if "answer.md" not in root_entries:
+        return False, "answer.md not found at ZIP root"
+
+    return True, ""
+
+
+def _zworker_auto_write_state(
+    run_dir: Path,
+    state: dict[str, Any],
+) -> None:
+    _atomic_write_json(run_dir / "run_state.json", state)
+
+
+def _zworker_auto_read_state(
+    run_dir: Path,
+) -> dict[str, Any]:
+    return _read_json_safe(run_dir / "run_state.json") or {}
+
+
+def _zworker_auto_append_event(
+    events_path: Path,
+    event: dict[str, Any],
+) -> None:
+    _append_text(
+        events_path,
+        json.dumps(event, ensure_ascii=False) + "\n",
+    )
+
+
+def _zworker_auto_invoke_web_runner(
+    request_id: str,
+    runtime_root: Path,
+    resume: bool = False,
+    force_resend: bool = False,
+    cdp_url: str = "",
+) -> tuple[bool, str]:
+    runner_script = _SCRIPT_DIR / "zworker_chatgpt_web_runner.py"
+    if not runner_script.exists():
+        return False, "web_runner_script_not_found"
+
+    cmd = [
+        sys.executable,
+        str(runner_script),
+        "--request-id", request_id,
+        "--repo-root", str(REPO_ROOT),
+        "--runtime-root", str(runtime_root),
+    ]
+    if resume:
+        cmd.append("--resume")
+    if force_resend:
+        cmd.append("--force-resend")
+    if cdp_url and cdp_url.strip():
+        cmd.extend(["--cdp-url", cdp_url.strip()])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=7200,
+        )
+        return result.returncode == 0, result.stderr[-2000:] if result.stderr else ""
+    except subprocess.TimeoutExpired:
+        return False, "web_runner_timeout"
+    except Exception as e:
+        return False, f"web_runner_exception: {e}"
+
+
+def _zworker_auto_validate_zip(
+    zip_path: Path,
+    manifest_path: Path | None,
+) -> tuple[bool, str]:
+    try:
+        from zworker_web_zip import validate_zip as zworker_validate_zip
+    except ImportError:
+        return True, ""
+
+    if not zip_path.exists():
+        return False, f"zip_not_found: {zip_path}"
+
+    report = zworker_validate_zip(zip_path, manifest_path=manifest_path)
+    if not report.valid:
+        return False, report.error or "zip_validation_failed"
+    return True, ""
+
+
+def zworker_auto_run(
+    config: ZworkerAutoRunConfig,
+    *,
+    job_config: JobConfig | None = None,
+    zip_path: Path | None = None,
+    use_web_runner: bool = False,
+) -> ZworkerAutoRunResult:
+    t_total_start = time.perf_counter_ns()
+    timings: dict[str, int] = {}
+
+    if job_config is None:
+        job_config = JobConfig()
+
+    if config.request_id:
+        request_id = config.request_id
+    else:
+        request_id = _zworker_request_name(config.task)
+
+    run_dir = ZWORKER_RUNTIME_AUTO / request_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    state_file_path = run_dir / "run_state.json"
+    events_path = run_dir / "events.jsonl"
+
+    current_state = _zworker_auto_read_state(run_dir)
+    revision_count = current_state.get("revision_count", 0) if current_state else 0
+
+    if current_state and not config.force_resend:
+        saved_state = current_state.get("state", "")
+        if saved_state == ZWORKER_AUTO_STATE_PROMPT_SENT:
+            _zworker_auto_append_event(
+                events_path,
+                {
+                    "event": "resumed",
+                    "request_id": request_id,
+                    "timestamp": _utcnow(),
+                    "state": saved_state,
+                },
+            )
+            return ZworkerAutoRunResult(
+                request_id=request_id,
+                status="resumed",
+                final_decision="awaiting_zip",
+                revision_count=revision_count,
+                events_log_path=str(events_path),
+                state_file_path=str(state_file_path),
+                timings=timings,
+            )
+
+    timings["prompt_pack_start_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
+    pack_result = zworker_prompt_pack(
+        config.task,
+        context=config.context,
+        constraints=config.constraints,
+        request_id=request_id,
+        source_urls=config.source_urls,
+        allowed_paths=config.allowed_paths,
+        forbidden_paths=config.forbidden_paths,
+        expected_outputs=config.expected_outputs,
+    )
+    timings["prompt_pack_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000) - timings.get("prompt_pack_start_ms", 0)
+
+    if pack_result.status != "completed":
+        _zworker_auto_write_state(
+            run_dir,
+            {
+                "request_id": request_id,
+                "state": ZWORKER_AUTO_STATE_FAILED,
+                "revision_count": revision_count,
+                "error": f"prompt_pack_failed: {pack_result.error}",
+                "started_at": _utcnow(),
+            },
+        )
+        _zworker_auto_append_event(
+            events_path,
+            {
+                "event": "prompt_pack_failed",
+                "request_id": request_id,
+                "timestamp": _utcnow(),
+                "error": pack_result.error,
+            },
+        )
+        return ZworkerAutoRunResult(
+            request_id=request_id,
+            status="failed",
+            error=f"prompt_pack_failed: {pack_result.error}",
+            events_log_path=str(events_path),
+            state_file_path=str(state_file_path),
+            timings=timings,
+        )
+
+    _zworker_auto_write_state(
+        run_dir,
+        {
+            "request_id": request_id,
+            "state": ZWORKER_AUTO_STATE_PROMPT_SENT,
+            "revision_count": revision_count,
+            "config": {
+                "task": config.task,
+                "context": config.context,
+                "constraints": config.constraints,
+                "source_urls": config.source_urls,
+                "allowed_paths": config.allowed_paths,
+                "forbidden_paths": config.forbidden_paths,
+                "expected_outputs": config.expected_outputs,
+                "max_revisions": config.max_revisions,
+                "provider_id": config.provider_id,
+                "model_id": config.model_id,
+            },
+            "started_at": _utcnow(),
+        },
+    )
+    _zworker_auto_append_event(
+        events_path,
+        {
+            "event": "prompt_pack_completed",
+            "request_id": request_id,
+            "timestamp": _utcnow(),
+            "output_dir": pack_result.output_dir,
+        },
+    )
+
+    runtime_root = REPO_ROOT / ".ai" / "zworker" / "runtime" / "web"
+    resolved_zip_path = zip_path
+    use_resume = bool(current_state and current_state.get("state") != "")
+
+    if use_web_runner:
+        _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_AWAITING_ZIP))
+        _zworker_auto_append_event(events_path, {"event": "web_runner_invoked", "request_id": request_id, "timestamp": _utcnow()})
+
+        web_ok, web_error = _zworker_auto_invoke_web_runner(
+            request_id,
+            runtime_root,
+            resume=use_resume,
+            force_resend=config.force_resend,
+            cdp_url=config.cdp_url,
+        )
+        if not web_ok:
+            _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
+            _zworker_auto_append_event(events_path, {"event": "web_runner_failed", "request_id": request_id, "timestamp": _utcnow(), "error": web_error})
+            return ZworkerAutoRunResult(
+                request_id=request_id,
+                status="failed",
+                error=f"web_runner_failed: {web_error}",
+                events_log_path=str(events_path),
+                state_file_path=str(state_file_path),
+                timings=timings,
+            )
+
+        web_output_dir = runtime_root / "output" / request_id
+        candidate_zip = web_output_dir / f"{request_id}.zip"
+        if candidate_zip.exists():
+            resolved_zip_path = candidate_zip
+
+    if resolved_zip_path is None or not resolved_zip_path.exists():
+        _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_AWAITING_ZIP))
+        _zworker_auto_append_event(events_path, {"event": "awaiting_zip", "request_id": request_id, "timestamp": _utcnow()})
+        return ZworkerAutoRunResult(
+            request_id=request_id,
+            status="awaiting_zip",
+            final_decision="awaiting_zip",
+            revision_count=revision_count,
+            events_log_path=str(events_path),
+            state_file_path=str(state_file_path),
+            timings=timings,
+        )
+
+    manifest_path = Path(pack_result.output_dir) / "request_manifest.json" if pack_result.output_dir else None
+    timings["zip_validation_start_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
+    zip_valid, zip_error = _zworker_auto_validate_zip(resolved_zip_path, manifest_path)
+    timings["zip_validation_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000) - timings.get("zip_validation_start_ms", 0)
+
+    if not zip_valid:
+        _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
+        _zworker_auto_append_event(events_path, {"event": "zip_validation_failed", "request_id": request_id, "timestamp": _utcnow(), "error": zip_error})
+        return ZworkerAutoRunResult(
+            request_id=request_id,
+            status="failed",
+            error=f"zip_validation_failed: {zip_error}",
+            events_log_path=str(events_path),
+            state_file_path=str(state_file_path),
+            timings=timings,
+        )
+
+    _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_ZIP_RECEIVED))
+    _zworker_auto_append_event(events_path, {"event": "zip_valid", "request_id": request_id, "timestamp": _utcnow(), "zip_path": str(resolved_zip_path)})
+
+    timings["unpack_start_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
+    unpack_result = zworker_result_unpack(resolved_zip_path, request_id=request_id)
+    timings["unpack_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000) - timings.get("unpack_start_ms", 0)
+
+    if unpack_result.status != "completed":
+        _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
+        _zworker_auto_append_event(events_path, {"event": "unpack_failed", "request_id": request_id, "timestamp": _utcnow(), "error": unpack_result.error})
+        return ZworkerAutoRunResult(
+            request_id=request_id,
+            status="failed",
+            error=f"unpack_failed: {unpack_result.error}",
+            events_log_path=str(events_path),
+            state_file_path=str(state_file_path),
+            timings=timings,
+        )
+
+    _zworker_auto_append_event(events_path, {"event": "unpack_completed", "request_id": request_id, "timestamp": _utcnow(), "unpack_dir": unpack_result.unpack_dir})
+
+    timings["process_start_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
+    process_result = zworker_process_result(request_id, unpack_dir=Path(unpack_result.unpack_dir))
+    timings["process_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000) - timings.get("process_start_ms", 0)
+
+    _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_PROCESSED))
+    _zworker_auto_append_event(events_path, {"event": "process_completed", "request_id": request_id, "timestamp": _utcnow(), "decision": process_result.decision})
+
+    if process_result.requires_clarification:
+        _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_CLARIFICATION_REQUIRED))
+        _zworker_auto_append_event(events_path, {"event": "clarification_required", "request_id": request_id, "timestamp": _utcnow()})
+        return ZworkerAutoRunResult(
+            request_id=request_id,
+            status="completed",
+            final_decision="needs_clarification",
+            revision_count=revision_count,
+            events_log_path=str(events_path),
+            state_file_path=str(state_file_path),
+            timings=timings,
+        )
+
+    if process_result.decision == "accepted":
+        _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_ACCEPTED))
+        _zworker_auto_append_event(events_path, {"event": "accepted", "request_id": request_id, "timestamp": _utcnow()})
+        return ZworkerAutoRunResult(
+            request_id=request_id,
+            status="completed",
+            final_decision="accepted",
+            revision_count=revision_count,
+            events_log_path=str(events_path),
+            state_file_path=str(state_file_path),
+            timings=timings,
+        )
+
+    if not process_result.requires_revision and process_result.decision != "needs_revision":
+        _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
+        _zworker_auto_append_event(events_path, {"event": "unexpected_decision", "request_id": request_id, "timestamp": _utcnow(), "decision": process_result.decision})
+        return ZworkerAutoRunResult(
+            request_id=request_id,
+            status="failed",
+            error=f"unexpected_decision: {process_result.decision}",
+            events_log_path=str(events_path),
+            state_file_path=str(state_file_path),
+            timings=timings,
+        )
+
+    max_revisions = config.max_revisions
+    while revision_count < max_revisions:
+        revision_count += 1
+        _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_REVISION_REQUESTED, revision_count=revision_count))
+        _zworker_auto_append_event(events_path, {"event": "revision_requested", "request_id": request_id, "timestamp": _utcnow(), "revision": revision_count})
+
+        revision_result = zworker_revision_prompt(
+            request_id,
+            feedback=process_result.human_readable_summary,
+            revision_number=revision_count + 1,
+        )
+        if revision_result.status != "completed":
+            _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
+            _zworker_auto_append_event(events_path, {"event": "revision_prompt_failed", "request_id": request_id, "timestamp": _utcnow(), "error": revision_result.error})
+            return ZworkerAutoRunResult(
+                request_id=request_id,
+                status="failed",
+                error=f"revision_prompt_failed: {revision_result.error}",
+                revision_count=revision_count,
+                events_log_path=str(events_path),
+                state_file_path=str(state_file_path),
+                timings=timings,
+            )
+
+        _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_AWAITING_ZIP))
+        _zworker_auto_append_event(events_path, {"event": "revision_prompt_completed", "request_id": request_id, "timestamp": _utcnow(), "revision_dir": revision_result.revision_dir})
+
+        return ZworkerAutoRunResult(
+            request_id=request_id,
+            status="needs_revision",
+            final_decision="awaiting_zip",
+            revision_count=revision_count,
+            events_log_path=str(events_path),
+            state_file_path=str(state_file_path),
+            timings=timings,
+        )
+
+    _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
+    _zworker_auto_append_event(events_path, {"event": "max_revisions_exceeded", "request_id": request_id, "timestamp": _utcnow(), "revision_count": revision_count})
+    return ZworkerAutoRunResult(
+        request_id=request_id,
+        status="failed",
+        error="max_revisions_exceeded",
+        revision_count=revision_count,
+        events_log_path=str(events_path),
+        state_file_path=str(state_file_path),
+        timings=timings,
+    )
+
+
 def _resolve_route_c_profile(config: JobConfig) -> dict[str, Any]:
     profile_name = (config.route_c_profile or "").strip()
     if not profile_name:
@@ -2489,6 +2946,88 @@ def main() -> None:
         default=0,
         help="Revision number for zworker revision_prompt (auto-detects if not provided)",
     )
+    parser.add_argument(
+        "--zworker-auto",
+        action="store_true",
+        help="Run zworker-auto mode: orchestration loop over existing zworker stages",
+    )
+    parser.add_argument(
+        "--zworker-auto-task",
+        type=str,
+        default=None,
+        help="Task text for zworker-auto",
+    )
+    parser.add_argument(
+        "--zworker-auto-context",
+        type=str,
+        default="",
+        help="Context text for zworker-auto",
+    )
+    parser.add_argument(
+        "--zworker-auto-constraints",
+        type=str,
+        default="",
+        help="Constraints text for zworker-auto",
+    )
+    parser.add_argument(
+        "--zworker-auto-source-urls",
+        type=str,
+        default=None,
+        help="Comma-separated source URLs for zworker-auto",
+    )
+    parser.add_argument(
+        "--zworker-auto-allowed-paths",
+        type=str,
+        default=None,
+        help="Comma-separated allowed path prefixes for zworker-auto",
+    )
+    parser.add_argument(
+        "--zworker-auto-forbidden-paths",
+        type=str,
+        default=None,
+        help="Comma-separated forbidden path prefixes for zworker-auto",
+    )
+    parser.add_argument(
+        "--zworker-auto-expected-outputs",
+        type=str,
+        default=None,
+        help="Comma-separated expected output paths for zworker-auto",
+    )
+    parser.add_argument(
+        "--zworker-auto-request-id",
+        type=str,
+        default=None,
+        help="Request ID for zworker-auto (auto-generated if not provided)",
+    )
+    parser.add_argument(
+        "--zworker-auto-max-revisions",
+        type=int,
+        default=ZWORKER_AUTO_DEFAULT_MAX_REVISIONS,
+        help="Max auto-revision loops (default: 2)",
+    )
+    parser.add_argument(
+        "--zworker-auto-provider-id",
+        type=str,
+        default="opencode",
+        help="Provider ID for zworker-auto",
+    )
+    parser.add_argument(
+        "--zworker-auto-model-id",
+        type=str,
+        default="deepseek-v4-flash-free",
+        help="Model ID for zworker-auto",
+    )
+    parser.add_argument(
+        "--zworker-auto-resume",
+        type=str,
+        default=None,
+        help="Resume from existing run state (request_id)",
+    )
+    parser.add_argument(
+        "--zworker-auto-force-resend",
+        action="store_true",
+        help="Force re-send prompt even if state is PROMPT_SENT",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config) if args.config else None
@@ -2554,6 +3093,37 @@ def main() -> None:
             feedback=args.zworker_revision_feedback,
             revision_number=args.zworker_revision_number,
         )
+        print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
+        sys.exit(EXIT_COMPLETED if result.status == "completed" else EXIT_FAILED)
+
+    if args.zworker_auto:
+        task = args.zworker_auto_task or ""
+        if not task and args.task_file:
+            task_path = Path(args.task_file)
+            if task_path.exists():
+                task = task_path.read_text(encoding="utf-8")
+        if not task:
+            print("Error: zworker_auto requires --zworker-auto-task or --task-file", file=sys.stderr)
+            sys.exit(EXIT_CONFIG_ERROR)
+        source_urls = None
+        if args.zworker_auto_source_urls:
+            source_urls = [u.strip() for u in args.zworker_auto_source_urls.split(",") if u.strip()]
+        auto_config = ZworkerAutoRunConfig(
+            task=task,
+            context=args.zworker_auto_context,
+            constraints=args.zworker_auto_constraints,
+            source_urls=source_urls or [],
+            allowed_paths=args.zworker_auto_allowed_paths or "",
+            forbidden_paths=args.zworker_auto_forbidden_paths or "",
+            expected_outputs=args.zworker_auto_expected_outputs or "",
+            request_id=args.zworker_auto_request_id or "",
+            max_revisions=args.zworker_auto_max_revisions,
+            provider_id=args.zworker_auto_provider_id,
+            model_id=args.zworker_auto_model_id,
+            resume_from_state=args.zworker_auto_resume or "",
+            force_resend=args.zworker_auto_force_resend,
+        )
+        result = zworker_auto_run(auto_config, job_config=config)
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
         sys.exit(EXIT_COMPLETED if result.status == "completed" else EXIT_FAILED)
 

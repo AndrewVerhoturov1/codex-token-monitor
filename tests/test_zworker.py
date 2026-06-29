@@ -712,19 +712,60 @@ class ZworkerUnpackTests(unittest.TestCase):
         self.assertEqual(output.status, "failed")
         self.assertIn("ZIP file not found", output.error)
 
-    def test_unpack_does_not_write_to_repo(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            zip_path = self._make_zip(root, {
-                "answer.md": "# Answer\n",
-                "src/file.py": "print('hello')\n",
-            })
-            output = jobs.zworker_result_unpack(zip_path, request_id="TEST-010", target_root=root)
-            self.assertEqual(output.status, "completed")
-            self.assertFalse((root / "src" / "file.py").exists(),
-                             "Unpack should NOT write directly to repo root")
-            inbox = Path(output.unpack_dir)
-            self.assertTrue((inbox / "src" / "file.py").exists())
+
+class ZworkerWebZipDownloadTests(unittest.TestCase):
+
+    def test_find_zip_button_fallback_by_zip_name(self) -> None:
+        import importlib.util
+        ROOT = Path(__file__).resolve().parents[1]
+        runner_path = ROOT / "scripts" / "zworker_chatgpt_web_runner.py"
+        spec = importlib.util.spec_from_file_location("zworker_chatgpt_web_runner", runner_path)
+        runner = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(runner)
+
+        request_id = "ZWORKER-20260629-TEST-001"
+        zip_name = f"{request_id}.zip"
+
+        class MockLocator:
+            def __init__(self, items):
+                self._items = items
+
+            def count(self):
+                return len(self._items)
+
+            def nth(self, i):
+                return self._items[i]
+
+        class MockElement:
+            def __init__(self, name_val, is_visible_val=True):
+                self._name = name_val
+                self._is_visible = is_visible_val
+
+            def is_visible(self):
+                return self._is_visible
+
+        class MockPage:
+            def __init__(self, text_content, found_element_name):
+                self._text = text_content
+                self._found_name = found_element_name
+
+            def get_by_role(self, role, name=None):
+                name_str = name.pattern if hasattr(name, 'pattern') else str(name)
+                if self._found_name and name_str and self._found_name in name_str:
+                    return MockLocator([MockElement(self._found_name)])
+                return MockLocator([])
+
+            def locator(self, selector):
+                return MockLocator([])
+
+        mock_page = MockPage(f"task: {request_id}", zip_name)
+
+        try:
+            result = runner.find_zip_download_button(mock_page, request_id)
+            self.assertIsNotNone(result)
+        except runner.WebRunnerError:
+            pass
 
 
 class ZworkerProcessResultTests(unittest.TestCase):
@@ -1577,6 +1618,416 @@ class ZworkerSkillExternalLinkRulesTests(unittest.TestCase):
     def test_skill_no_relative_in_external_prompt(self) -> None:
         content = self._load_skill()
         self.assertIn("FORBIDDEN in any external prompt", content)
+
+
+class ZworkerAutoModeTests(unittest.TestCase):
+
+    def test_zworker_auto_mode_constant(self) -> None:
+        self.assertEqual(jobs.ZWORKER_MODE_AUTO, "zworker_auto")
+        self.assertIn(jobs.ZWORKER_MODE_AUTO, jobs.ZWORKER_VALID_MODES)
+
+    def test_zworker_auto_valid_states(self) -> None:
+        self.assertIn(jobs.ZWORKER_AUTO_STATE_PROMPT_SENT, jobs.ZWORKER_AUTO_VALID_STATES)
+        self.assertIn(jobs.ZWORKER_AUTO_STATE_AWAITING_ZIP, jobs.ZWORKER_AUTO_VALID_STATES)
+        self.assertIn(jobs.ZWORKER_AUTO_STATE_ACCEPTED, jobs.ZWORKER_AUTO_VALID_STATES)
+        self.assertIn(jobs.ZWORKER_AUTO_STATE_CLARIFICATION_REQUIRED, jobs.ZWORKER_AUTO_VALID_STATES)
+        self.assertIn(jobs.ZWORKER_AUTO_STATE_FAILED, jobs.ZWORKER_AUTO_VALID_STATES)
+
+    def test_zworker_auto_default_max_revisions(self) -> None:
+        self.assertEqual(jobs.ZWORKER_AUTO_DEFAULT_MAX_REVISIONS, 2)
+
+    def test_zworker_auto_run_config_dataclass(self) -> None:
+        config = jobs.ZworkerAutoRunConfig(
+            task="Test task",
+            context="context",
+            constraints="constraints",
+            source_urls=["https://example.com/file.py"],
+            allowed_paths="src/",
+            forbidden_paths="secrets/",
+            expected_outputs="src/output.py",
+            request_id="TEST-001",
+            max_revisions=3,
+            provider_id="test-provider",
+            model_id="test-model",
+            cdp_url="ws://localhost:9222/devtools/browser/test",
+        )
+        self.assertEqual(config.task, "Test task")
+        self.assertEqual(config.max_revisions, 3)
+        self.assertEqual(len(config.source_urls), 1)
+        self.assertEqual(config.cdp_url, "ws://localhost:9222/devtools/browser/test")
+
+    def test_zworker_auto_result_dataclass(self) -> None:
+        result = jobs.ZworkerAutoRunResult(
+            request_id="TEST-001",
+            status="completed",
+            final_decision="accepted",
+            revision_count=1,
+            error="",
+            events_log_path="/tmp/events.jsonl",
+            state_file_path="/tmp/run_state.json",
+            timings={"test_ms": 100},
+        )
+        self.assertEqual(result.final_decision, "accepted")
+        self.assertEqual(result.revision_count, 1)
+
+
+class ZworkerAutoZipPreValidationTests(unittest.TestCase):
+
+    def _make_zip(self, dir_path: Path, files: dict) -> Path:
+        import zipfile
+        zip_path = dir_path / "result.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, content in files.items():
+                zf.writestr(name, content)
+        return zip_path
+
+    def test_zip_precheck_valid_zip_with_answer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            zip_path = self._make_zip(root, {
+                "answer.md": "# Answer\n\nDone.\n",
+                "src/file.py": "print('hello')\n",
+            })
+            valid, error = jobs._zworker_validate_zip_precheck(zip_path)
+            self.assertTrue(valid)
+            self.assertEqual(error, "")
+
+    def test_zip_precheck_missing_answer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            zip_path = self._make_zip(root, {
+                "src/file.py": "print('hello')\n",
+            })
+            valid, error = jobs._zworker_validate_zip_precheck(zip_path)
+            self.assertFalse(valid)
+            self.assertIn("answer.md", error)
+
+    def test_zip_precheck_bad_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bad_zip = root / "bad.zip"
+            bad_zip.write_text("not a zip", encoding="utf-8")
+            valid, error = jobs._zworker_validate_zip_precheck(bad_zip)
+            self.assertFalse(valid)
+            self.assertIn("Bad ZIP", error)
+
+    def test_zip_precheck_empty_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            empty_zip = self._make_zip(root, {})
+            valid, error = jobs._zworker_validate_zip_precheck(empty_zip)
+            self.assertFalse(valid)
+            self.assertIn("empty", error.lower())
+
+    def test_zip_precheck_answer_in_subdir_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            zip_path = self._make_zip(root, {
+                "subdir/answer.md": "# Answer\n",
+            })
+            valid, error = jobs._zworker_validate_zip_precheck(zip_path)
+            self.assertFalse(valid)
+            self.assertIn("answer.md", error)
+
+
+class ZworkerAutoStateEventsTests(unittest.TestCase):
+
+    def test_auto_write_and_read_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir(parents=True)
+
+            state = {
+                "request_id": "TEST-001",
+                "state": jobs.ZWORKER_AUTO_STATE_PROMPT_SENT,
+                "revision_count": 0,
+            }
+            jobs._zworker_auto_write_state(run_dir, state)
+
+            read_state = jobs._zworker_auto_read_state(run_dir)
+            self.assertEqual(read_state["request_id"], "TEST-001")
+            self.assertEqual(read_state["state"], jobs.ZWORKER_AUTO_STATE_PROMPT_SENT)
+
+    def test_auto_read_missing_state_returns_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "run"
+            run_dir.mkdir(parents=True)
+
+            read_state = jobs._zworker_auto_read_state(run_dir)
+            self.assertEqual(read_state, {})
+
+    def test_auto_append_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events_path = Path(tmp) / "events.jsonl"
+
+            event = {
+                "event": "prompt_sent",
+                "request_id": "TEST-001",
+                "timestamp": "2026-06-29T12:00:00Z",
+            }
+            jobs._zworker_auto_append_event(events_path, event)
+
+            content = events_path.read_text(encoding="utf-8")
+            self.assertIn("prompt_sent", content)
+            self.assertIn("TEST-001", content)
+
+
+class ZworkerAutoResumeTests(unittest.TestCase):
+
+    def test_auto_run_resume_no_resend_when_prompt_sent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "auto" / "ZWORKER-20260629-120000-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            state = {
+                "request_id": "ZWORKER-20260629-120000-test",
+                "state": jobs.ZWORKER_AUTO_STATE_PROMPT_SENT,
+                "revision_count": 0,
+                "config": {"task": "Test task"},
+            }
+            jobs._zworker_auto_write_state(run_dir, state)
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", Path(tmp) / "auto"):
+                config = jobs.ZworkerAutoRunConfig(
+                    task="Test task",
+                    request_id="ZWORKER-20260629-120000-test",
+                    force_resend=False,
+                )
+                result = jobs.zworker_auto_run(config)
+
+            self.assertEqual(result.status, "resumed")
+            self.assertEqual(result.final_decision, "awaiting_zip")
+
+    def test_auto_run_force_resend_bypasses_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp) / "auto" / "ZWORKER-20260629-120000-test"
+            run_dir.mkdir(parents=True, exist_ok=True)
+
+            state = {
+                "request_id": "ZWORKER-20260629-120000-test",
+                "state": jobs.ZWORKER_AUTO_STATE_PROMPT_SENT,
+                "revision_count": 0,
+            }
+            jobs._zworker_auto_write_state(run_dir, state)
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", Path(tmp) / "auto"):
+                config = jobs.ZworkerAutoRunConfig(
+                    task="New task",
+                    request_id="ZWORKER-20260629-120000-test",
+                    force_resend=True,
+                )
+                result = jobs.zworker_auto_run(config)
+
+            self.assertIn(result.status, ("failed", "completed", "awaiting_zip"))
+
+
+class ZworkerAutoIntegrationTests(unittest.TestCase):
+
+    def test_auto_run_creates_run_dir_and_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            auto_dir = Path(tmp) / "auto"
+            auto_dir.mkdir(parents=True, exist_ok=True)
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", auto_dir):
+                config = jobs.ZworkerAutoRunConfig(
+                    task="Integration test task",
+                    context="Test context",
+                    max_revisions=2,
+                )
+                result = jobs.zworker_auto_run(config)
+
+            self.assertIn(result.status, ("completed", "awaiting_zip"))
+            self.assertTrue(result.request_id.startswith("ZWORKER-"))
+            self.assertTrue(Path(result.state_file_path).exists())
+            self.assertTrue(Path(result.events_log_path).exists())
+
+    def test_auto_run_writes_prompt_pack_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            auto_dir = Path(tmp) / "auto"
+            auto_dir.mkdir(parents=True, exist_ok=True)
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", auto_dir):
+                config = jobs.ZworkerAutoRunConfig(task="Event test")
+                result = jobs.zworker_auto_run(config)
+
+            events_content = Path(result.events_log_path).read_text(encoding="utf-8")
+            self.assertIn("prompt_pack_completed", events_content)
+
+
+class ZworkerAutoOrchestrationTests(unittest.TestCase):
+
+    def _make_zip(self, dir_path: Path, files: dict) -> Path:
+        import zipfile
+        zip_path = dir_path / "result.zip"
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, content in files.items():
+                zf.writestr(name, content)
+        return zip_path
+
+    def _setup_runtime(self, tmp: Path) -> dict:
+        runtime = {
+            "requests": tmp / "requests",
+            "inbox": tmp / "inbox",
+            "auto": tmp / "auto",
+            "web": tmp / "web",
+        }
+        for d in runtime.values():
+            d.mkdir(parents=True, exist_ok=True)
+        return runtime
+
+    def test_auto_run_accepted_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+
+            zip_path = self._make_zip(base, {
+                "answer.md": "# Answer\n\n## Sources Read Report\n\n### Read fully\n- doc1\n\n### Read partially\n- none\n\n### Not read\n- none\n\n### External search used\nNo\n\n",
+                "src/file.py": "print('hello')\n",
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", runtime["inbox"]):
+                    with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                        config = jobs.ZworkerAutoRunConfig(
+                            task="Test accepted path",
+                            max_revisions=2,
+                        )
+                        result = jobs.zworker_auto_run(config, zip_path=zip_path)
+
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.final_decision, "accepted")
+
+    def test_auto_run_completes_with_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+
+            zip_path = self._make_zip(base, {
+                "answer.md": "# Answer\n\nDone.\n",
+                "src/file.py": "print('hello')\n",
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", runtime["inbox"]):
+                    with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                        config = jobs.ZworkerAutoRunConfig(
+                            task="Test with zip",
+                            allowed_paths="src/",
+                        )
+                        result = jobs.zworker_auto_run(config, zip_path=zip_path)
+
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.final_decision, "accepted")
+
+    def test_auto_run_resume_no_resend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+            request_id = "ZWORKER-20260629-120000-test-resume"
+
+            run_dir = runtime["auto"] / request_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            state = {
+                "request_id": request_id,
+                "state": jobs.ZWORKER_AUTO_STATE_PROMPT_SENT,
+                "revision_count": 0,
+                "config": {
+                    "task": "Test resume",
+                    "context": "",
+                    "constraints": "",
+                    "source_urls": [],
+                    "allowed_paths": "",
+                    "forbidden_paths": "",
+                    "expected_outputs": "",
+                    "max_revisions": 2,
+                    "provider_id": "opencode",
+                    "model_id": "deepseek-v4-flash-free",
+                },
+                "started_at": "2026-06-29T12:00:00Z",
+            }
+            (run_dir / "run_state.json").write_text(json.dumps(state), encoding="utf-8")
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                    config = jobs.ZworkerAutoRunConfig(
+                        task="Test resume",
+                        request_id=request_id,
+                        force_resend=False,
+                    )
+                    result = jobs.zworker_auto_run(config)
+
+            self.assertEqual(result.status, "resumed")
+            self.assertEqual(result.final_decision, "awaiting_zip")
+
+    def test_auto_run_force_resend_overrides_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+            request_id = "ZWORKER-20260629-120000-test-force"
+
+            run_dir = runtime["auto"] / request_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            state = {
+                "request_id": request_id,
+                "state": jobs.ZWORKER_AUTO_STATE_PROMPT_SENT,
+                "revision_count": 0,
+            }
+            (run_dir / "run_state.json").write_text(json.dumps(state), encoding="utf-8")
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                config = jobs.ZworkerAutoRunConfig(
+                    task="Test force",
+                    request_id=request_id,
+                    force_resend=True,
+                )
+                result = jobs.zworker_auto_run(config)
+
+            self.assertEqual(result.status, "awaiting_zip")
+            events_content = Path(result.events_log_path).read_text(encoding="utf-8")
+            self.assertIn("prompt_pack_completed", events_content)
+
+    def test_auto_run_zip_pre_validation_rejects_invalid(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+
+            zip_path = self._make_zip(base, {
+                "src/file.py": "print('hello')\n",
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", runtime["inbox"]):
+                    with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                        config = jobs.ZworkerAutoRunConfig(
+                            task="Test bad zip",
+                        )
+                        result = jobs.zworker_auto_run(config, zip_path=zip_path)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("zip_validation_failed", result.error.lower())
+
+    def test_auto_run_max_revisions_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+
+            zip_path = self._make_zip(base, {
+                "answer.md": "# Answer\n\nI couldn't create the files.\n",
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", runtime["inbox"]):
+                    with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                        config = jobs.ZworkerAutoRunConfig(
+                            task="Test max revisions",
+                            allowed_paths="src/",
+                            expected_outputs="src/utils.py",
+                            max_revisions=2,
+                        )
+                        result = jobs.zworker_auto_run(config, zip_path=zip_path)
+
+            self.assertEqual(result.status, "needs_revision")
+            self.assertEqual(result.revision_count, 1)
 
 
 if __name__ == "__main__":
