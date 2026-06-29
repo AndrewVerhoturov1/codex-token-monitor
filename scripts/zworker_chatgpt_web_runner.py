@@ -526,9 +526,17 @@ def run_browser_flow(args: argparse.Namespace) -> int:
                 state.set_state("MODEL_CHECK_DONE")
                 context.close()
                 return 0
-            if args.resume and state.has_prompt_been_sent() and state.chat_url:
-                state.event("resume_without_resend", chat_url=state.chat_url)
-                page.goto(state.chat_url, wait_until="domcontentloaded", timeout=args.chat_timeout_ms)
+            if args.resume and state.can_skip_prompt_send():
+                resume_point = state.get_resume_point()
+                state.event("resume_flow_start", resume_point=resume_point, chat_url=state.chat_url)
+                if resume_point == "answer_ready":
+                    state.event("resume_skip_to_answer_ready", chat_url=state.chat_url)
+                    page.goto(state.chat_url, wait_until="domcontentloaded", timeout=args.chat_timeout_ms)
+                elif resume_point == "download":
+                    state.event("resume_skip_to_download", chat_url=state.chat_url)
+                    page.goto(state.chat_url, wait_until="domcontentloaded", timeout=args.chat_timeout_ms)
+                else:
+                    page.goto(state.chat_url, wait_until="domcontentloaded", timeout=args.chat_timeout_ms)
             else:
                 if not final_prompt:
                     raise WebRunnerError("FAILED_REQUEST_NOT_FOUND", "No prompt loaded for request.")

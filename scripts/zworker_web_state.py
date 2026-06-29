@@ -27,6 +27,18 @@ PROMPT_SENT_STATES = frozenset({
     "HANDOFF_UNPACKED", "HANDOFF_PROCESSING", "HANDOFF_DONE",
 })
 
+ANSWER_READY_STATES = frozenset({
+    "ANSWER_READY", "ZIP_LINK_WAITING", "ZIP_LINK_FOUND", "ZIP_DOWNLOAD_STARTING",
+    "ZIP_DOWNLOAD_STARTED", "ZIP_DOWNLOADED", "ZIP_VALIDATING", "ZIP_VALID",
+    "HANDOFF_UNPACKING", "HANDOFF_UNPACKED", "HANDOFF_PROCESSING", "HANDOFF_DONE",
+})
+
+DOWNLOAD_PHASE_STATES = frozenset({
+    "ZIP_LINK_WAITING", "ZIP_LINK_FOUND", "ZIP_DOWNLOAD_STARTING",
+    "ZIP_DOWNLOAD_STARTED", "ZIP_DOWNLOADED", "ZIP_VALIDATING", "ZIP_VALID",
+    "HANDOFF_UNPACKING", "HANDOFF_UNPACKED", "HANDOFF_PROCESSING", "HANDOFF_DONE",
+})
+
 _REQUEST_ID_RE = re.compile(r"^ZWORKER-\d{8}-\d{6}-[A-Za-z0-9][A-Za-z0-9_-]*")
 
 
@@ -194,12 +206,30 @@ class ZworkerWebRunState:
     def has_prompt_been_sent(self) -> bool:
         return self.state in PROMPT_SENT_STATES or bool(self.metadata.get("prompt_sent_at"))
 
+    def is_answer_ready(self) -> bool:
+        return self.state in ANSWER_READY_STATES
+
+    def is_in_download_phase(self) -> bool:
+        return self.state in DOWNLOAD_PHASE_STATES
+
+    def get_resume_point(self) -> str:
+        if self.state == "ANSWER_READY":
+            return "answer_ready"
+        if self.state in DOWNLOAD_PHASE_STATES:
+            return "download"
+        if self.has_prompt_been_sent():
+            return "prompt_sent"
+        return "start"
+
+    def can_skip_prompt_send(self) -> bool:
+        return self.has_prompt_been_sent() and bool(self.chat_url)
+
     def require_prompt_send_allowed(self, *, force: bool = False) -> None:
         if force:
             return
-        if self.has_prompt_been_sent():
+        if self.has_prompt_been_sent() and not self.chat_url:
             raise RuntimeError(
-                "Prompt was already sent in this run. Use --force-resend only when a duplicate ChatGPT request is intended."
+                "Prompt was marked sent but no chat_url available. Use --force-resend."
             )
 
     @classmethod
