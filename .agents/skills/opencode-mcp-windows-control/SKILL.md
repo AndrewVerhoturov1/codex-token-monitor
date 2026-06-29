@@ -32,8 +32,8 @@ If the task touches local files, project files, skill files, scripts, configs,
 docs, reports, tests, or tool files, OpenCode is required by default.
 
 Codex MUST NOT read, search, list, inspect, edit, delete, archive, or verify
-local files by itself unless the user explicitly allows local Codex work in the
-current task.
+local files by itself unless the user explicitly allows one specific local
+Codex action in the current task.
 
 Before and after reading this skill, Codex MUST NOT inspect the target repo or
 workspace locally with filesystem listing, reading, or search tools, and MUST
@@ -52,12 +52,15 @@ Allowed exceptions:
 
 - reading this skill file;
 - editing this skill locally is allowed only when the user explicitly says in the
-  current task that Codex may work locally without OpenCode;
+  current task that Codex may perform that exact local action without OpenCode;
 - non-repo files outside this workflow when the task is not repo/workspace
   inspection or modification.
 
 Boundary escalation rule:
 
+- if Codex believes local Codex work is needed for the next step, Codex MUST
+  stop before that local action and ask the user for permission for that one
+  exact action;
 - if Codex wants to use OpenCode outside the repo/workspace scope governed by
   this skill, or outside the routes, exceptions, or stop rules defined here,
   Codex MUST stop and ask the user for explicit permission before using
@@ -447,7 +450,13 @@ local tool files.
 
 Codex may read, search, list, inspect, edit, delete, archive, or verify local
 files only when the user explicitly says in the current task that Codex may
-work locally without OpenCode.
+perform that one exact local action without OpenCode.
+
+This permission is single-action only.
+It does not authorize local Codex work for the rest of the session.
+
+If Codex concludes that a local action is needed, Codex MUST stop before doing
+it and ask the user for permission for that exact local action.
 
 A request to edit a skill, config, script, doc, report, test, or repo file is
 not by itself permission for local Codex work.
@@ -964,7 +973,9 @@ After editing this skill, run a minimal smoke:
 - skill read first;
 - filesystem-backed skill/config/script/doc tasks require OpenCode by default;
 - a request to edit a skill is not by itself permission for local Codex work;
-- Codex local file work happens only after explicit user workflow change;
+- Codex local file work happens only after explicit permission for one exact
+  local action;
+- if Codex wants local work, Codex stops first and asks for that exact action;
 - no local repo inspection;
 - Codex does not inspect repo locally to choose a route;
 - repo reconnaissance for route selection uses Route A;
