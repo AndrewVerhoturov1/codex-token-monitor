@@ -27,6 +27,7 @@ class ZipValidationReport:
     zip_path: str
     status: str = "invalid"
     valid: bool = False
+    security_reject: bool = False
     exists: bool = False
     non_empty: bool = False
     is_zip: bool = False
@@ -185,25 +186,32 @@ def validate_zip(
         report.is_zip = False
         return report
 
-    problems = (
-        not report.answer_md_root
-        or bool(report.unsafe_paths)
-        or bool(report.forbidden_hits)
-        or bool(report.allowed_misses)
-        or bool(report.duplicate_paths_casefold)
-    )
-    report.valid = not problems
-    report.status = "valid" if report.valid else "invalid"
+    security_issues = bool(report.unsafe_paths) or bool(report.forbidden_hits)
+    report.security_reject = security_issues
+
     if not report.answer_md_root:
-        report.error = "answer.md is missing at ZIP root"
-    elif report.unsafe_paths:
-        report.error = "ZIP contains unsafe paths"
-    elif report.forbidden_hits:
-        report.error = "ZIP contains forbidden paths"
-    elif report.allowed_misses:
-        report.error = "ZIP contains files outside allowed paths"
-    elif report.duplicate_paths_casefold:
-        report.error = "ZIP contains duplicate paths that collide case-insensitively"
+        report.warnings.append("answer.md is missing at ZIP root")
+    if report.allowed_misses:
+        report.warnings.append(f"ZIP contains {len(report.allowed_misses)} file(s) outside allowed paths")
+    if report.duplicate_paths_casefold:
+        report.warnings.append(f"ZIP contains {len(report.duplicate_paths_casefold)} duplicate path(s) that collide case-insensitively")
+
+    if security_issues:
+        report.valid = False
+        report.status = "security_reject"
+        if report.unsafe_paths:
+            report.error = "ZIP contains unsafe paths"
+        elif report.forbidden_hits:
+            report.error = "ZIP contains forbidden paths"
+    elif report.warnings:
+        report.valid = True
+        report.status = "accepted_with_warnings"
+        report.error = ""
+    else:
+        report.valid = True
+        report.status = "valid"
+        report.error = ""
+
     return report
 
 

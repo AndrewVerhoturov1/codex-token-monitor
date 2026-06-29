@@ -228,7 +228,7 @@ def ensure_model(page, state: ZworkerWebRunState, preferred_models: list[str], t
 
     save_diagnostics(page, state, "model_not_verified")
     if allow_unverified:
-        state.set_state("MODEL_NOT_VERIFIED_ALLOWED", observed_model="")
+        state.set_state("MODEL_NOT_VERIFIED_ALLOWED", observed_model="", warning="model_check_soft_failure")
         return ""
     raise WebRunnerError("FAILED_MODEL_NOT_VERIFIED", f"Could not verify/select preferred model: {preferred_models}", recoverable=True)
 
@@ -437,9 +437,11 @@ def validate_downloaded_zip(state: ZworkerWebRunState, zip_path: Path, manifest_
     report_path = state.output_dir / "zip_report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    if not report.valid:
+    if report.security_reject:
         raise WebRunnerError("FAILED_BAD_ZIP", report.error or "ZIP pre-validation failed.", recoverable=True)
-    state.set_state("ZIP_VALID", zip_path=str(zip_path), zip_sha256=report.sha256, zip_report=str(report_path))
+    if report.warnings:
+        state.event("zip_validation_warnings", warnings=report.warnings)
+    state.set_state("ZIP_VALID", zip_path=str(zip_path), zip_sha256=report.sha256, zip_report=str(report_path), status=report.status)
 
 
 def run_handoff(repo_root: Path, state: ZworkerWebRunState) -> None:
@@ -463,6 +465,12 @@ def run_handoff(repo_root: Path, state: ZworkerWebRunState) -> None:
     state.set_state("HANDOFF_DONE")
 
 
+def is_valid_chat_url(url: str) -> bool:
+    if not url:
+        return False
+    return bool(re.search(r"/c/[a-zA-Z0-9]+", url))
+
+
 def run_browser_flow(args: argparse.Namespace) -> int:
     repo_root = Path(args.repo_root).resolve()
     runtime_root = Path(args.runtime_root).resolve() if args.runtime_root else default_runtime_root(repo_root)
@@ -470,6 +478,22 @@ def run_browser_flow(args: argparse.Namespace) -> int:
     state.attempt_no = args.attempt_no
     state.revision_no = args.revision_no
     state.persist()
+
+    use_attach_mode = bool(args.cdp_url and args.cdp_url.strip())
+    is_zworker_auto_mode = getattr(args, "zworker_auto_mode", False)
+
+    if is_zworker_auto_mode and not use_attach_mode:
+        state.fail(
+            "FAILED_ATTACH_REQUIRED",
+            "zworker-auto web-runner requires --cdp-url for attach-mode. Cannot launch new browser in zworker-auto mode.",
+            recoverable=False,
+        )
+        raise WebRunnerError(
+            "FAILED_ATTACH_REQUIRED",
+            "zworker-auto web-runner requires --cdp-url for attach-mode. Cannot launch new browser in zworker-auto mode.",
+            recoverable=False,
+        )
+
     sync_playwright = require_playwright()
 
     prompt_text = ""
@@ -480,12 +504,11 @@ def run_browser_flow(args: argparse.Namespace) -> int:
     if final_prompt:
         (state.session_dir / "prompt.final.md").write_text(final_prompt, encoding="utf-8")
 
-    state.set_state("BROWSER_STARTING")
     profile_dir = Path(args.profile_dir) if args.profile_dir else runtime_root / "profiles" / "chatgpt-main"
     profile_dir.mkdir(parents=True, exist_ok=True)
     state.downloads_dir.mkdir(parents=True, exist_ok=True)
 
-    use_attach_mode = bool(args.cdp_url and args.cdp_url.strip())
+    state.set_state("BROWSER_STARTING")
 
     with sync_playwright() as p:
         if use_attach_mode:
@@ -520,6 +543,13 @@ def run_browser_flow(args: argparse.Namespace) -> int:
                 context.close()
                 return 0
             open_new_chat(page, state, args.chat_timeout_ms)
+            if not is_valid_chat_url(state.chat_url):
+                save_diagnostics(page, state, "invalid_chat_url")
+                raise WebRunnerError(
+                    "FAILED_INVALID_CHAT_URL",
+                    f"New chat was created but chat_url does not contain /c/... path: {state.chat_url}",
+                    recoverable=False,
+                )
             preferred = [m.strip() for m in args.preferred_model if m.strip()]
             ensure_model(page, state, preferred, args.model_timeout_ms, args.allow_unverified_model)
             if args.model_check:
@@ -572,6 +602,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--handoff", action="store_true")
     parser.add_argument("--login-check", action="store_true")
     parser.add_argument("--model-check", action="store_true")
+    parser.add_argument("--zworker-auto-mode", action="store_true", help="Run in zworker-auto mode (requires --cdp-url)")
     parser.add_argument("--attempt-no", type=int, default=1)
     parser.add_argument("--revision-no", type=int, default=1)
     parser.add_argument("--login-timeout-ms", type=int, default=30000)

@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pytest
 
-from scripts.zworker_web_state import ZworkerWebRunState, sha256_text
+from scripts.zworker_web_state import ZworkerWebRunState, sha256_text, is_valid_chat_url
 
 REQUEST_ID = "ZWORKER-20260629-000001-test-state"
 
 
 def test_resume_point_answer_ready(tmp_path: Path) -> None:
     state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
-    state.set_state("ANSWER_READY", chat_url="https://chatgpt.com/abc123")
+    state.set_state("ANSWER_READY", chat_url="https://chatgpt.com/c/abc123")
 
     assert state.is_answer_ready() is True
     assert state.get_resume_point() == "answer_ready"
@@ -21,7 +21,7 @@ def test_resume_point_answer_ready(tmp_path: Path) -> None:
 
 def test_resume_point_download_phase(tmp_path: Path) -> None:
     state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
-    state.set_state("ZIP_LINK_FOUND", chat_url="https://chatgpt.com/abc123")
+    state.set_state("ZIP_LINK_FOUND", chat_url="https://chatgpt.com/c/abc123")
 
     assert state.is_in_download_phase() is True
     assert state.get_resume_point() == "download"
@@ -29,7 +29,7 @@ def test_resume_point_download_phase(tmp_path: Path) -> None:
 
 def test_resume_point_prompt_sent(tmp_path: Path) -> None:
     state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
-    state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/abc123", prompt_sha256="abc")
+    state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/c/abc123", prompt_sha256="abc")
 
     assert state.is_answer_ready() is False
     assert state.is_in_download_phase() is False
@@ -51,7 +51,7 @@ def test_resume_point_no_chat_url(tmp_path: Path) -> None:
 
 def test_require_prompt_send_allowed_with_chat_url(tmp_path: Path) -> None:
     state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
-    state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/abc", prompt_sha256="abc")
+    state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/c/abc", prompt_sha256="abc")
     state.require_prompt_send_allowed(force=False)
 
 
@@ -239,3 +239,36 @@ def test_failed_marker_detection_in_assistant_only(monkeypatch) -> None:
     page_ready = MockPage(user_prompt_clean, assistant_with_ready)
     result_ready = module.get_last_assistant_message_text(page_ready)
     assert module.READY_MARKER in result_ready, "READY_MARKER should be detected in assistant response"
+
+
+def test_is_valid_chat_url_valid() -> None:
+    assert is_valid_chat_url("https://chatgpt.com/c/abc123") is True
+    assert is_valid_chat_url("https://chatgpt.com/c/xyz789") is True
+    assert is_valid_chat_url("chatgpt.com/c/ABC") is True
+    assert is_valid_chat_url("/c/abc123") is True
+
+
+def test_is_valid_chat_url_invalid() -> None:
+    assert is_valid_chat_url("https://chatgpt.com/") is False
+    assert is_valid_chat_url("https://chatgpt.com") is False
+    assert is_valid_chat_url("") is False
+    assert is_valid_chat_url("https://chatgpt.com/explore") is False
+    assert is_valid_chat_url("https://chatgpt.com/topic/abc") is False
+
+
+def test_can_skip_prompt_send_rejects_bare_homepage(tmp_path: Path) -> None:
+    state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
+    state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/", prompt_sha256="abc")
+    assert state.can_skip_prompt_send() is False
+
+
+def test_can_skip_prompt_send_accepts_valid_chat_url(tmp_path: Path) -> None:
+    state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
+    state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/c/abc123", prompt_sha256="abc")
+    assert state.can_skip_prompt_send() is True
+
+
+def test_can_skip_prompt_send_rejects_invalid_chat_url(tmp_path: Path) -> None:
+    state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
+    state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/explore", prompt_sha256="abc")
+    assert state.can_skip_prompt_send() is False

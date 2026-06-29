@@ -801,6 +801,8 @@ class ZworkerProcessResultResult:
     repo_files_found: int = 0
     repo_files_in_scope: int = 0
     repo_files_out_of_scope: int = 0
+    remapped_files: int = 0
+    remap_details: list[str] = field(default_factory=list)
     auto_applied: bool = False
     auto_apply_files: int = 0
     auto_apply_errors: list[str] = field(default_factory=list)
@@ -825,6 +827,8 @@ class ZworkerRevisionPromptResult:
     timings: dict[str, int] = field(default_factory=dict)
 
 
+ZWORKER_AUTO_DEFAULT_WEB_RUNNER_TIMEOUT_SECONDS = 720
+
 @dataclass
 class ZworkerAutoRunConfig:
     task: str = ""
@@ -841,6 +845,7 @@ class ZworkerAutoRunConfig:
     resume_from_state: str = ""
     force_resend: bool = False
     cdp_url: str = ""
+    web_runner_timeout_seconds: int = ZWORKER_AUTO_DEFAULT_WEB_RUNNER_TIMEOUT_SECONDS
 
 
 @dataclass
@@ -1386,6 +1391,47 @@ def _zworker_is_repo_candidate(path: Path, relative: str) -> bool:
     return name not in {"answer.md", "unpack_report.md", "process_report.md"} and not name.startswith("__")
 
 
+def _zworker_semantic_remap(
+    out_of_scope_files: list[tuple[str, str]],
+    expected_outputs: list[str],
+) -> list[tuple[str, str, str]]:
+    remapped: list[tuple[str, str, str]] = []
+    if not expected_outputs:
+        return remapped
+
+    normalized_expected = [e.replace("\\", "/").lstrip("/") for e in expected_outputs]
+    expected_by_basename: dict[str, list[str]] = {}
+    for exp in normalized_expected:
+        bn = Path(exp).name
+        if bn not in expected_by_basename:
+            expected_by_basename[bn] = []
+        expected_by_basename[bn].append(exp)
+
+    expected_by_ext: dict[str, list[str]] = {}
+    for exp in normalized_expected:
+        ext = Path(exp).suffix.lower()
+        if ext:
+            if ext not in expected_by_ext:
+                expected_by_ext[ext] = []
+            expected_by_ext[ext].append(exp)
+
+    for rel_path, reason in out_of_scope_files:
+        rel_norm = rel_path.replace("\\", "/")
+        basename = Path(rel_norm).name
+        ext = Path(rel_norm).suffix.lower()
+
+        if basename in expected_by_basename and len(expected_by_basename[basename]) == 1:
+            exact_match = expected_by_basename[basename][0]
+            remapped.append((rel_path, exact_match, "exact_basename"))
+            continue
+
+        if ext and ext in expected_by_ext and len(expected_by_ext[ext]) == 1:
+            unique_exp = expected_by_ext[ext][0]
+            remapped.append((rel_path, unique_exp, "unique_extension"))
+
+    return remapped
+
+
 def _zworker_file_in_scope(path: str, manifest: dict) -> tuple[bool, str]:
     allowed = manifest.get("allowed_paths", []) or []
     forbidden = manifest.get("forbidden_paths", []) or []
@@ -1493,7 +1539,10 @@ def zworker_process_result(
     repo_files_in_scope = 0
     repo_files_out_of_scope = 0
     out_of_scope_details: list[str] = []
+    out_of_scope_files: list[tuple[Path, str]] = []
     in_scope_files: list[tuple[Path, str]] = []
+    remapped_files: list[tuple[Path, str, str]] = []
+    remap_details: list[str] = []
 
     for entry in sorted(unpack_dir.rglob("*")):
         if entry.is_file():
@@ -1507,6 +1556,7 @@ def zworker_process_result(
                 else:
                     repo_files_out_of_scope += 1
                     out_of_scope_details.append(f"{rel}: {reason}")
+                    out_of_scope_files.append((rel, reason))
     timings["process_files_scan_ms"] = int((time.perf_counter_ns() - t_files_start) / 1_000_000)
 
     auto_applied = False
@@ -1530,19 +1580,101 @@ def zworker_process_result(
             f"Request a revision with `zworker_revision_prompt`.\n"
         )
     elif repo_files_out_of_scope > 0 and auto_apply_enabled:
-        requires_clarification = True
-        decision = "needs_clarification"
-        oos_text = "\n".join(f"- {detail}" for detail in out_of_scope_details)
-        human_readable = (
-            f"## Process Result: CLARIFICATION REQUIRED\n\n"
-            f"**Reason**: {repo_files_out_of_scope} file(s) are out of scope and auto-apply is blocked.\n\n"
-            f"### In-scope files: {repo_files_in_scope}\n"
-            f"### Out-of-scope files:\n{oos_text}\n\n"
-            f"### answer.md\n- Sources Read Report: {'valid' if sources_report_valid else 'issues found'}\n"
-            f"- answer.md read: yes\n\n"
-            f"**Manual review is needed before applying.**\n"
-            f"Review the unpacked files at `{unpack_dir}` and decide whether to apply or request revision.\n"
-        )
+        expected_outputs = manifest.get("expected_outputs", []) or []
+        semantic_remaps = _zworker_semantic_remap(out_of_scope_files, expected_outputs)
+
+        remapped_count = 0
+        if semantic_remaps:
+            remap_errors: list[str] = []
+            for orig_rel, target_rel, match_type in semantic_remaps:
+                for entry, rel_path in out_of_scope_files:
+                    if entry == orig_rel:
+                        entry_path = unpack_dir / orig_rel
+                        if entry_path.exists():
+                            try:
+                                dest = target_root / target_rel
+                                dest.parent.mkdir(parents=True, exist_ok=True)
+                                dest.write_bytes(entry_path.read_bytes())
+                                remapped_files.append((entry_path, target_rel, match_type))
+                                remap_details.append(f"{orig_rel} -> {target_rel} ({match_type})")
+                                remapped_count += 1
+                            except OSError as e:
+                                remap_errors.append(f"Failed to remap {orig_rel}: {e}")
+                        break
+
+            if remapped_count > 0:
+                repo_files_in_scope += remapped_count
+                repo_files_out_of_scope = repo_files_out_of_scope - remapped_count
+                out_of_scope_details = [d for d in out_of_scope_details if not any(r[0] in d for r in semantic_remaps)]
+                out_of_scope_files = [(rel, reason) for rel, reason in out_of_scope_files
+                                     if not any(r[0] == rel for r in semantic_remaps)]
+
+        if repo_files_out_of_scope > 0:
+            requires_clarification = True
+            decision = "needs_clarification"
+            oos_text = "\n".join(f"- {detail}" for detail in out_of_scope_details)
+            remap_text = "\n".join(f"- {r}" for r in remap_details) if remap_details else "(none)"
+            human_readable = (
+                f"## Process Result: CLARIFICATION REQUIRED\n\n"
+                f"**Reason**: {repo_files_out_of_scope} file(s) are out of scope and auto-apply is blocked.\n\n"
+                f"### In-scope files: {repo_files_in_scope}\n"
+                f"### Remapped files (semantic): {remapped_count}\n{remap_text}\n"
+                f"### Out-of-scope files:\n{oos_text}\n\n"
+                f"### answer.md\n- Sources Read Report: {'valid' if sources_report_valid else 'issues found'}\n"
+                f"- answer.md read: yes\n\n"
+                f"**Manual review is needed before applying.**\n"
+                f"Review the unpacked files at `{unpack_dir}` and decide whether to apply or request revision.\n"
+            )
+        else:
+            t_apply_start = time.perf_counter_ns()
+            for file_path, rel_path in in_scope_files:
+                try:
+                    dest = target_root / rel_path
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(file_path.read_bytes())
+                    auto_apply_files += 1
+                except OSError as e:
+                    auto_apply_errors.append(f"Failed to write {rel_path}: {e}")
+            timings["process_apply_ms"] = int((time.perf_counter_ns() - t_apply_start) / 1_000_000)
+
+            if auto_apply_errors:
+                decision = "needs_revision"
+                requires_revision = True
+                err_text = "\n".join(f"- {e}" for e in auto_apply_errors)
+                human_readable = (
+                    f"## Process Result: FAILED\n\n"
+                    f"**Reason**: {len(auto_apply_errors)} write error(s) during auto-apply.\n\n"
+                    f"### Errors\n{err_text}\n\n"
+                    f"### Files applied before failure: {auto_apply_files}\n"
+                    f"Request a revision with `zworker_revision_prompt`.\n"
+                )
+            else:
+                auto_applied = True
+                decision = "accepted"
+                applied_list = "\n".join(f"- `{rel}`" for _, rel in in_scope_files)
+                remap_list = "\n".join(f"- {r}" for r in remap_details) if remap_details else "(none)"
+                if not sources_report_found:
+                    sources_note = (
+                        "**Note**: answer.md found and read but no Sources Read Report section was found. "
+                        "Consider requesting a revision if source traceability matters."
+                    )
+                elif not sources_report_valid:
+                    issues_text = "; ".join(sources_report_issues)
+                    sources_note = (
+                        f"**Note**: Sources Read Report found but incomplete ({issues_text}). "
+                        f"Consider requesting a revision if source traceability matters."
+                    )
+                else:
+                    sources_note = "Sources Read Report: valid"
+                human_readable = (
+                    f"## Process Result: ACCEPTED\n\n"
+                    f"All {repo_files_in_scope} in-scope file(s) applied automatically.\n"
+                    f"{remapped_count} out-of-scope file(s) resolved via semantic remap.\n\n"
+                    f"### Applied Files\n{applied_list}\n\n"
+                    f"### Semantic Remaps\n{remap_list}\n\n"
+                    f"### answer.md\n- {sources_note}\n"
+                    f"- answer.md read: yes\n"
+                )
     elif repo_files_out_of_scope > 0 and not auto_apply_enabled:
         requires_clarification = True
         decision = "needs_clarification"
@@ -1675,6 +1807,8 @@ def zworker_process_result(
         repo_files_found=repo_files_found,
         repo_files_in_scope=repo_files_in_scope,
         repo_files_out_of_scope=repo_files_out_of_scope,
+        remapped_files=len(remapped_files),
+        remap_details=remap_details,
         auto_applied=auto_applied,
         auto_apply_files=auto_apply_files,
         auto_apply_errors=auto_apply_errors,
@@ -1877,6 +2011,7 @@ def _zworker_auto_invoke_web_runner(
     resume: bool = False,
     force_resend: bool = False,
     cdp_url: str = "",
+    timeout_seconds: int = ZWORKER_AUTO_DEFAULT_WEB_RUNNER_TIMEOUT_SECONDS,
 ) -> tuple[bool, str]:
     runner_script = _SCRIPT_DIR / "zworker_chatgpt_web_runner.py"
     if not runner_script.exists():
@@ -1888,6 +2023,7 @@ def _zworker_auto_invoke_web_runner(
         "--request-id", request_id,
         "--repo-root", str(REPO_ROOT),
         "--runtime-root", str(runtime_root),
+        "--zworker-auto-mode",
     ]
     if resume:
         cmd.append("--resume")
@@ -1896,13 +2032,14 @@ def _zworker_auto_invoke_web_runner(
     if cdp_url and cdp_url.strip():
         cmd.extend(["--cdp-url", cdp_url.strip()])
 
+    effective_timeout = timeout_seconds if timeout_seconds > 0 else ZWORKER_AUTO_DEFAULT_WEB_RUNNER_TIMEOUT_SECONDS
     try:
         result = subprocess.run(
             cmd,
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
-            timeout=7200,
+            timeout=effective_timeout,
         )
         return result.returncode == 0, result.stderr[-2000:] if result.stderr else ""
     except subprocess.TimeoutExpired:
@@ -2065,6 +2202,7 @@ def zworker_auto_run(
             resume=use_resume,
             force_resend=config.force_resend,
             cdp_url=config.cdp_url,
+            timeout_seconds=config.web_runner_timeout_seconds,
         )
         if not web_ok:
             _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
@@ -3028,6 +3166,12 @@ def main() -> None:
         action="store_true",
         help="Force re-send prompt even if state is PROMPT_SENT",
     )
+    parser.add_argument(
+        "--zworker-auto-web-timeout",
+        type=int,
+        default=ZWORKER_AUTO_DEFAULT_WEB_RUNNER_TIMEOUT_SECONDS,
+        help="Web runner timeout in seconds (default: 720)",
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config) if args.config else None
@@ -3122,6 +3266,7 @@ def main() -> None:
             model_id=args.zworker_auto_model_id,
             resume_from_state=args.zworker_auto_resume or "",
             force_resend=args.zworker_auto_force_resend,
+            web_runner_timeout_seconds=args.zworker_auto_web_timeout,
         )
         result = zworker_auto_run(auto_config, job_config=config)
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))

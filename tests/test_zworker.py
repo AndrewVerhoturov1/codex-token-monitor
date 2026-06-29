@@ -5,6 +5,8 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 AGENTS_SKILLS_ROOT = Path.home() / ".agents" / "skills"
 MODULE_PATH = ROOT / "scripts" / "codex_token_monitor_opencode_jobs.py"
@@ -2000,11 +2002,13 @@ class ZworkerAutoOrchestrationTests(unittest.TestCase):
                     with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
                         config = jobs.ZworkerAutoRunConfig(
                             task="Test bad zip",
+                            max_revisions=2,
                         )
                         result = jobs.zworker_auto_run(config, zip_path=zip_path)
 
-            self.assertEqual(result.status, "failed")
-            self.assertIn("zip_validation_failed", result.error.lower())
+            self.assertEqual(result.status, "needs_revision")
+            self.assertEqual(result.final_decision, "awaiting_zip")
+            self.assertEqual(result.revision_count, 1)
 
     def test_auto_run_max_revisions_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2028,6 +2032,236 @@ class ZworkerAutoOrchestrationTests(unittest.TestCase):
 
             self.assertEqual(result.status, "needs_revision")
             self.assertEqual(result.revision_count, 1)
+
+
+class ZworkerAutoWebRunnerTimeoutTests(unittest.TestCase):
+
+    def test_default_web_runner_timeout_is_720(self) -> None:
+        config = jobs.ZworkerAutoRunConfig(task="Test task")
+        self.assertEqual(config.web_runner_timeout_seconds, 720)
+
+    def test_custom_web_runner_timeout_is_passed(self) -> None:
+        config = jobs.ZworkerAutoRunConfig(task="Test task", web_runner_timeout_seconds=300)
+        self.assertEqual(config.web_runner_timeout_seconds, 300)
+
+    def test_web_runner_timeout_constant_defined(self) -> None:
+        self.assertEqual(jobs.ZWORKER_AUTO_DEFAULT_WEB_RUNNER_TIMEOUT_SECONDS, 720)
+
+
+class ZworkerSemanticRemapTests(unittest.TestCase):
+
+    def _make_unpack_dir(self, base: Path, request_id: str, files: dict) -> Path:
+        inbox = base / "inbox" / request_id
+        inbox.mkdir(parents=True, exist_ok=True)
+        for rel_path, content in files.items():
+            dest = inbox / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content, encoding="utf-8")
+        return inbox
+
+    def _make_request_dir(self, base: Path, request_id: str, manifest_overrides: dict | None = None) -> Path:
+        req_dir = base / "requests" / request_id
+        req_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "request_id": request_id,
+            "slug": "test",
+            "task_summary": "test",
+            "manual_url": "",
+            "repo_navigation_url": "",
+            "files_to_read": [],
+            "strict_zip_contract": False,
+            "requires_answer_md": True,
+            "created_at": "2026-06-27T12:00:00Z",
+            "allowed_paths": ["src/"],
+            "forbidden_paths": [],
+            "auto_apply_enabled": True,
+            "expected_outputs": [],
+        }
+        if manifest_overrides:
+            manifest.update(manifest_overrides)
+        (req_dir / "request_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        return req_dir
+
+    def test_semantic_remap_exact_basename_match(self) -> None:
+        out_of_scope = [
+            ("components/Button.tsx", "not in scope"),
+        ]
+        expected = ["src/components/Button.tsx"]
+        remaps = jobs._zworker_semantic_remap(out_of_scope, expected)
+        self.assertEqual(len(remaps), 1)
+        self.assertEqual(remaps[0][1], "src/components/Button.tsx")
+        self.assertEqual(remaps[0][2], "exact_basename")
+
+    def test_semantic_remap_unique_extension_match(self) -> None:
+        out_of_scope = [
+            ("temp/helper.ts", "not in scope"),
+        ]
+        expected = ["src/utils.ts"]
+        remaps = jobs._zworker_semantic_remap(out_of_scope, expected)
+        self.assertEqual(len(remaps), 1)
+        self.assertEqual(remaps[0][1], "src/utils.ts")
+        self.assertEqual(remaps[0][2], "unique_extension")
+
+    def test_semantic_remap_no_match_when_multiple_extensions(self) -> None:
+        out_of_scope = [
+            ("temp/file.ts", "not in scope"),
+        ]
+        expected = ["src/file.ts", "lib/file.ts"]
+        remaps = jobs._zworker_semantic_remap(out_of_scope, expected)
+        self.assertEqual(len(remaps), 0)
+
+    def test_semantic_remap_no_match_when_no_expected_outputs(self) -> None:
+        out_of_scope = [
+            ("src/extra.ts", "not in scope"),
+        ]
+        expected: list[str] = []
+        remaps = jobs._zworker_semantic_remap(out_of_scope, expected)
+        self.assertEqual(len(remaps), 0)
+
+    def test_semantic_remap_multiple_files(self) -> None:
+        out_of_scope = [
+            ("temp/a.py", "not in scope"),
+            ("temp/b.py", "not in scope"),
+        ]
+        expected = ["src/a.py", "src/b.py"]
+        remaps = jobs._zworker_semantic_remap(out_of_scope, expected)
+        self.assertEqual(len(remaps), 2)
+
+    def test_process_result_remaps_exact_basename(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            request_id = "ZWORKER-20260629-120000-remap1"
+            self._make_request_dir(base, request_id, {
+                "allowed_paths": ["src/"],
+                "expected_outputs": ["src/Button.tsx"],
+            })
+            self._make_unpack_dir(base, request_id, {
+                "answer.md": (
+                    "# Answer\n\n## Sources Read Report\n\n### Read fully\n- doc1\n\n### Read partially\n- none\n\n### Not read\n- none\n\n### External search used\nNo\n\n"
+                ),
+                "components/Button.tsx": "export const Button = () => {};\n",
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", base / "inbox"):
+                    output = jobs.zworker_process_result(
+                        request_id,
+                        unpack_dir=base / "inbox" / request_id,
+                        target_root=base,
+                    )
+            self.assertEqual(output.decision, "accepted")
+            self.assertTrue(output.auto_applied)
+            self.assertGreater(output.remapped_files, 0)
+            self.assertTrue((base / "src" / "Button.tsx").exists())
+
+    def test_process_result_remaps_unique_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            request_id = "ZWORKER-20260629-120000-remap2"
+            self._make_request_dir(base, request_id, {
+                "allowed_paths": ["src/"],
+                "expected_outputs": ["src/helper.ts"],
+            })
+            self._make_unpack_dir(base, request_id, {
+                "answer.md": (
+                    "# Answer\n\n## Sources Read Report\n\n### Read fully\n- doc1\n\n### Read partially\n- none\n\n### Not read\n- none\n\n### External search used\nNo\n\n"
+                ),
+                "temp/helper.ts": "export const helper = () => {};\n",
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", base / "inbox"):
+                    output = jobs.zworker_process_result(
+                        request_id,
+                        unpack_dir=base / "inbox" / request_id,
+                        target_root=base,
+                    )
+            self.assertEqual(output.decision, "accepted")
+            self.assertTrue(output.auto_applied)
+            self.assertGreater(output.remapped_files, 0)
+            self.assertTrue((base / "src" / "helper.ts").exists())
+
+    def test_process_result_ambiguous_case_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            request_id = "ZWORKER-20260629-120000-remap3"
+            self._make_request_dir(base, request_id, {
+                "allowed_paths": ["src/", "lib/"],
+                "expected_outputs": ["src/utils.py", "lib/utils.py"],
+            })
+            self._make_unpack_dir(base, request_id, {
+                "answer.md": (
+                    "# Answer\n\n## Sources Read Report\n\n### Read fully\n- doc1\n\n### Read partially\n- none\n\n### Not read\n- none\n\n### External search used\nNo\n\n"
+                ),
+                "temp/utils.py": "def helper(): pass\n",
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", base / "inbox"):
+                    output = jobs.zworker_process_result(
+                        request_id,
+                        unpack_dir=base / "inbox" / request_id,
+                        target_root=base,
+                    )
+            self.assertEqual(output.decision, "needs_clarification")
+            self.assertEqual(output.remapped_files, 0)
+
+
+class ZworkerAutoAttachModeTests(unittest.TestCase):
+
+    def test_invoke_web_runner_with_cdp_url_passes_attach_check(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_root = Path(tmp) / "runtime"
+            runtime_root.mkdir(parents=True, exist_ok=True)
+
+            with unittest.mock.patch.object(jobs, "REPO_ROOT", Path(tmp)):
+                ok, error = jobs._zworker_auto_invoke_web_runner(
+                    request_id="ZWORKER-20260629-120000-test001",
+                    runtime_root=runtime_root,
+                    resume=False,
+                    force_resend=False,
+                    cdp_url="ws://localhost:9222/devtools/browser/test",
+                    timeout_seconds=10,
+                )
+            self.assertFalse(ok)
+            self.assertNotIn("FAILED_ATTACH_REQUIRED", error)
+
+    def test_invoke_web_runner_without_cdp_url_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_root = Path(tmp) / "runtime"
+            runtime_root.mkdir(parents=True, exist_ok=True)
+
+            with unittest.mock.patch.object(jobs, "REPO_ROOT", Path(tmp)):
+                ok, error = jobs._zworker_auto_invoke_web_runner(
+                    request_id="ZWORKER-20260629-120000-test002",
+                    runtime_root=runtime_root,
+                    resume=False,
+                    force_resend=False,
+                    cdp_url="",
+                    timeout_seconds=10,
+                )
+            self.assertFalse(ok)
+            self.assertIn("FAILED_ATTACH_REQUIRED", error) or self.assertIn("attach", error.lower())
+
+
+class ZworkerAutoChatUrlValidationTests(unittest.TestCase):
+
+    def test_web_runner_validates_chat_url_has_c_path(self) -> None:
+        import importlib.util
+        from pathlib import Path as P
+
+        runner_path = P(__file__).resolve().parents[1] / "scripts" / "zworker_chatgpt_web_runner.py"
+        if not runner_path.exists():
+            pytest.skip("web runner script not found")
+
+        spec = importlib.util.spec_from_file_location("zworker_chatgpt_web_runner", runner_path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+
+        assert module.is_valid_chat_url("https://chatgpt.com/c/abc123") is True
+        assert module.is_valid_chat_url("https://chatgpt.com/") is False
+        assert module.is_valid_chat_url("https://chatgpt.com/explore") is False
 
 
 if __name__ == "__main__":

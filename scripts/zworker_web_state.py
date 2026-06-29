@@ -51,6 +51,12 @@ def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def is_valid_chat_url(url: str) -> bool:
+    if not url:
+        return False
+    return bool(re.search(r"/c/[a-zA-Z0-9]+", url))
+
+
 def sha256_file(path: Path) -> str:
     hasher = hashlib.sha256()
     with Path(path).open("rb") as handle:
@@ -222,7 +228,7 @@ class ZworkerWebRunState:
         return "start"
 
     def can_skip_prompt_send(self) -> bool:
-        return self.has_prompt_been_sent() and bool(self.chat_url)
+        return self.has_prompt_been_sent() and bool(self.chat_url) and is_valid_chat_url(self.chat_url)
 
     def require_prompt_send_allowed(self, *, force: bool = False) -> None:
         if force:

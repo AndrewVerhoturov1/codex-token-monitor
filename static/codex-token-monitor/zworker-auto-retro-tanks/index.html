@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101112">
+  <title>Танковый рубеж — 8-bit Dendy</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="arcade-shell" aria-labelledby="game-title">
+    <header class="marquee">
+      <div>
+        <p class="eyebrow">8-BIT DEFENSE SYSTEM</p>
+        <h1 id="game-title">Танковый рубеж</h1>
+      </div>
+      <div class="power-light" aria-label="Питание включено"><span></span> POWER</div>
+    </header>
+
+    <section class="cabinet">
+      <div class="screen-bezel">
+        <div class="screen-wrap">
+          <canvas id="game" width="768" height="672" aria-label="Игровое поле ретро-танчиков"></canvas>
+          <div class="crt-glass" aria-hidden="true"></div>
+          <div id="message" class="message" aria-live="polite"></div>
+        </div>
+      </div>
+
+      <aside class="hud" aria-label="Состояние игры">
+        <div class="hud-card hud-primary">
+          <span>СЧЁТ</span>
+          <strong id="score">000000</strong>
+        </div>
+        <div class="hud-grid">
+          <div class="hud-card"><span>ЖИЗНИ</span><strong id="lives">3</strong></div>
+          <div class="hud-card"><span>ВРАГИ</span><strong id="enemies">12</strong></div>
+          <div class="hud-card"><span>ВОЛНА</span><strong id="wave">01</strong></div>
+          <div class="hud-card"><span>БАЗА</span><strong id="base">OK</strong></div>
+        </div>
+        <div class="legend">
+          <p><kbd>WASD</kbd> / <kbd>←↑→↓</kbd> движение</p>
+          <p><kbd>SPACE</kbd> / <kbd>ENTER</kbd> огонь</p>
+          <p><kbd>P</kbd> пауза · <kbd>R</kbd> рестарт</p>
+        </div>
+        <button id="restart" type="button">↻ НОВАЯ ИГРА</button>
+      </aside>
+    </section>
+
+    <section class="mobile-controls" aria-label="Сенсорное управление">
+      <div class="dpad">
+        <button data-key="ArrowUp" aria-label="Вверх">▲</button>
+        <button data-key="ArrowLeft" aria-label="Влево">◀</button>
+        <button data-key="ArrowDown" aria-label="Вниз">▼</button>
+        <button data-key="ArrowRight" aria-label="Вправо">▶</button>
+      </div>
+      <button class="fire" data-key="Space" aria-label="Огонь">FIRE</button>
+    </section>
+
+    <footer>
+      <span>LOCAL CARTRIDGE // NO ASSETS</span>
+      <span>© 198X PIXEL DEFENSE LAB</span>
+    </footer>
+  </main>
+
+  <script src="game.js"></script>
+</body>
+</html>

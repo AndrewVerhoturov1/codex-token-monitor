@@ -343,6 +343,8 @@ def zworker_process_result_to_mcp_response(result: jobs.ZworkerProcessResultResu
         "repo_files_found": result.repo_files_found,
         "repo_files_in_scope": result.repo_files_in_scope,
         "repo_files_out_of_scope": result.repo_files_out_of_scope,
+        "remapped_files": result.remapped_files,
+        "remap_details": result.remap_details,
         "auto_applied": result.auto_applied,
         "auto_apply_files": result.auto_apply_files,
         "auto_apply_errors": result.auto_apply_errors,
