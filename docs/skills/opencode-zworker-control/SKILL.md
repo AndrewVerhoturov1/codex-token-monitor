@@ -19,6 +19,17 @@ Do not load this skill for ordinary GitHub tasks.
 `/zworker` is not a request for Codex to solve the main task directly.
 `/zworker` is a request to prepare and run the external worker route.
 
+Manual `/zworker` is user-triggered only.
+
+Use manual `/zworker` when:
+
+- the user explicitly asks for it;
+- the auto browser route is blocked;
+- login, 2FA, CAPTCHA, or browser state blocks automation;
+- the user wants to control the external chat manually;
+- the user needs to upload files manually;
+- the user wants a specific external chat/session.
+
 Codex remains the coordinator:
 
 - decide whether repo context is needed;
@@ -29,6 +40,27 @@ Codex remains the coordinator:
 
 For repo reconnaissance and ZIP processing, Codex should use the OpenCode route
 according to `opencode-mcp-windows-control`.
+
+## Published GitHub Context Rule
+
+Manual `/zworker` also requires published external-readable source links.
+
+Before preparing the prompt-pack, Codex MUST ensure that any needed repository
+context is available through externally-readable GitHub/raw URLs.
+
+If required files or changes exist only locally, or local state is newer than
+GitHub, Codex MUST use the same OpenCode-mediated GitHub context sync rule as
+Route W:
+
+- create or update `zworker-context/<request-id>` when needed;
+- push only the minimum required context;
+- use raw GitHub URLs from that branch in the prompt.
+
+Do not publish secrets, `.env`, or unrelated files.
+
+If the needed context cannot be safely published, manual `/zworker` is blocked
+for that part until Codex uses Route A / Route C locally or the user changes
+the workflow.
 
 ## Route
 
@@ -71,15 +103,18 @@ The prompt must not contain:
 - `payload`;
 - `receive_pack`;
 - `verify_pack`;
-
+- old zchat bureaucracy.
 
 If the task requires repository understanding, Codex/OpenCode should provide
 exact externally-openable HTTPS links for the external worker.
 
 If the task is standalone, files may be omitted from the prompt-pack.
 
-Codex should give the user the produced `prompt.md` path, not execute the
-external chat itself.
+Codex must give the user clickable Markdown links to each produced file (at
+minimum prompt.md, prompt_passport.md, request_manifest.json when they exist)
+with a brief plain description of what each file is for. Use absolute local
+file paths formatted as clickable Markdown links, not bare paths. Codex must
+not execute the external chat itself.
 
 ### External prompt link rules
 
@@ -192,6 +227,9 @@ Write a simple human summary instead:
 - short substance of the external answer;
 - whether extra files exist;
 - whether they are ready to accept, need revision, or need clarification.
+- clickable Markdown links to unpacked relevant files (answer.md and any
+  other available artifacts) with a short description of each, using absolute
+  local file paths formatted as clickable Markdown links;
 
 ## References
 
