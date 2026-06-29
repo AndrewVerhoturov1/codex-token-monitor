@@ -279,7 +279,7 @@ Examples:
 Default route for ordinary small and low-risk repo/workspace work:
 
 ```text
-Codex -> mcp__opencode.* -> OpenCode -> opencode/deepseek-v4-flash-free
+Codex -> mcp__opencode.* -> OpenCode -> deepseek/deepseek-v4-flash
 ```
 
 Route A is the default for investigation, reading, mapping, verification, and
@@ -292,7 +292,7 @@ Confirmed terminal failure, quota exhaustion, explicit model error, or
 confirmed empty/no-content result on Route A allows exactly one model fallback:
 
 ```text
-Codex -> mcp__opencode.* -> OpenCode -> deepseek/deepseek-v4-flash
+Codex -> mcp__opencode.* -> OpenCode -> opencode/deepseek-v4-flash-free
 ```
 
 If the fallback model also fails, returns no usable content, or is unavailable,
@@ -714,16 +714,16 @@ was used, or a required blocker prevented completion.
 
 Default model:
 
-- providerID: `opencode`
-- modelID: `deepseek-v4-flash-free`
+- providerID: `deepseek`
+- modelID: `deepseek-v4-flash`
 - reasoning effort: `max`
 
 ## Model discovery rule
 
 For Route A / standard OpenCode MCP, Codex MUST use the skill-default model:
 
-- providerID: `opencode`
-- modelID: `deepseek-v4-flash-free`
+- providerID: `deepseek`
+- modelID: `deepseek-v4-flash`
 - reasoning effort: `max`
 
 Codex MUST NOT call `opencode_provider_models` merely to confirm or rediscover
@@ -744,8 +744,8 @@ this skill-default model rule.
 Fallback model for Route A after confirmed terminal failure, quota exhaustion, explicit
 model error, or confirmed empty/no-content result:
 
-- providerID: `deepseek`
-- modelID: `deepseek-v4-flash`
+- providerID: `opencode`
+- modelID: `deepseek-v4-flash-free`
 - reasoning effort: `max`
 
 If this Route A fallback model also fails or returns no usable content, Codex
@@ -931,7 +931,8 @@ The following are ALWAYS shown, regardless of quiet mode:
 
 ```text
 Small work -> standard OpenCode MCP / DeepSeek.
-Route A model fallback after confirmed failure -> deepseek/deepseek-v4-flash once.
+Route A default model -> deepseek/deepseek-v4-flash.
+Route A model fallback after confirmed failure -> opencode/deepseek-v4-flash-free once.
 Route A fallback failed -> stop and explain the blocker.
 Direct MCP failed in current task -> one job-wrapper fallback attempt.
 Next new task -> standard OpenCode MCP again.
@@ -954,7 +955,7 @@ Route chain reminder:
 
 When reporting the route chain to the user, include the concrete provider/model
 used for each phase that actually ran, when known (for example
-"Route A via opencode/deepseek-v4-flash-free" rather than just "Route A").
+"Route A via deepseek/deepseek-v4-flash" rather than just "Route A").
 
 ## Regression smoke
 
@@ -972,8 +973,8 @@ After editing this skill, run a minimal smoke:
 - conditional skills are not loaded by default;
 - Codex chooses routes per phase, not one route for the whole task;
 - Route A exploration does not force Route A implementation;
-- Route A primary model is `opencode/deepseek-v4-flash-free`;
-- Route A fallback model is `deepseek/deepseek-v4-flash`;
+- Route A primary model is `deepseek/deepseek-v4-flash`;
+- Route A fallback model is `opencode/deepseek-v4-flash-free`;
 - Route A stops and reports if the fallback model also fails;
 - medium code implementation selects Route C by default;
 - standalone app/game/tool implementation selects Route C when bounded;

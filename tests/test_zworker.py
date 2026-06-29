@@ -2263,6 +2263,131 @@ class ZworkerAutoChatUrlValidationTests(unittest.TestCase):
         assert module.is_valid_chat_url("https://chatgpt.com/") is False
         assert module.is_valid_chat_url("https://chatgpt.com/explore") is False
 
+    def test_wait_for_valid_chat_url_accepts_delayed_transition(self) -> None:
+        import importlib.util
+        import sys
+        import tempfile
+        from pathlib import Path as P
+
+        runner_path = P(__file__).resolve().parents[1] / "scripts" / "zworker_chatgpt_web_runner.py"
+        if not runner_path.exists():
+            pytest.skip("web runner script not found")
+
+        spec = importlib.util.spec_from_file_location("zworker_chatgpt_web_runner", runner_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["zworker_chatgpt_web_runner_wait_url"] = module
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = module.ZworkerWebRunState(
+                "ZWORKER-20260629-120000-testwait",
+                runtime_root=P(tmp),
+            )
+
+            class MockPage:
+                def __init__(self):
+                    self._urls = [
+                        "https://chatgpt.com/",
+                        "https://chatgpt.com/",
+                        "https://chatgpt.com/c/abc123",
+                    ]
+                    self._index = 0
+
+                @property
+                def url(self):
+                    value = self._urls[min(self._index, len(self._urls) - 1)]
+                    self._index += 1
+                    return value
+
+            page = MockPage()
+            ok = module.wait_for_valid_chat_url(page, state, 1500, source="unit_test")
+            self.assertTrue(ok)
+            self.assertEqual(state.chat_url, "https://chatgpt.com/c/abc123")
+
+    def test_ensure_model_accepts_generic_plus_picker(self) -> None:
+        import importlib.util
+        import sys
+        import tempfile
+        from pathlib import Path as P
+
+        runner_path = P(__file__).resolve().parents[1] / "scripts" / "zworker_chatgpt_web_runner.py"
+        if not runner_path.exists():
+            pytest.skip("web runner script not found")
+
+        spec = importlib.util.spec_from_file_location("zworker_chatgpt_web_runner", runner_path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["zworker_chatgpt_web_runner_model_picker"] = module
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+
+        class MockElement:
+            def __init__(self, text: str):
+                self._text = text
+
+            def wait_for(self, state="visible", timeout=500):
+                return None
+
+            def click(self, timeout=3000):
+                return None
+
+            def inner_text(self, timeout=1000):
+                return self._text
+
+        class MockLocator:
+            def __init__(self, items):
+                self._items = items
+
+            def count(self):
+                return len(self._items)
+
+            @property
+            def first(self):
+                return self._items[0]
+
+            def filter(self, has_text=None):
+                return self
+
+        class MockBodyLocator:
+            def inner_text(self, timeout=3000):
+                return "Что у тебя сегодня на уме?"
+
+        class MockTextLocator:
+            def count(self):
+                return 0
+
+        class MockPage:
+            def locator(self, selector: str):
+                if selector == "body":
+                    return MockBodyLocator()
+                if selector == "button":
+                    return MockLocator([MockElement("High")])
+                return MockLocator([])
+
+            def get_by_role(self, role, name=None):
+                if role == "button":
+                    return MockLocator([MockElement("High")])
+                return MockLocator([])
+
+            def get_by_text(self, text, exact=False):
+                return MockTextLocator()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = module.ZworkerWebRunState(
+                "ZWORKER-20260629-120000-testmodel",
+                runtime_root=P(tmp),
+            )
+            observed = module.ensure_model(
+                MockPage(),
+                state,
+                ["Pro Extended", "Pro Standard"],
+                timeout_ms=1000,
+                allow_unverified=False,
+            )
+
+        self.assertEqual(observed, "High")
+        self.assertEqual(state.metadata["observed_model"], "High")
+
 
 if __name__ == "__main__":
     unittest.main()

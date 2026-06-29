@@ -52,13 +52,21 @@ def test_resume_point_no_chat_url(tmp_path: Path) -> None:
 def test_require_prompt_send_allowed_with_chat_url(tmp_path: Path) -> None:
     state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
     state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/c/abc", prompt_sha256="abc")
-    state.require_prompt_send_allowed(force=False)
+    with pytest.raises(RuntimeError, match="already sent"):
+        state.require_prompt_send_allowed(force=False)
 
 
 def test_require_prompt_send_allowed_no_chat_url_raises(tmp_path: Path) -> None:
     state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
     state.set_state("PROMPT_SENT", prompt_sha256="abc")
-    with pytest.raises(RuntimeError, match="no chat_url available"):
+    with pytest.raises(RuntimeError, match="resume-safe chat_url is unavailable"):
+        state.require_prompt_send_allowed(force=False)
+
+
+def test_require_prompt_send_allowed_invalid_chat_url_raises(tmp_path: Path) -> None:
+    state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
+    state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/", prompt_sha256="abc")
+    with pytest.raises(RuntimeError, match="resume-safe chat_url is unavailable"):
         state.require_prompt_send_allowed(force=False)
 
 
@@ -130,6 +138,19 @@ def test_attach_mode_state_metadata(tmp_path: Path) -> None:
     assert data["metadata"]["browser_mode"] == "attach"
     assert data["metadata"]["cdp_url"] == cdp_url
     assert data["metadata"]["headless"] is False
+
+
+def test_update_chat_url_persists_and_logs(tmp_path: Path) -> None:
+    state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
+    state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/", prompt_sha256="abc")
+
+    state.update_chat_url("https://chatgpt.com/c/abc123", source="unit_test")
+
+    data = json.loads(state.run_state_path.read_text(encoding="utf-8"))
+    assert data["chat_url"] == "https://chatgpt.com/c/abc123"
+    events = state.events_path.read_text(encoding="utf-8")
+    assert "chat_url_updated" in events
+    assert "unit_test" in events
 
 
 def test_launch_mode_state_metadata(tmp_path: Path) -> None:

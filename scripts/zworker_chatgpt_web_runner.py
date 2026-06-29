@@ -196,6 +196,26 @@ def open_new_chat(page, state: ZworkerWebRunState, timeout_ms: int) -> None:
     state.set_state("CHAT_CREATED", chat_url=page.url)
 
 
+def capture_valid_chat_url(page, state: ZworkerWebRunState, *, source: str) -> bool:
+    url = str(getattr(page, "url", "") or "").strip()
+    if not is_valid_chat_url(url):
+        return False
+    state.update_chat_url(url, source=source)
+    return True
+
+
+def wait_for_valid_chat_url(page, state: ZworkerWebRunState, timeout_ms: int, *, source: str) -> bool:
+    if capture_valid_chat_url(page, state, source=source):
+        return True
+    deadline = time.monotonic() + max(timeout_ms, 0) / 1000
+    while time.monotonic() < deadline:
+        time.sleep(0.5)
+        if capture_valid_chat_url(page, state, source=source):
+            return True
+    state.event("chat_url_still_pending", observed_url=str(getattr(page, "url", "") or ""), source=source)
+    return False
+
+
 def ensure_model(page, state: ZworkerWebRunState, preferred_models: list[str], timeout_ms: int, allow_unverified: bool) -> str:
     state.set_state("MODEL_CHECKING", preferred_models=preferred_models)
     try:
@@ -225,6 +245,19 @@ def ensure_model(page, state: ZworkerWebRunState, preferred_models: list[str], t
                     return model
         except Exception:
             pass
+
+    generic_picker_candidates = [
+        page.get_by_role("button", name=re.compile(r"high|standard|fast|auto|low", re.I)),
+        page.locator("button").filter(has_text=re.compile(r"high|standard|fast|auto|low", re.I)),
+    ]
+    generic_picker = first_visible_locator(page, generic_picker_candidates, timeout_ms=1000)
+    if generic_picker:
+        try:
+            observed = generic_picker.inner_text(timeout=1000).strip() or "generic_picker_visible"
+        except Exception:
+            observed = "generic_picker_visible"
+        state.set_state("MODEL_SELECTED", observed_model=observed)
+        return observed
 
     save_diagnostics(page, state, "model_not_verified")
     if allow_unverified:
@@ -314,6 +347,7 @@ def wait_answer_ready(page, state: ZworkerWebRunState, request_id: str, timeout_
     last_text = ""
     stable_since = time.monotonic()
     while time.monotonic() < deadline:
+        capture_valid_chat_url(page, state, source="answer_streaming")
         text = get_body_text(page)
         assistant_text = get_last_assistant_message_text(page)
         if FAILED_MARKER in assistant_text:
@@ -327,7 +361,8 @@ def wait_answer_ready(page, state: ZworkerWebRunState, request_id: str, timeout_
         ready_marker = READY_MARKER in assistant_text and request_id in assistant_text
         zip_seen = has_zip_attachment(page, request_id)
         if (ready_marker or zip_seen) and stable and not stop_button_visible(page):
-            state.set_state("ANSWER_READY", ready_marker=ready_marker, zip_seen=zip_seen, chat_url=page.url)
+            chat_url = page.url if is_valid_chat_url(page.url) else state.chat_url or page.url
+            state.set_state("ANSWER_READY", ready_marker=ready_marker, zip_seen=zip_seen, chat_url=chat_url)
             return
         time.sleep(1)
     save_diagnostics(page, state, "answer_timeout")
@@ -543,13 +578,6 @@ def run_browser_flow(args: argparse.Namespace) -> int:
                 context.close()
                 return 0
             open_new_chat(page, state, args.chat_timeout_ms)
-            if not is_valid_chat_url(state.chat_url):
-                save_diagnostics(page, state, "invalid_chat_url")
-                raise WebRunnerError(
-                    "FAILED_INVALID_CHAT_URL",
-                    f"New chat was created but chat_url does not contain /c/... path: {state.chat_url}",
-                    recoverable=False,
-                )
             preferred = [m.strip() for m in args.preferred_model if m.strip()]
             ensure_model(page, state, preferred, args.model_timeout_ms, args.allow_unverified_model)
             if args.model_check:
@@ -571,6 +599,12 @@ def run_browser_flow(args: argparse.Namespace) -> int:
                 if not final_prompt:
                     raise WebRunnerError("FAILED_REQUEST_NOT_FOUND", "No prompt loaded for request.")
                 send_prompt(page, state, final_prompt, args.force_resend, args.prompt_timeout_ms)
+                wait_for_valid_chat_url(
+                    page,
+                    state,
+                    min(args.answer_timeout_ms, max(args.chat_timeout_ms, 60_000)),
+                    source="post_prompt",
+                )
             wait_answer_ready(page, state, args.request_id, args.answer_timeout_ms, args.stable_answer_ms)
             zip_path = download_zip(page, state, args.request_id, args.download_timeout_ms)
             validate_downloaded_zip(state, zip_path, manifest_path)

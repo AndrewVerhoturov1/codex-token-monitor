@@ -209,6 +209,15 @@ class ZworkerWebRunState:
         self.event("failed", code=code, message=message, recoverable=recoverable, **fields)
         self.persist()
 
+    def update_chat_url(self, chat_url: str, *, source: str = "") -> None:
+        normalized = str(chat_url or "").strip()
+        if not normalized or normalized == self.chat_url:
+            return
+        self.chat_url = normalized
+        self.updated_at = utcnow_iso()
+        self.event("chat_url_updated", chat_url=self.chat_url, source=source or "unknown")
+        self.persist()
+
     def has_prompt_been_sent(self) -> bool:
         return self.state in PROMPT_SENT_STATES or bool(self.metadata.get("prompt_sent_at"))
 
@@ -233,10 +242,15 @@ class ZworkerWebRunState:
     def require_prompt_send_allowed(self, *, force: bool = False) -> None:
         if force:
             return
-        if self.has_prompt_been_sent() and not self.chat_url:
+        if not self.has_prompt_been_sent():
+            return
+        if self.chat_url and is_valid_chat_url(self.chat_url):
             raise RuntimeError(
-                "Prompt was marked sent but no chat_url available. Use --force-resend."
+                "Prompt was already sent for this chat_url. Use --force-resend."
             )
+        raise RuntimeError(
+            "Prompt was already marked sent but resume-safe chat_url is unavailable. Use --force-resend."
+        )
 
     @classmethod
     def load(cls, request_id: str, runtime_root: str | Path = ".ai/zworker/runtime/web") -> "ZworkerWebRunState":
