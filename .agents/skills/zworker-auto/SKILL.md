@@ -10,7 +10,7 @@ description: Use when the user explicitly invokes `/zworker-auto` or asks Codex 
 Load this skill only for the explicit `zworker-auto` route.
 
 Do not load it for ordinary local repo work.
-Do not load it for ordinary OpenCode delegation.
+Do not load it merely for ordinary OpenCode delegation.
 Do not load it for manual `/zworker`.
 
 `/zworker-auto` means Codex should execute the external ChatGPT Web route
@@ -33,6 +33,31 @@ Keep the current zworker stages as the source of truth:
 
 Do not reimplement their logic inside the skill.
 
+## Phase Composition Rule
+
+`/zworker-auto` does not replace the main route planner.
+
+This skill governs only the specialized external web-execution phase:
+
+- request artifacts
+- ChatGPT Web run
+- ZIP download
+- local handoff
+
+All repo/workspace analysis, context gathering, post-handoff code changes,
+verification, and follow-up fixes must still use per-phase routing from
+`opencode-mcp-windows-control`.
+
+Within one user request, Codex MAY combine:
+
+- Route A for reconnaissance, reading, and verification
+- `zworker-auto` for the external ChatGPT Web run
+- Route C for medium post-handoff implementation or fixes
+- Route A again for final verification
+
+Do not treat `/zworker-auto` as an exclusive whole-task route.
+Treat it as a specialized execution phase inside a multi-route workflow.
+
 ## Preferred Entry On This Machine
 
 For the current workstation, prefer this concrete route:
@@ -43,6 +68,8 @@ For the current workstation, prefer this concrete route:
 
 Treat this as the primary operational path even though the repository also has
 broader `zworker-auto` orchestration code and an MCP wrapper.
+This preference applies to the external web phase, not to every other phase of
+the same user request.
 
 ## Route Boundaries
 
@@ -53,6 +80,13 @@ broader `zworker-auto` orchestration code and an MCP wrapper.
 
 If the user invoked `/zworker-auto`, do not fall back to the manual `/zworker`
 flow unless the user explicitly asks for that fallback.
+
+Example route chain for one request:
+
+1. Route A -> inspect current repo state and gather bounded context
+2. `zworker-auto` -> run the external ChatGPT Web flow and download the ZIP
+3. Route C -> refine the accepted result if medium code changes are needed
+4. Route A -> verify changed files and checks
 
 ## Browser Policy
 
