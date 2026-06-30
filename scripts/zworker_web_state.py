@@ -248,9 +248,6 @@ class ZworkerWebRunState:
             raise RuntimeError(
                 "Prompt was already sent for this chat_url. Use --force-resend."
             )
-        raise RuntimeError(
-            "Prompt was already marked sent but resume-safe chat_url is unavailable. Use --force-resend."
-        )
 
     @classmethod
     def load(cls, request_id: str, runtime_root: str | Path = ".ai/zworker/runtime/web") -> "ZworkerWebRunState":

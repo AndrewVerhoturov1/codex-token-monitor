@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#06100b">
+  <title>CRT Signal — ретро-лендинг</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="crt-shell" aria-labelledby="hero-title">
+    <section class="screen" aria-live="polite">
+      <div class="screen__noise" aria-hidden="true"></div>
+      <div class="screen__scanlines" aria-hidden="true"></div>
+
+      <div class="status-bar" aria-label="Статус сигнала">
+        <span>CH 08</span>
+        <span class="status-dot" aria-hidden="true"></span>
+        <span id="signalStatus">SIGNAL LOCKED</span>
+      </div>
+
+      <div class="hero">
+        <p class="eyebrow">SYSTEM / 1987 / ONLINE</p>
+        <h1 id="hero-title" data-text="НОВЫЙ СИГНАЛ">НОВЫЙ СИГНАЛ</h1>
+        <p class="lead">
+          Одноэкранный цифровой эфир с мягким свечением люминофора,
+          характерными строками развёртки и щелчком старого терминала.
+        </p>
+
+        <button id="tuneButton" class="tune-button" type="button">
+          <span class="tune-button__label">НАСТРОИТЬ КАНАЛ</span>
+          <span class="tune-button__key">ENTER</span>
+        </button>
+
+        <p class="hint" id="hint">Нажмите кнопку или клавишу Enter</p>
+      </div>
+
+      <div class="corner corner--top-left" aria-hidden="true"></div>
+      <div class="corner corner--top-right" aria-hidden="true"></div>
+      <div class="corner corner--bottom-left" aria-hidden="true"></div>
+      <div class="corner corner--bottom-right" aria-hidden="true"></div>
+    </section>
+
+    <footer class="console-label">
+      <span>PHOSPHOR DISPLAY UNIT</span>
+      <span>MODEL C-87</span>
+    </footer>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>

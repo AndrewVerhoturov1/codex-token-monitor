@@ -56,18 +56,16 @@ def test_require_prompt_send_allowed_with_chat_url(tmp_path: Path) -> None:
         state.require_prompt_send_allowed(force=False)
 
 
-def test_require_prompt_send_allowed_no_chat_url_raises(tmp_path: Path) -> None:
+def test_require_prompt_send_allowed_no_chat_url_allows_resend(tmp_path: Path) -> None:
     state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
     state.set_state("PROMPT_SENT", prompt_sha256="abc")
-    with pytest.raises(RuntimeError, match="resume-safe chat_url is unavailable"):
-        state.require_prompt_send_allowed(force=False)
+    state.require_prompt_send_allowed(force=False)
 
 
-def test_require_prompt_send_allowed_invalid_chat_url_raises(tmp_path: Path) -> None:
+def test_require_prompt_send_allowed_invalid_chat_url_allows_resend(tmp_path: Path) -> None:
     state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
     state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/", prompt_sha256="abc")
-    with pytest.raises(RuntimeError, match="resume-safe chat_url is unavailable"):
-        state.require_prompt_send_allowed(force=False)
+    state.require_prompt_send_allowed(force=False)
 
 
 def test_state_writes_run_state_and_events(tmp_path: Path) -> None:
@@ -96,6 +94,9 @@ def test_prompt_hash_and_prompt_sent_guard(tmp_path: Path) -> None:
     assert state.prompt_sha256 == prompt_hash
     assert state.has_prompt_been_sent()
 
+    state.require_prompt_send_allowed(force=False)
+
+    state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/c/abc123", prompt_sha256=prompt_hash)
     with pytest.raises(RuntimeError):
         state.require_prompt_send_allowed(force=False)
 
@@ -293,3 +294,54 @@ def test_can_skip_prompt_send_rejects_invalid_chat_url(tmp_path: Path) -> None:
     state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
     state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/explore", prompt_sha256="abc")
     assert state.can_skip_prompt_send() is False
+
+
+def test_resume_empty_chat_allows_resend(tmp_path: Path) -> None:
+    state = ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
+    state.metadata["prompt_sent_at"] = "2026-06-30T00:00:00.000Z"
+    state.set_state("PROMPT_SENT", chat_url="https://chatgpt.com/", prompt_sha256="abc")
+    assert state.has_prompt_been_sent() is True
+    assert state.can_skip_prompt_send() is False
+    state.require_prompt_send_allowed(force=False)
+
+
+def test_open_new_chat_does_not_store_invalid_url(tmp_path: Path) -> None:
+    import importlib.util
+    import sys
+    from pathlib import Path as P
+
+    runner_path = P(__file__).resolve().parents[1] / "scripts" / "zworker_chatgpt_web_runner.py"
+    if not runner_path.exists():
+        pytest.skip("web runner script not found")
+
+    spec = importlib.util.spec_from_file_location("zworker_chatgpt_web_runner", runner_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    state = module.ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
+
+    class MockPage:
+        @property
+        def url(self):
+            return "https://chatgpt.com/"
+
+        def goto(self, *a, **kw):
+            pass
+
+        def wait_for_load_state(self, *a, **kw):
+            pass
+
+        def get_by_role(self, *a, **kw):
+            return _FakeLoc()
+
+        def get_by_text(self, *a, **kw):
+            return _FakeLoc()
+
+    class _FakeLoc:
+        def count(self):
+            return 0
+
+    module.open_new_chat(MockPage(), state, 1000)
+    assert state.chat_url == ""
+    assert state.state == "CHAT_CREATED"

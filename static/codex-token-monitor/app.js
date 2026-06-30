@@ -22,6 +22,8 @@ let currentWorkdirFilter = ALL_WORKDIRS_VALUE;
 // Track expanded step details across re-renders (auto-refresh)
 let expandedSteps = new Set();
 let openTextBlocks = new Set();
+// Grouped-by-request is the primary AI Calls view; flat audit remains available as a diagnostic toggle.
+let aiCallsViewMode = "grouped";
 
 // ── Formatters ──
 const nf = new Intl.NumberFormat("ru-RU");
@@ -503,10 +505,23 @@ function textBlock(title, kind, available, text, stepIndex) {
   return `<div class="text-block" id="${kind}-${stepIndex}">
     <div class="text-head" onclick="toggleText('${kind}-${stepIndex}')">
       <div><b>${title}</b> <span class="muted xsmall">${available ? 'hidden by default' : 'not available'}</span></div>
-      <button class="ghost" onclick="event.stopPropagation();toggleText('${kind}-${stepIndex}')">${available ? 'Показать' : '—'}</button>
+      <div class="text-actions">
+        ${available ? `<button class="ghost" onclick="event.stopPropagation();copyStepText(${Number(stepIndex)}, '${kind}')">Copy</button>` : ''}
+        <button class="ghost" onclick="event.stopPropagation();toggleText('${kind}-${stepIndex}')">${available ? 'Показать' : '—'}</button>
+      </div>
     </div>
     <div class="text-body">${available ? escapeHtml(text) : "Текст отсутствует в telemetry/log source."}</div>
   </div>`;
+}
+
+function copyStepText(stepIndex, kind) {
+  const step = (sessionDetailCache?.steps || []).find(item => Number(item?.step_index) === Number(stepIndex));
+  const block = kind === "answer" ? step?.assistant_answer : step?.user_prompt;
+  if (!block || block.available !== true) {
+    showToast("Текст недоступен");
+    return;
+  }
+  copyText(String(block.text || ""));
 }
 
 function wideBlock(label, suffix, content, stepIdx) {
@@ -558,77 +573,6 @@ function renderSteps() {
     const warnEl = document.createElement("div");
     warnEl.innerHTML = usageWarning;
     root.appendChild(warnEl);
-  }
-
-  // v2.8: Call-level audit — AI calls summary as primary truth above steps
-  if (s.ai_calls && s.ai_calls.length > 0) {
-    const cas = s.ai_calls_honest_audit_summary || {};
-    const buckets = cas.ai_calls_usage_buckets_by_input || {};
-    const isFallback = cas.degraded_from_fallback || false;
-    const callsSection = document.createElement("div");
-    callsSection.className = "ai-calls-section";
-    callsSection.innerHTML = `
-      <div class="box" style="margin-top:0">
-        <h3>AI Calls — честный call-level аудит (primary truth)${isFallback ? ' <span style="color:#c09853;font-weight:400">[DEGRADED: fallback]</span>' : ''}</h3>
-        <div class="muted xsmall" style="margin-bottom:6px">${isFallback
-          ? '<span style="color:#c09853;font-weight:600">ДЕГРАДАЦИЯ: rollout JSONL не найден.</span> Call-level модель восстановлена из logs_2.sqlite (fallback). Per-request usage отсутствует, все вызовы помечены zero-usage. Данные о стоимости недоступны. Это <b>не</b> raw request-level truth.'
-          : 'Каждый AI-вызов с live last_token_usage. Zero-usage посчитаны отдельно. Unmapped помечены явно.'}</div>
-        ${isFallback ? '<div class="warning-banner" style="background:#3a2a00;border:1px solid #c09853;color:#c09853;padding:6px 10px;margin-bottom:8px;border-radius:4px;font-size:12px">Сессия без rollout: call-level данные деградированы и не отражают реальную per-request стоимость.</div>' : ''}
-        <div class="metrics" style="margin-bottom:6px">
-          ${metric("Всего AI calls", nf.format(cas.ai_calls_total || 0))}
-          ${metric("С usage", nf.format(cas.ai_calls_with_usage || 0))}
-          ${metric("Zero usage", nf.format(cas.ai_calls_zero_usage || 0))}
-          ${metric(isFallback ? "Fallback" : "Unmapped", isFallback ? nf.format(cas.ai_calls_total || 0) : nf.format(cas.ai_calls_unmapped || 0))}
-          ${metric("Input (calls)", nf.format(cas.ai_calls_total_input_tokens || 0))}
-          ${metric("Output (calls)", nf.format(cas.ai_calls_total_output_tokens || 0))}
-          ${metric("Cost (calls)", (cas.ai_calls_total_cost_usd != null) ? money(cas.ai_calls_total_cost_usd) : "—")}
-        </div>
-        ${(() => {
-          let buckHtml = '<div class="muted xsmall" style="margin-top:4px">Buckets (по input_tokens):</div><div class="pills" style="flex-wrap:wrap">';
-          Object.entries(buckets).forEach(([k, v]) => {
-            const label = k.replace(/_/g, ' ');
-            buckHtml += '<span class="pill">' + label + ': ' + v.count + '</span>';
-          });
-          buckHtml += '</div>';
-          return buckHtml;
-        })()}
-        <button class="small" style="margin-top:6px" onclick="var el=document.getElementById('aiCallsTable');el.style.display=el.style.display==='none'?'block':'none'">Показать таблицу AI calls</button>
-        <div id="aiCallsTable" style="display:none;max-height:400px;overflow:auto;margin-top:6px">
-          <table style="width:100%;border-collapse:collapse;font-size:11px">
-            <thead><tr style="background:#2a2a2a">
-              <th style="text-align:right;padding:2px 4px">#</th>
-              <th style="text-align:left;padding:2px 4px">Model</th>
-              <th style="text-align:right;padding:2px 4px">Step</th>
-              <th style="text-align:right;padding:2px 4px">Input</th>
-              <th style="text-align:right;padding:2px 4px">Cached</th>
-              <th style="text-align:right;padding:2px 4px">Output</th>
-              <th style="text-align:right;padding:2px 4px">Reasoning</th>
-              <th style="text-align:right;padding:2px 4px">Cost</th>
-              <th style="text-align:center;padding:2px 4px">Zero?</th>
-              <th style="text-align:center;padding:2px 4px">Map conf</th>
-            </tr></thead><tbody>
-            ${s.ai_calls.map(function(c) {
-              const cost = c.estimated_cost || {};
-              const usage = c.usage || {};
-              const zeroMark = c.is_zero_usage ? '<span style="color:#c09853">zero</span>' : '<span style="color:#6a6">usage</span>';
-              const mapColor = c.mapping_confidence === 'unmapped' ? '#c44' : (c.mapping_confidence === 'medium' ? '#cc4' : (c.mapping_confidence === 'fallback_logs_only' ? '#c09853' : '#4a4'));
-              return '<tr style="' + (c.is_zero_usage ? 'opacity:0.5' : '') + '">' +
-                '<td style="text-align:right;padding:1px 4px">' + c.call_index + '</td>' +
-                '<td style="padding:1px 4px">' + escapeHtml(c.model) + '</td>' +
-                '<td style="text-align:right;padding:1px 4px">' + (c.step_index || '—') + '</td>' +
-                '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.input_tokens || 0) + '</td>' +
-                '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.cached_tokens || 0) + '</td>' +
-                '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.output_tokens || 0) + '</td>' +
-                '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.reasoning_tokens || 0) + '</td>' +
-                '<td style="text-align:right;padding:1px 4px;font-weight:600">' + (cost.estimated_total_cost_usd != null ? money(cost.estimated_total_cost_usd) : '—') + '</td>' +
-                '<td style="text-align:center;padding:1px 4px">' + zeroMark + '</td>' +
-                '<td style="text-align:center;padding:1px 4px;color:' + mapColor + '">' + escapeHtml(c.mapping_confidence) + '</td>' +
-                '</tr>';
-            }).join("")}
-            </tbody></table>
-          </div>
-      </div>`;
-    root.appendChild(callsSection);
   }
 
   // ── v2.9: honesty warnings — session-level ──
@@ -1750,6 +1694,189 @@ function buildStepExportData(step, session) {
   };
 }
 
+
+function aiCallFiniteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function aiCallStepIndex(value) {
+  const number = aiCallFiniteNumber(value);
+  return number !== null && Number.isInteger(number) && number > 0 ? number : null;
+}
+
+function aiCallCompleteSum(items, getter) {
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return 0;
+  let total = 0;
+  for (const item of list) {
+    const value = aiCallFiniteNumber(getter(item));
+    if (value === null) return null;
+    total += value;
+  }
+  return total;
+}
+
+function aiCallUsageField(call, key) {
+  const usage = call?.usage || {};
+  if (key === "non_cached_input_tokens") {
+    const explicit = aiCallFiniteNumber(usage.non_cached_input_tokens);
+    if (explicit !== null) return explicit;
+    const input = aiCallFiniteNumber(usage.input_tokens);
+    const cached = aiCallFiniteNumber(usage.cached_tokens);
+    return input !== null && cached !== null ? Math.max(input - cached, 0) : null;
+  }
+  return aiCallFiniteNumber(usage[key]);
+}
+
+function aiCallCostField(call, key) {
+  const cost = call?.estimated_cost || {};
+  if (key === "estimated_cached_input_cost_usd") {
+    return aiCallFiniteNumber(cost.estimated_cached_input_cost_usd ?? cost.estimated_cached_cost_usd);
+  }
+  return aiCallFiniteNumber(cost[key]);
+}
+
+function sessionTotalCostForAiCallPercent(session) {
+  // Percent-of-total is intentionally based on the session total, not on a coerced call sum.
+  // Unknown and zero denominators stay null so the UI/export never invents a percentage.
+  return aiCallFiniteNumber(session?.summary?.estimated_total_cost_usd);
+}
+
+function aggregateAiCalls(calls, session) {
+  const list = Array.isArray(calls) ? calls : [];
+  const totalCost = aiCallCompleteSum(list, call => aiCallCostField(call, "estimated_total_cost_usd"));
+  const sessionTotalCost = sessionTotalCostForAiCallPercent(session);
+  const percentOfSessionTotal = (
+    totalCost !== null && sessionTotalCost !== null && sessionTotalCost > 0
+  ) ? totalCost / sessionTotalCost : null;
+
+  return {
+    ai_calls_count: list.length,
+    ai_calls_with_usage_count: list.filter(call => call?.is_zero_usage !== true).length,
+    ai_calls_zero_usage_count: list.filter(call => call?.is_zero_usage === true).length,
+    usage: {
+      input_tokens: aiCallCompleteSum(list, call => aiCallUsageField(call, "input_tokens")),
+      cached_tokens: aiCallCompleteSum(list, call => aiCallUsageField(call, "cached_tokens")),
+      non_cached_input_tokens: aiCallCompleteSum(list, call => aiCallUsageField(call, "non_cached_input_tokens")),
+      output_tokens: aiCallCompleteSum(list, call => aiCallUsageField(call, "output_tokens")),
+      reasoning_tokens: aiCallCompleteSum(list, call => aiCallUsageField(call, "reasoning_tokens")),
+      tool_tokens: aiCallCompleteSum(list, call => aiCallUsageField(call, "tool_tokens")),
+    },
+    estimated_cost: {
+      estimated_total_cost_usd: totalCost,
+      estimated_input_cost_usd: aiCallCompleteSum(list, call => aiCallCostField(call, "estimated_input_cost_usd")),
+      estimated_cached_input_cost_usd: aiCallCompleteSum(list, call => aiCallCostField(call, "estimated_cached_input_cost_usd")),
+      estimated_output_cost_usd: aiCallCompleteSum(list, call => aiCallCostField(call, "estimated_output_cost_usd")),
+    },
+    session_total_cost_usd: sessionTotalCost,
+    percent_of_session_total: percentOfSessionTotal,
+    percent_basis: "session.summary.estimated_total_cost_usd",
+    mapping_confidences: [...new Set(list.map(call => String(call?.mapping_confidence || "unknown")))],
+  };
+}
+
+function buildAiCallsGrouping(session) {
+  const steps = Array.isArray(session?.steps) ? session.steps : [];
+  const calls = Array.isArray(session?.ai_calls) ? session.ai_calls : [];
+  const validStepIndices = new Set(
+    steps.map(step => aiCallStepIndex(step?.step_index)).filter(index => index !== null)
+  );
+  const byStep = new Map();
+  validStepIndices.forEach(index => byStep.set(index, []));
+  const unmapped = [];
+
+  calls.forEach(call => {
+    const index = aiCallStepIndex(call?.step_index);
+    const explicitlyUnmapped = String(call?.mapping_confidence || "").toLowerCase() === "unmapped";
+    if (!explicitlyUnmapped && index !== null && validStepIndices.has(index)) {
+      byStep.get(index).push(call);
+    } else {
+      unmapped.push(call);
+    }
+  });
+
+  return { byStep, unmapped };
+}
+
+function buildAiCallStepMismatch(step, calls, session) {
+  if (session?.ai_calls_honest_audit_summary?.degraded_from_fallback) {
+    return {
+      status: "not_comparable",
+      mismatch: false,
+      comparable: false,
+      differences: ["fallback data has no request-level usage or cost"],
+    };
+  }
+
+  const aggregate = aggregateAiCalls(calls, session);
+  const expectedUsage = step?.full_step_usage || {};
+  const expectedCost = step?.full_step_cost || {};
+  const differences = [];
+  let comparable = false;
+
+  let expectedCount = aiCallFiniteNumber(expectedUsage.request_count);
+  if (expectedCount === null && Array.isArray(step?.request_usage_items)) {
+    expectedCount = step.request_usage_items.length;
+  }
+  if (expectedCount !== null) {
+    comparable = true;
+    if (aggregate.ai_calls_count !== expectedCount) {
+      differences.push(`calls ${aggregate.ai_calls_count} ≠ ${expectedCount}`);
+    }
+  }
+
+  [
+    ["input_tokens", "input"],
+    ["cached_tokens", "cached"],
+    ["non_cached_input_tokens", "non-cached"],
+    ["output_tokens", "output"],
+    ["reasoning_tokens", "reasoning"],
+    ["tool_tokens", "tool"],
+  ].forEach(([key, label]) => {
+    const actual = aiCallFiniteNumber(aggregate.usage[key]);
+    const expected = aiCallFiniteNumber(expectedUsage[key]);
+    if (actual === null || expected === null) return;
+    comparable = true;
+    if (actual !== expected) differences.push(`${label} ${actual} ≠ ${expected}`);
+  });
+
+  const actualTotalCost = aiCallFiniteNumber(aggregate.estimated_cost.estimated_total_cost_usd);
+  const expectedTotalCost = expectedCost.available === false ? null : aiCallFiniteNumber(expectedCost.total_usd);
+  if (actualTotalCost !== null && expectedTotalCost !== null) {
+    comparable = true;
+    if (Math.abs(actualTotalCost - expectedTotalCost) > 0.000001) {
+      differences.push(`cost ${actualTotalCost.toFixed(6)} ≠ ${expectedTotalCost.toFixed(6)}`);
+    }
+  }
+
+  return {
+    status: !comparable ? "not_comparable" : (differences.length ? "mismatch" : "matched"),
+    mismatch: differences.length > 0,
+    comparable,
+    differences,
+  };
+}
+
+function buildGroupedAiCallsExport(session, selectedSteps) {
+  const grouping = buildAiCallsGrouping(session);
+  const stepList = Array.isArray(selectedSteps) ? selectedSteps : [];
+  return {
+    grouped_steps: stepList.map(step => {
+      const stepIndex = aiCallStepIndex(step?.step_index);
+      const calls = stepIndex === null ? [] : (grouping.byStep.get(stepIndex) || []);
+      return {
+        ...buildStepExportData(step, session),
+        ai_calls: calls,
+        ai_calls_summary: aggregateAiCalls(calls, session),
+        ai_calls_mismatch: buildAiCallStepMismatch(step, calls, session),
+      };
+    }),
+    unmapped_ai_calls: grouping.unmapped,
+  };
+}
+
 function buildSessionExportJson(session, steps) {
   const src = currentSource();
   const selectedStepsList = steps || [];
@@ -1779,6 +1906,7 @@ function buildSessionExportJson(session, steps) {
     ai_calls_unmapped_count: session?.ai_calls_unmapped_count || 0,
     ai_calls_honest_audit_summary: session?.ai_calls_honest_audit_summary || {},
     steps: selectedStepsList.map(step => buildStepExportData(step, session)),
+    ...buildGroupedAiCallsExport(session, selectedStepsList),
   };
 }
 
@@ -2827,429 +2955,6 @@ async function applySessionFilters() {
   renderSelection();
 }
 
-function renderHeader() {
-  const s = sessionDetailCache;
-  if (!s) {
-    document.getElementById("title").textContent = "Выберите сессию";
-    const selectedSession = currentSession();
-    document.getElementById("title").textContent = selectedSession && sessionDetailLoading
-      ? "Загрузка сессии..."
-      : document.getElementById("title").textContent;
-    document.getElementById("meta").textContent = selectedSession ? selectedSession.title : "";
-    document.getElementById("stats").innerHTML = "";
-    return;
-  }
-  const z = metricsForSession(s);
-  const src = currentSource();
-  const sourceKind = s.source_kind || "archive";
-  const kindLabel = sourceKind === "live" ? "live" : "архив";
-  const hasAmbiguousLiveSteps = sourceKind === "live" && (s.steps || []).some(t => t?.usage?.available === false);
-  const usageNote = hasAmbiguousLiveSteps ? " · часть шагов без точной per-step разбивки" : "";
-
-  document.getElementById("title").textContent = s.title;
-  document.getElementById("meta").textContent = `${src ? src.name : ""} [${kindLabel}] · ${s.id} · ${s.date} · ${s.workdir}${usageNote}`;
-  document.getElementById("stats").innerHTML = [
-    stat("Cost", money(z.cost), "good"),
-    stat("Input", nf.format(z.input), "blue"),
-    stat("Cached", nf.format(z.cached), "good"),
-    stat("Non-cached", nf.format(z.non), "warn"),
-    stat("Cache", pct(z.ratio), "blue"),
-    stat("Output", nf.format(z.output)),
-  ].join("");
-}
-
-function renderSessions() {
-  const list = filteredSessions();
-  const root = document.getElementById("sessions");
-  document.getElementById("sessionCount").textContent = `${list.length}/${sessionsCache.length}`;
-  document.getElementById("archivedToggleBtn").style.borderColor = showArchived ? "rgba(124,156,255,.75)" : "";
-  root.innerHTML = "";
-
-  if (!list.length) {
-    root.innerHTML = `<div class="empty small">Нет подходящих сессий</div>`;
-    return;
-  }
-
-  if (!list.find(s => s.id === currentSessionId)) currentSessionId = preferredSessionId(list);
-
-  list.forEach(s => {
-    const costText = s.total_cost_usd == null ? "—" : money(s.total_cost_usd);
-    const stepText = s.step_count == null ? "—" : nf.format(s.step_count);
-    const el = document.createElement("div");
-    const sourceKind = s.source_kind || "archive";
-    const badgeCls = sourceKind === "live" ? "green" : "purple";
-    const sourceLabel = sourceKind === "live" ? "live" : "архив";
-    const cbadges = (s.confirmation_badges || []).map(b => `<span class="pill yellow">${b}</span>`).join("");
-
-    el.className = "session" + (s.id === currentSessionId ? " active" : "");
-    el.onclick = async () => {
-      currentSessionId = s.id;
-      selected.clear();
-      expandedSteps.clear();
-      openTextBlocks.clear();
-      sessionDetailCache = null;
-      sessionDetailLoading = true;
-      renderAll();
-      await loadSessionDetail();
-      renderAll();
-    };
-    el.innerHTML = `
-      <div class="session-head">
-        <div>
-          <div class="session-title">${escapeHtml(s.title)}</div>
-          <div class="session-id muted xsmall mono">${escapeHtml(s.id)}</div>
-          <div class="session-date">${escapeHtml(formatSessionDate(s))}</div>
-        </div>
-        <div class="row-actions">
-          <button class="icon ghost" title="Архивировать/Вернуть" onclick="event.stopPropagation();toggleArchive('${s.id}')">🗄</button>
-          <span class="pill blue">${stepText}</span>
-        </div>
-      </div>
-      <div class="pills">
-        <span class="pill ${badgeCls}">${sourceLabel}</span>
-        <span class="pill">${escapeHtml(s.model)}</span>
-        <span class="pill purple">${escapeHtml(s.reasoning)}</span>
-        <span class="pill ${s.warnings_count ? 'yellow' : 'green'}">${s.warnings_count} warn</span>
-        ${cbadges}
-        ${s.has_normalized ? '<span class="pill green">normalized</span>' : (s.has_parsed ? '<span class="pill">parsed</span>' : '')}
-      </div>
-      <div class="compact-metrics">
-        <div class="cmini"><span>Cost</span><b>${costText}</b></div>
-        <div class="cmini"><span>Steps</span><b>${stepText}</b></div>
-        <div class="cmini"><span>Model</span><b>${escapeHtml(s.model)}</b></div>
-      </div>`;
-    root.appendChild(el);
-  });
-}
-
-function renderSteps() {
-  const root = document.getElementById("steps");
-  root.innerHTML = "";
-  const s = sessionDetailCache;
-  if (!s) {
-    root.innerHTML = `<div class="loading">${currentSession() && sessionDetailLoading ? "Загрузка шагов..." : "Выберите сессию слева"}</div>`;
-    return;
-  }
-  if (!s.steps || !s.steps.length) {
-    root.innerHTML = `<div class="loading">Для этой сессии шаги пока не найдены</div>`;
-    return;
-  }
-
-  const sourceKind = s.source_kind || "archive";
-  const hasAmbiguousLiveSteps = sourceKind === "live" && s.steps.some(t => t?.usage?.available === false);
-  const usageWarning = hasAmbiguousLiveSteps
-    ? `<div class="empty small" style="margin-bottom:8px">⚠ Для части live-шагов точная per-step разбивка не подтверждена. В таких местах смотри totals всей сессии.</div>`
-    : "";
-
-  if (usageWarning) {
-    const warnEl = document.createElement("div");
-    warnEl.innerHTML = usageWarning;
-    root.appendChild(warnEl);
-  }
-
-  const timelineByStep = new Map();
-  (s.timeline_events || []).forEach(evt => {
-    const key = Number(evt.after_step_index || 0);
-    if (!timelineByStep.has(key)) timelineByStep.set(key, []);
-    timelineByStep.get(key).push(evt);
-  });
-
-  s.steps.forEach(t => {
-    const el = document.createElement("div");
-    const idx = t.step_index;
-    el.className = "step" + (selected.has(idx) ? " selected" : "");
-    el.id = "step-" + idx;
-    const u = t.usage || {};
-    const env = t.environment || {};
-    const usageAvail = u.available !== false;
-    const usageNote = (!usageAvail && u.note) ? `<span class="muted xsmall"> (${u.note})</span>` : "";
-    const postBadges = (t.post_step_badges || []).map(b => `<span class="pill yellow">${escapeHtml(b)}</span>`).join("");
-
-    el.innerHTML = `
-      <div class="step-head" onclick="toggleDetails(${idx})">
-        <input type="checkbox" ${selected.has(idx) ? "checked" : ""} onclick="event.stopPropagation()" onchange="toggleSelect(${idx})">
-        <div>
-          <div class="step-title">
-            <b>Step ${idx}</b>
-            <span class="pill blue">${escapeHtml(t.model)}</span>
-            <span class="pill purple">${escapeHtml(t.reasoning_effort)}</span>
-            ${usageAvail ? '' : '<span class="pill yellow" title="Для этого шага нет подтвержденной per-step token delta">usage⚠</span>'}
-            <span class="pill ${(t.warnings || []).length ? 'yellow' : 'green'}">${(t.warnings || []).length} warn</span>
-            ${postBadges}
-          </div>
-          <div class="metrics">
-            ${metric("Cost", usageMoney(u, "estimated_total_cost_usd"))}
-            ${metric("Input", usageNumber(u, "input_tokens"))}
-            ${metric("Cached", usageNumber(u, "cached_tokens"))}
-            ${metric("Non-cached", usageNumber(u, "non_cached_input_tokens"))}
-            ${metric("Cache", usagePercent(u, "cached_ratio"))}
-            ${metric("Output", usageNumber(u, "output_tokens"))}
-            ${metric("Reasoning", usageNumber(u, "reasoning_tokens"))}
-            ${metric("MCP", nf.format(env.observed_mcp_server_count))}
-          </div>
-          <div class="preview-row">
-            <div class="preview">
-              <span class="label">${t.user_prompt.kind === 'system_composed' ? 'System prompt' : 'Prompt'}</span>
-              <div class="text">${t.user_prompt.available ? escapeHtml(ellipsis(t.user_prompt.text, 90)) : "—"}</div>
-            </div>
-            <div class="preview">
-              <span class="label">Answer</span>
-              <div class="text">${t.assistant_answer.available ? escapeHtml(ellipsis(t.assistant_answer.text, 90)) : "—"}</div>
-            </div>
-          </div>
-        </div>
-        <div class="row-actions">
-          <button class="icon" onclick="event.stopPropagation();openStepPopup(${idx})">Подробно</button>
-          <button class="icon" onclick="event.stopPropagation();copyStepSummary(${idx})">Copy</button>
-        </div>
-      </div>
-      <div class="detail">
-        ${textBlock(t.user_prompt.kind === 'system_composed' ? "System prompt (composed)" : "User prompt", "prompt", t.user_prompt.available, t.user_prompt.text, idx)}
-        ${textBlock("Assistant answer", "answer", t.assistant_answer.available, t.assistant_answer.text, idx)}
-        <div class="detail-grid">
-          <div class="box">
-            <h3>Tokens${usageNote}</h3>
-            ${kv("input_tokens", usageNumber(u, "input_tokens"))}
-            ${kv("cached_tokens", usageNumber(u, "cached_tokens"))}
-            ${kv("non_cached", usageNumber(u, "non_cached_input_tokens"))}
-            ${kv("cached_ratio", usagePercent(u, "cached_ratio"))}
-            ${kv("output_tokens", usageNumber(u, "output_tokens"))}
-            ${kv("reasoning_tokens", usageNumber(u, "reasoning_tokens"))}
-            ${kv("tool_tokens", usageNumber(u, "tool_tokens"))}
-          </div>
-          <div class="box">
-            <h3>Cost</h3>
-            ${kv("input_cost", usageMoney(u, "estimated_input_cost_usd"))}
-            ${kv("cached_cost", usageMoney(u, "estimated_cached_input_cost_usd"))}
-            ${kv("output_cost", usageMoney(u, "estimated_output_cost_usd"))}
-            ${kv("total_cost", usageMoney(u, "estimated_total_cost_usd"))}
-            ${kv("pricing", "config/token_pricing.json")}
-          </div>
-          <div class="box">
-            <h3>Environment</h3>
-            ${kv("thread_id", env.thread_id)}
-            ${kv("turn_id", t.turn_id)}
-            ${kv("MCP servers", (env.observed_mcp_servers || []).join(", ") || "none")}
-            ${kv("plugins_count", env.enabled_plugins_count)}
-            ${kv("skills_count", env.enabled_skills_count)}
-            ${kv("repo_context", env.repo_context_status)}
-            ${kv("warnings", (t.warnings || []).join(", ") || "none")}
-          </div>
-        </div>
-      </div>`;
-    root.appendChild(el);
-
-    const extraEvents = timelineByStep.get(Number(idx)) || [];
-    extraEvents.forEach(evt => {
-      const wrap = document.createElement("div");
-      wrap.innerHTML = renderTimelineEvent(evt);
-      root.appendChild(wrap.firstElementChild);
-    });
-  });
-}
-
-function renderHeader() {
-  const s = sessionDetailCache;
-  if (!s) {
-    document.getElementById("title").textContent = "Выберите сессию";
-    const selectedSession = currentSession();
-    document.getElementById("title").textContent = selectedSession && sessionDetailLoading
-      ? "Загрузка сессии..."
-      : document.getElementById("title").textContent;
-    document.getElementById("meta").textContent = selectedSession ? selectedSession.title : "";
-    document.getElementById("stats").innerHTML = "";
-    return;
-  }
-
-  const z = metricsForSession(s);
-  const src = currentSource();
-  const sourceKind = s.source_kind || "archive";
-  const kindLabel = sourceKind === "live" ? "live" : "архив";
-  const hasAmbiguousLiveSteps = sourceKind === "live" && (s.steps || []).some(t => t?.usage?.available === false);
-  const usageNoteParts = [];
-  if (sourceKind === "live" && (s.summary?.usage_basis || s.summary?.step_usage_basis)) {
-    usageNoteParts.push("live totals = cumulative, step usage = request-level");
-  }
-  if (hasAmbiguousLiveSteps) {
-    usageNoteParts.push("часть шагов без точной per-step разбивки");
-  }
-  const usageNote = usageNoteParts.length ? ` · ${usageNoteParts.join(" · ")}` : "";
-
-  document.getElementById("title").textContent = s.title;
-  document.getElementById("meta").textContent = `${src ? src.name : ""} [${kindLabel}] · ${s.id} · ${s.date} · ${s.workdir}${usageNote}`;
-  document.getElementById("stats").innerHTML = [
-    stat("Cost", money(z.cost), "good"),
-    stat("Input", nf.format(z.input), "blue"),
-    stat("Cached", nf.format(z.cached), "good"),
-    stat("Non-cached", nf.format(z.non), "warn"),
-    stat("Cache", pct(z.ratio), "blue"),
-    stat("Output", nf.format(z.output)),
-  ].join("");
-}
-
-function renderSteps() {
-  const root = document.getElementById("steps");
-  root.innerHTML = "";
-  const s = sessionDetailCache;
-  if (!s) {
-    root.innerHTML = `<div class="loading">${currentSession() && sessionDetailLoading ? "Загрузка шагов..." : "Выберите сессию слева"}</div>`;
-    return;
-  }
-  if (!s.steps || !s.steps.length) {
-    root.innerHTML = `<div class="loading">Для этой сессии шаги пока не найдены</div>`;
-    return;
-  }
-
-  const sourceKind = s.source_kind || "archive";
-  const hasAmbiguousLiveSteps = sourceKind === "live" && s.steps.some(t => t?.usage?.available === false);
-  const summaryWarnings = buildTelemetryWarnings(s, null);
-  const usageWarning = hasAmbiguousLiveSteps
-    ? `<div class="empty small" style="margin-bottom:8px">⚠ Для части live-шагов точная per-step разбивка не подтверждена. В таких местах смотри totals всей сессии.</div>`
-    : "";
-  const telemetryWarning = summaryWarnings.length
-    ? `<div class="empty small" style="margin-bottom:8px">${summaryWarnings.map(w => `⚠ ${escapeHtml(w)}`).join("<br>")}</div>`
-    : "";
-
-  if (usageWarning) {
-    const warnEl = document.createElement("div");
-    warnEl.innerHTML = usageWarning;
-    root.appendChild(warnEl);
-  }
-  if (telemetryWarning) {
-    const telemetryEl = document.createElement("div");
-    telemetryEl.innerHTML = telemetryWarning;
-    root.appendChild(telemetryEl);
-  }
-
-  const timelineByStep = new Map();
-  (s.timeline_events || []).forEach(evt => {
-    const key = Number(evt.after_step_index || 0);
-    if (!timelineByStep.has(key)) timelineByStep.set(key, []);
-    timelineByStep.get(key).push(evt);
-  });
-
-  s.steps.forEach(t => {
-    const el = document.createElement("div");
-    const idx = t.step_index;
-    el.className = "step" + (selected.has(idx) ? " selected" : "");
-    el.id = "step-" + idx;
-    const u = t.usage || {};
-    const env = t.environment || {};
-    const usageAvail = u.available !== false;
-    const usageNote = (!usageAvail && u.note) ? `<span class="muted xsmall"> (${u.note})</span>` : "";
-    const postBadges = (t.post_step_badges || []).map(b => `<span class="pill yellow">${escapeHtml(b)}</span>`).join("");
-
-    el.innerHTML = `
-      <div class="step-head" onclick="toggleDetails(${idx})">
-        <input type="checkbox" ${selected.has(idx) ? "checked" : ""} onclick="event.stopPropagation()" onchange="toggleSelect(${idx})">
-        <div>
-          <div class="step-title">
-            <b>Step ${idx}</b>
-            <span class="pill blue">${escapeHtml(t.model)}</span>
-            <span class="pill purple">${escapeHtml(t.reasoning_effort)}</span>
-            ${usageAvail ? '' : '<span class="pill yellow" title="Для этого шага нет подтвержденной per-step token delta">usage⚠</span>'}
-            <span class="pill ${(t.warnings || []).length ? 'yellow' : 'green'}">${(t.warnings || []).length} warn</span>
-            ${postBadges}
-          </div>
-          <div class="metrics">
-            ${metric("Cost", usageMoney(u, "estimated_total_cost_usd"))}
-            ${buildCumulativeCostMetric(u)}
-            ${metric("Input", usageNumber(u, "input_tokens"))}
-            ${buildCumulativeInputMetric(u)}
-            ${metric("Cached", usageNumber(u, "cached_tokens"))}
-            ${metric("Non-cached", usageNumber(u, "non_cached_input_tokens"))}
-            ${metric("Cache", usagePercent(u, "cached_ratio"))}
-            ${metric("Output", usageNumber(u, "output_tokens"))}
-            ${metric("Reasoning", usageNumber(u, "reasoning_tokens"))}
-            ${metric("MCP", nf.format(env.observed_mcp_server_count))}
-          </div>
-          <div class="preview-row">
-            <div class="preview">
-              <span class="label">${t.user_prompt.kind === 'system_composed' ? 'System prompt' : 'Prompt'}</span>
-              <div class="text">${t.user_prompt.available ? escapeHtml(ellipsis(t.user_prompt.text, 90)) : "—"}</div>
-            </div>
-            <div class="preview">
-              <span class="label">Answer</span>
-              <div class="text">${t.assistant_answer.available ? escapeHtml(ellipsis(t.assistant_answer.text, 90)) : "—"}</div>
-            </div>
-          </div>
-        </div>
-        <div class="row-actions">
-          <button class="icon" onclick="event.stopPropagation();openStepPopup(${idx})">Подробно</button>
-          <button class="icon" onclick="event.stopPropagation();copyStepSummary(${idx})">Copy</button>
-        </div>
-      </div>
-      <div class="detail">
-        ${textBlock(t.user_prompt.kind === 'system_composed' ? "System prompt (composed)" : "User prompt", "prompt", t.user_prompt.available, t.user_prompt.text, idx)}
-        ${textBlock("Assistant answer", "answer", t.assistant_answer.available, t.assistant_answer.text, idx)}
-        ${wideBlock("Сводка", "summary", buildStepSummaryBlock(t), idx)}
-        <div class="detail-grid">
-          <div class="box">
-            <h3>Tokens${usageNote}</h3>
-            ${kv("input_tokens", usageNumber(u, "input_tokens"))}
-            ${kv("cached_tokens", usageNumber(u, "cached_tokens"))}
-            ${kv("non_cached", usageNumber(u, "non_cached_input_tokens"))}
-            ${kv("cached_ratio", usagePercent(u, "cached_ratio"))}
-            ${kv("output_tokens", usageNumber(u, "output_tokens"))}
-            ${kv("reasoning_tokens", usageNumber(u, "reasoning_tokens"))}
-            ${kv("tool_tokens", usageNumber(u, "tool_tokens"))}
-            <hr class="thin">
-            ${kv("cumul_input", usageNumber((u.cumulative_usage_after_step || {}), "input_tokens"))}
-            ${kv("cumul_cached", usageNumber((u.cumulative_usage_after_step || {}), "cached_tokens"))}
-            ${kv("cumul_output", usageNumber((u.cumulative_usage_after_step || {}), "output_tokens"))}
-            <hr class="thin">
-            ${kv("confirmation", usageConfirmationLabel(u))}
-            ${kv("source", u.source || "—")}
-          </div>
-          <div class="box">
-            <h3>Cost</h3>
-            ${kv("input_cost", usageMoney(u, "estimated_input_cost_usd"))}
-            ${kv("cached_cost", usageMoney(u, "estimated_cached_input_cost_usd"))}
-            ${kv("output_cost", usageMoney(u, "estimated_output_cost_usd"))}
-            ${kv("total_cost", usageMoney(u, "estimated_total_cost_usd"))}
-            ${kv("cumulative_cost", usageMoney(u, "estimated_cumulative_cost_usd"))}
-            ${kv("pricing", "config/token_pricing.json")}
-          </div>
-          <div class="box">
-            <h3>Environment</h3>
-            ${kv("thread_id", env.thread_id)}
-            ${kv("cwd", env.cwd || "—")}
-            ${kv("timezone", env.timezone || "—")}
-            ${kv("approval_policy", env.approval_policy || "—")}
-            ${kv("sandbox_policy", env.sandbox_policy || "—")}
-            ${kv("permission_profile", env.permission_profile || "—")}
-            ${kv("model_context_window", env.model_context_window || "—")}
-            ${kv("turn_id", t.turn_id)}
-            ${kv("MCP servers", (env.observed_mcp_servers || []).join(", ") || "none")}
-            ${kv("plugins_count", env.enabled_plugins_count)}
-            ${kv("skills_count", env.enabled_skills_count)}
-            ${kv("repo_context", env.repo_context_status)}
-            ${kv("warnings", buildTelemetryWarnings(s, t).join(" | ") || "none")}
-          </div>
-        </div>
-      </div>`;
-    root.appendChild(el);
-
-    const extraEvents = timelineByStep.get(Number(idx)) || [];
-    extraEvents.forEach(evt => {
-      const wrap = document.createElement("div");
-      wrap.innerHTML = renderTimelineEvent(evt);
-      root.appendChild(wrap.firstElementChild);
-    });
-  });
-
-  // Restore expanded step details after re-render (auto-refresh)
-  expandedSteps.forEach(i => {
-    const el = document.getElementById("step-" + i);
-    if (el) el.classList.add("open");
-  });
-  // Restore open text blocks (prompt, answer, stepcost, activity)
-  openTextBlocks.forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.classList.add("open");
-  });
-}
-
 // ── Event listeners ──
 document.getElementById("sourceSelect").addEventListener("change", async e => {
   currentSourceId = e.target.value;
@@ -3307,98 +3012,278 @@ async function init() {
   await refreshAll();
 }
 
-function renderAiCallsSectionIntoSteps(root, session) {
-  if (!root || !session || !session.ai_calls || !session.ai_calls.length) return;
-  if (root.querySelector(".ai-calls-section")) return;
+function formatAiCallNumber(value) {
+  const number = aiCallFiniteNumber(value);
+  return number === null ? "—" : nf.format(number);
+}
 
-  const cas = session.ai_calls_honest_audit_summary || {};
+function formatAiCallMoney(value) {
+  const number = aiCallFiniteNumber(value);
+  return number === null ? "—" : money(number);
+}
+
+function formatAiCallPercent(value) {
+  const number = aiCallFiniteNumber(value);
+  return number === null ? "—" : `${(number * 100).toFixed(1)}%`;
+}
+
+function aiCallMappingClass(confidence) {
+  const value = String(confidence || "unknown").toLowerCase();
+  if (value === "unmapped") return "red";
+  if (value === "medium" || value === "fallback_logs_only") return "yellow";
+  return value === "high" ? "green" : "";
+}
+
+function renderAiCallTable(calls, session, showStepColumn) {
+  const list = Array.isArray(calls) ? calls : [];
+  if (!list.length) {
+    return '<div class="ai-calls-empty muted small">AI calls в этой группе отсутствуют.</div>';
+  }
+  const rows = list.map(call => {
+    const usage = call?.usage || {};
+    const callSummary = aggregateAiCalls([call], session);
+    const mapNote = escapeHtml(call?.mapping_note || "");
+    const timestamp = call?.timestamp ? new Date(call.timestamp).toLocaleTimeString("ru-RU") : "—";
+    return `<tr class="${call?.is_zero_usage ? 'ai-call-zero' : ''}">
+      <td class="num">${formatAiCallNumber(call?.call_index)}</td>
+      <td>${escapeHtml(timestamp)}</td>
+      <td>${escapeHtml(call?.model || "unknown")}</td>
+      ${showStepColumn ? `<td class="num">${formatAiCallNumber(call?.step_index)}</td>` : ''}
+      <td class="num">${formatAiCallNumber(usage.input_tokens)}</td>
+      <td class="num">${formatAiCallNumber(usage.cached_tokens)}</td>
+      <td class="num">${formatAiCallNumber(aiCallUsageField(call, "non_cached_input_tokens"))}</td>
+      <td class="num">${formatAiCallNumber(usage.output_tokens)}</td>
+      <td class="num">${formatAiCallNumber(usage.reasoning_tokens)}</td>
+      <td class="num">${formatAiCallNumber(usage.tool_tokens)}</td>
+      <td class="num strong">${formatAiCallMoney(aiCallCostField(call, "estimated_total_cost_usd"))}</td>
+      <td class="num">${formatAiCallPercent(callSummary.percent_of_session_total)}</td>
+      <td><span class="pill ${aiCallMappingClass(call?.mapping_confidence)}" title="${mapNote}">${escapeHtml(call?.mapping_confidence || "unknown")}</span></td>
+    </tr>`;
+  }).join("");
+
+  return `<div class="ai-calls-table-wrap">
+    <table class="ai-calls-table">
+      <thead><tr>
+        <th class="num">#</th><th>Time</th><th>Model</th>
+        ${showStepColumn ? '<th class="num">Step</th>' : ''}
+        <th class="num">Input</th><th class="num">Cached</th><th class="num">Non-cached</th>
+        <th class="num">Output</th><th class="num">Reasoning</th><th class="num">Tool</th>
+        <th class="num">Cost</th><th class="num">% session</th><th>Map</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderAiCallsOverview(session) {
+  const calls = Array.isArray(session?.ai_calls) ? session.ai_calls : [];
+  const cas = session?.ai_calls_honest_audit_summary || {};
+  const grouping = buildAiCallsGrouping(session);
+  const isFallback = cas.degraded_from_fallback === true;
   const buckets = cas.ai_calls_usage_buckets_by_input || {};
-  const isFallback = !!cas.degraded_from_fallback;
-  const callsSection = document.createElement("div");
-  callsSection.className = "ai-calls-section";
-  callsSection.innerHTML = `
-    <div class="box" style="margin-top:0;margin-bottom:8px">
-      <h3>AI Calls - honest call-level audit (primary truth)${isFallback ? ' <span style="color:#c09853;font-weight:400">[DEGRADED: fallback]</span>' : ''}</h3>
-      <div class="muted xsmall" style="margin-bottom:6px">${isFallback
-        ? '<span style="color:#c09853;font-weight:600">DEGRADED:</span> rollout JSONL not found. Call-level view was reconstructed from logs fallback and is not raw request-level truth.'
-        : 'Each AI call comes from live last_token_usage. Zero-usage is counted separately. Unmapped calls are marked explicitly.'}</div>
-      ${isFallback ? '<div class="warning-banner" style="background:#3a2a00;border:1px solid #c09853;color:#c09853;padding:6px 10px;margin-bottom:8px;border-radius:4px;font-size:12px">Fallback session: call-level data is degraded and does not reflect true per-request cost.</div>' : ''}
-      <div class="metrics" style="margin-bottom:6px">
-        ${metric("AI calls", nf.format(cas.ai_calls_total || 0))}
-        ${metric("With usage", nf.format(cas.ai_calls_with_usage || 0))}
-        ${metric("Zero usage", nf.format(cas.ai_calls_zero_usage || 0))}
-        ${metric(isFallback ? "Fallback" : "Unmapped", nf.format(isFallback ? (cas.ai_calls_total || 0) : (cas.ai_calls_unmapped || 0)))}
-        ${metric("Input", nf.format(cas.ai_calls_total_input_tokens || 0))}
-        ${metric("Output", nf.format(cas.ai_calls_total_output_tokens || 0))}
-        ${metric("Cost", cas.ai_calls_total_cost_usd != null ? money(cas.ai_calls_total_cost_usd) : "-")}
-      </div>
-      <div class="muted xsmall" style="margin-top:4px">Buckets by input_tokens:</div>
-      <div class="pills" style="flex-wrap:wrap;margin-bottom:6px">
-        ${Object.entries(buckets).map(([k, v]) => `<span class="pill">${escapeHtml(k.replace(/_/g, " "))}: ${nf.format((v && v.count) || 0)}</span>`).join("")}
-      </div>
-      <button class="small" style="margin-top:6px" onclick="var el=document.getElementById('aiCallsTable');el.style.display=el.style.display==='none'?'block':'none'">Show AI calls table</button>
-      <div id="aiCallsTable" style="display:none;max-height:400px;overflow:auto;margin-top:6px">
-        <table style="width:100%;border-collapse:collapse;font-size:11px">
-          <thead><tr style="background:#2a2a2a">
-            <th style="text-align:right;padding:2px 4px">#</th>
-            <th style="text-align:left;padding:2px 4px">Model</th>
-            <th style="text-align:right;padding:2px 4px">Step</th>
-            <th style="text-align:right;padding:2px 4px">Input</th>
-            <th style="text-align:right;padding:2px 4px">Cached</th>
-            <th style="text-align:right;padding:2px 4px">Output</th>
-            <th style="text-align:right;padding:2px 4px">Reasoning</th>
-            <th style="text-align:right;padding:2px 4px">Cost</th>
-            <th style="text-align:center;padding:2px 4px">Zero?</th>
-            <th style="text-align:center;padding:2px 4px">Map</th>
-          </tr></thead><tbody>
-          ${session.ai_calls.map(function(c) {
-            const cost = c.estimated_cost || {};
-            const usage = c.usage || {};
-            const zeroMark = c.is_zero_usage ? '<span style="color:#c09853">zero</span>' : '<span style="color:#6a6">usage</span>';
-            const mapColor = c.mapping_confidence === "unmapped" ? "#c44" : (c.mapping_confidence === "medium" ? "#cc4" : (c.mapping_confidence === "fallback_logs_only" ? "#c09853" : "#4a4"));
-            return '<tr style="' + (c.is_zero_usage ? 'opacity:0.5' : '') + '">' +
-              '<td style="text-align:right;padding:1px 4px">' + c.call_index + '</td>' +
-              '<td style="padding:1px 4px">' + escapeHtml(c.model) + '</td>' +
-              '<td style="text-align:right;padding:1px 4px">' + (c.step_index || '-') + '</td>' +
-              '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.input_tokens || 0) + '</td>' +
-              '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.cached_tokens || 0) + '</td>' +
-              '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.output_tokens || 0) + '</td>' +
-              '<td style="text-align:right;padding:1px 4px">' + nf.format(usage.reasoning_tokens || 0) + '</td>' +
-              '<td style="text-align:right;padding:1px 4px;font-weight:600">' + (cost.estimated_total_cost_usd != null ? money(cost.estimated_total_cost_usd) : '-') + '</td>' +
-              '<td style="text-align:center;padding:1px 4px">' + zeroMark + '</td>' +
-              '<td style="text-align:center;padding:1px 4px;color:' + mapColor + '">' + escapeHtml(c.mapping_confidence) + '</td>' +
-              '</tr>';
-          }).join("")}
-          </tbody></table>
-      </div>
-    </div>`;
+  const totalCost = aiCallFiniteNumber(cas.ai_calls_total_cost_usd);
+  const bucketHtml = Object.entries(buckets).map(([key, value]) =>
+    `<span class="pill">${escapeHtml(key.replace(/_/g, " "))}: ${formatAiCallNumber(value?.count)}</span>`
+  ).join("");
 
-  const firstStep = root.querySelector(".step");
-  if (firstStep) {
-    root.insertBefore(callsSection, firstStep);
+  const overview = document.createElement("section");
+  overview.className = "ai-calls-overview";
+  overview.id = "aiCallsOverview";
+  overview.innerHTML = `
+    <div class="ai-calls-overview-head">
+      <div>
+        <h3>AI Calls — честный call-level аудит (primary truth)${isFallback ? ' <span class="pill yellow">DEGRADED: fallback</span>' : ''}</h3>
+        <div class="muted xsmall">${escapeHtml(cas.note_ru || (isFallback
+          ? "Call-level данные восстановлены из fallback и не являются raw request-level truth."
+          : "Каждый AI-вызов учтён отдельно; zero-usage и unmapped не скрываются."))}</div>
+      </div>
+      <div class="ai-calls-view-toggle" role="group" aria-label="AI Calls view">
+        <button class="${aiCallsViewMode === 'grouped' ? 'active' : ''}" onclick="setAiCallsViewMode('grouped')">Grouped by request</button>
+        <button class="${aiCallsViewMode === 'flat' ? 'active' : ''}" onclick="setAiCallsViewMode('flat')">Flat audit</button>
+      </div>
+    </div>
+    ${isFallback ? '<div class="ai-calls-degraded">Rollout JSONL не найден: usage и стоимость fallback-вызовов недоступны, поэтому проценты и сравнение totals не вычисляются.</div>' : ''}
+    <div class="ai-calls-honest-summary">
+      ${metric("Всего AI calls", formatAiCallNumber(cas.ai_calls_total ?? calls.length))}
+      ${metric("С usage", formatAiCallNumber(cas.ai_calls_with_usage ?? calls.filter(call => call?.is_zero_usage !== true).length))}
+      ${metric("Zero usage", formatAiCallNumber(cas.ai_calls_zero_usage ?? calls.filter(call => call?.is_zero_usage === true).length))}
+      ${metric("Mapped", formatAiCallNumber(cas.ai_calls_mapped_to_visible_steps ?? (calls.length - grouping.unmapped.length)))}
+      ${metric("Unmapped", formatAiCallNumber(cas.ai_calls_unmapped ?? grouping.unmapped.length))}
+      ${metric("Input", formatAiCallNumber(cas.ai_calls_total_input_tokens))}
+      ${metric("Output", formatAiCallNumber(cas.ai_calls_total_output_tokens))}
+      ${metric("Cost", formatAiCallMoney(totalCost))}
+    </div>
+    ${bucketHtml ? `<div class="ai-calls-buckets"><span class="muted xsmall">Buckets by input:</span>${bucketHtml}</div>` : ''}
+  `;
+  return overview;
+}
+
+function renderAiCallsGroupSummary(summary) {
+  return `<div class="ai-call-group-summary">
+    <div class="ai-call-group-label">Grouped AI Calls</div>
+    ${metric("Calls", formatAiCallNumber(summary.ai_calls_count))}
+    ${metric("Input", formatAiCallNumber(summary.usage.input_tokens))}
+    ${metric("Cached", formatAiCallNumber(summary.usage.cached_tokens))}
+    ${metric("Non-cached", formatAiCallNumber(summary.usage.non_cached_input_tokens))}
+    ${metric("Output", formatAiCallNumber(summary.usage.output_tokens))}
+    ${metric("Reasoning", formatAiCallNumber(summary.usage.reasoning_tokens))}
+    ${metric("Tool", formatAiCallNumber(summary.usage.tool_tokens))}
+    ${metric("Cost", formatAiCallMoney(summary.estimated_cost.estimated_total_cost_usd))}
+    ${metric("% session", formatAiCallPercent(summary.percent_of_session_total))}
+  </div>`;
+}
+
+function renderMismatchBadge(mismatch) {
+  if (mismatch.status === "mismatch") {
+    const details = escapeHtml(mismatch.differences.join("; "));
+    return `<span class="pill red ai-calls-mismatch-badge" title="${details}">mismatch</span>`;
+  }
+  if (mismatch.status === "not_comparable") {
+    const details = escapeHtml(mismatch.differences.join("; ") || "insufficient comparable data");
+    return `<span class="pill yellow" title="${details}">not comparable</span>`;
+  }
+  return '<span class="pill green">matched</span>';
+}
+
+function enhanceGroupedStepCards(root, session) {
+  const grouping = buildAiCallsGrouping(session);
+  (session?.steps || []).forEach(step => {
+    const index = aiCallStepIndex(step?.step_index);
+    if (index === null) return;
+    const card = document.getElementById(`step-${index}`);
+    if (!card) return;
+
+    const calls = grouping.byStep.get(index) || [];
+    const summary = aggregateAiCalls(calls, session);
+    const mismatch = buildAiCallStepMismatch(step, calls, session);
+    card.classList.add("ai-calls-grouped-step");
+
+    const title = card.querySelector(".step-title");
+    if (title) {
+      const confidenceBadges = summary.mapping_confidences.map(confidence =>
+        `<span class="pill ${aiCallMappingClass(confidence)}">map: ${escapeHtml(confidence)}</span>`
+      ).join("");
+      title.insertAdjacentHTML("beforeend", `
+        <span class="pill blue">${formatAiCallNumber(summary.ai_calls_count)} AI calls</span>
+        <span class="pill ${summary.ai_calls_zero_usage_count ? 'yellow' : 'green'}">${formatAiCallNumber(summary.ai_calls_zero_usage_count)} zero</span>
+        ${renderMismatchBadge(mismatch)}
+        ${confidenceBadges}
+      `);
+    }
+
+    const headerBody = card.querySelector(".step-head > div:nth-of-type(1)");
+    const preview = headerBody?.querySelector(".preview-row");
+    if (headerBody) {
+      const summaryElement = document.createElement("div");
+      summaryElement.innerHTML = renderAiCallsGroupSummary(summary);
+      const groupSummary = summaryElement.firstElementChild;
+      if (preview) headerBody.insertBefore(groupSummary, preview);
+      else headerBody.appendChild(groupSummary);
+    }
+
+    const detail = card.querySelector(".detail");
+    if (detail) {
+      const callBlock = document.createElement("div");
+      callBlock.className = "box ai-call-group-detail";
+      callBlock.innerHTML = `
+        <div class="ai-call-group-detail-head">
+          <h3>AI calls mapped to Step ${index}</h3>
+          <span class="muted xsmall">Полная call-level детализация; zero-usage вызовы не скрыты.</span>
+        </div>
+        ${renderAiCallTable(calls, session, false)}
+      `;
+      const textBlocks = detail.querySelectorAll(".text-block");
+      const lastTextBlock = textBlocks.length ? textBlocks[textBlocks.length - 1] : null;
+      if (lastTextBlock) lastTextBlock.insertAdjacentElement("afterend", callBlock);
+      else detail.insertBefore(callBlock, detail.firstChild);
+    }
+  });
+
+  const unmapped = grouping.unmapped;
+  const unmappedSummary = aggregateAiCalls(unmapped, session);
+  const unmappedCard = document.createElement("details");
+  unmappedCard.className = `ai-calls-unmapped-card${unmapped.length ? '' : ' empty-group'}`;
+  unmappedCard.innerHTML = `
+    <summary>
+      <div>
+        <b>Unmapped AI calls</b>
+        <span class="muted xsmall">Нет доказуемой связи с существующим visible step.</span>
+      </div>
+      <div class="pills">
+        <span class="pill ${unmapped.length ? 'red' : 'green'}">${formatAiCallNumber(unmapped.length)} calls</span>
+        <span class="pill">Cost ${formatAiCallMoney(unmappedSummary.estimated_cost.estimated_total_cost_usd)}</span>
+        <span class="pill">${formatAiCallPercent(unmappedSummary.percent_of_session_total)} session</span>
+      </div>
+    </summary>
+    <div class="ai-calls-unmapped-body">${renderAiCallTable(unmapped, session, true)}</div>
+  `;
+  root.appendChild(unmappedCard);
+}
+
+function renderFlatAiCallsAudit(root, session, overview) {
+  const flat = document.createElement("section");
+  flat.className = "ai-calls-flat-audit box";
+  flat.innerHTML = `
+    <div class="ai-call-group-detail-head">
+      <h3>Flat audit — diagnostic call-level list</h3>
+      <span class="muted xsmall">Вторичный диагностический вид. Исходный порядок ai_calls[] сохранён.</span>
+    </div>
+    ${renderAiCallTable(session?.ai_calls || [], session, true)}
+  `;
+  overview.insertAdjacentElement("afterend", flat);
+}
+
+function setAiCallsViewMode(mode) {
+  aiCallsViewMode = mode === "flat" ? "flat" : "grouped";
+  renderSteps();
+}
+
+function copyGroupedAiCallsJson() {
+  const session = sessionDetailCache;
+  if (!session) {
+    showToast("Сначала выберите сессию");
+    return;
+  }
+  copyText(JSON.stringify(buildSessionExportJson(session, session.steps || []), null, 2));
+}
+
+function updateGroupedAiCallsExportButton(session) {
+  const button = document.getElementById("groupedAiCallsExportButton");
+  if (button) button.disabled = !session;
+}
+
+function renderAiCallsIntoSteps(root, session) {
+  updateGroupedAiCallsExportButton(session);
+  if (!root || !session) return;
+  const overview = renderAiCallsOverview(session);
+  root.prepend(overview);
+  if (aiCallsViewMode === "flat") {
+    renderFlatAiCallsAudit(root, session, overview);
   } else {
-    root.appendChild(callsSection);
+    enhanceGroupedStepCards(root, session);
   }
 }
 
 const oldRenderHeader = renderHeader;
-renderHeader = function patchedRenderHeader() {
+renderHeader = function groupedAiCallsRenderHeader() {
   oldRenderHeader();
-  const s = sessionDetailCache;
-  if (!s) return;
-  const cas = s.ai_calls_honest_audit_summary || {};
-  if (!cas.ai_calls_total) return;
+  const session = sessionDetailCache;
+  updateGroupedAiCallsExportButton(session);
+  if (!session) return;
+  const cas = session.ai_calls_honest_audit_summary || {};
+  const calls = Array.isArray(session.ai_calls) ? session.ai_calls : [];
+  if (!calls.length && !cas.ai_calls_total) return;
   const meta = document.getElementById("meta");
-  if (!meta) return;
-  if (meta.textContent.includes("AI calls:")) return;
-  meta.textContent += ` · AI calls: ${cas.ai_calls_with_usage || 0} with usage / ${cas.ai_calls_zero_usage || 0} zero / ${cas.ai_calls_unmapped || 0} unmapped`;
+  if (!meta || meta.textContent.includes("AI calls:")) return;
+  const grouping = buildAiCallsGrouping(session);
+  meta.textContent += ` · AI calls: ${cas.ai_calls_with_usage ?? calls.filter(call => call?.is_zero_usage !== true).length} with usage / ${cas.ai_calls_zero_usage ?? calls.filter(call => call?.is_zero_usage === true).length} zero / ${cas.ai_calls_unmapped ?? grouping.unmapped.length} unmapped`;
 };
 
 const oldRenderSteps = renderSteps;
-renderSteps = function patchedRenderSteps() {
+renderSteps = function groupedAiCallsRenderSteps() {
   oldRenderSteps();
   const root = document.getElementById("steps");
-  renderAiCallsSectionIntoSteps(root, sessionDetailCache);
+  renderAiCallsIntoSteps(root, sessionDetailCache);
 };
 
 init();

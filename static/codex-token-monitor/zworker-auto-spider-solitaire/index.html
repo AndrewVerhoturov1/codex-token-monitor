@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Пасьянс Паук</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">♠</span>
+        <div>
+          <h1>Пасьянс Паук</h1>
+          <p>Соберите восемь последовательностей от короля до туза</p>
+        </div>
+      </div>
+
+      <div class="game-stats" aria-label="Статистика игры">
+        <div class="stat"><span>Ходы</span><strong id="movesCount">0</strong></div>
+        <div class="stat"><span>Собрано</span><strong><span id="completedCount">0</span>/8</strong></div>
+        <div class="stat"><span>Резерв</span><strong id="stockCount">50</strong></div>
+      </div>
+
+      <div class="toolbar">
+        <label class="difficulty-label" for="difficulty">Сложность</label>
+        <select id="difficulty" aria-label="Выберите сложность">
+          <option value="1">1 масть</option>
+          <option value="2" selected>2 масти</option>
+          <option value="4">4 масти</option>
+        </select>
+        <button class="button button-secondary" id="undoButton" type="button" disabled>
+          <span aria-hidden="true">↶</span> Отменить
+        </button>
+        <button class="button button-primary" id="newGameButton" type="button">
+          Новая игра
+        </button>
+      </div>
+    </header>
+
+    <section class="game-panel" aria-label="Игровой стол">
+      <div class="status-row">
+        <div class="stock-area">
+          <button id="stockButton" class="stock-stack" type="button" aria-label="Раздать следующий ряд карт">
+            <span class="stock-card stock-card-back-3"></span>
+            <span class="stock-card stock-card-back-2"></span>
+            <span class="stock-card stock-card-back-1"></span>
+            <span class="stock-label"><strong id="stockDeals">5</strong><small>раздач</small></span>
+          </button>
+          <span class="stock-hint">Кликните, чтобы раздать по карте в каждый столбец</span>
+        </div>
+
+        <div class="foundation-area" id="foundations" aria-label="Собранные последовательности"></div>
+      </div>
+
+      <div id="message" class="message" role="status" aria-live="polite"></div>
+
+      <div class="table-scroll" id="tableScroll">
+        <div class="tableau" id="tableau" aria-label="Игровые столбцы"></div>
+      </div>
+    </section>
+  </main>
+
+  <div id="dragLayer" class="drag-layer" aria-hidden="true"></div>
+
+  <dialog id="winDialog" class="win-dialog">
+    <div class="win-symbol" aria-hidden="true">♠</div>
+    <h2>Пасьянс собран!</h2>
+    <p>Вы завершили игру за <strong id="winMoves">0</strong> ходов.</p>
+    <button class="button button-primary" id="playAgainButton" type="button">Сыграть ещё</button>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>

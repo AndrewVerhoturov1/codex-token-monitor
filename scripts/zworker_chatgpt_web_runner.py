@@ -193,7 +193,10 @@ def open_new_chat(page, state: ZworkerWebRunState, timeout_ms: int) -> None:
             page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
         except Exception:
             pass
-    state.set_state("CHAT_CREATED", chat_url=page.url)
+    if is_valid_chat_url(page.url):
+        state.set_state("CHAT_CREATED", chat_url=page.url)
+    else:
+        state.set_state("CHAT_CREATED")
 
 
 def capture_valid_chat_url(page, state: ZworkerWebRunState, *, source: str) -> bool:

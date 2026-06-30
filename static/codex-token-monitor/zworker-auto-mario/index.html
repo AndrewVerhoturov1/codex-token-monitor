@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101942">
+  <title>Pixel Sprint — 16-bit платформер</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="game-shell" aria-label="Pixel Sprint — браузерная мини-игра">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">16-BIT BROWSER QUEST</p>
+        <h1>PIXEL SPRINT</h1>
+      </div>
+      <button id="restartButton" class="restart-button" type="button">↻ РЕСТАРТ</button>
+    </header>
+
+    <section class="screen-frame">
+      <div class="hud" aria-live="polite">
+        <span>СЧЁТ <strong id="scoreValue">0000</strong></span>
+        <span>МОНЕТЫ <strong id="coinValue">0/0</strong></span>
+        <span>ЖИЗНИ <strong id="lifeValue">♥♥♥</strong></span>
+      </div>
+
+      <canvas id="gameCanvas" width="960" height="540" aria-label="Игровое поле платформера">
+        Ваш браузер не поддерживает Canvas.
+      </canvas>
+
+      <div id="messagePanel" class="message-panel is-hidden" role="dialog" aria-modal="true">
+        <p id="messageKicker" class="message-kicker">УРОВЕНЬ ПРОЙДЕН</p>
+        <h2 id="messageTitle">ФИНИШ!</h2>
+        <p id="messageText">Все системы работают.</p>
+        <button id="messageButton" type="button">ИГРАТЬ СНОВА</button>
+      </div>
+
+      <div class="scanlines" aria-hidden="true"></div>
+    </section>
+
+    <footer class="controls">
+      <span><kbd>←</kbd><kbd>→</kbd> / <kbd>A</kbd><kbd>D</kbd> — движение</span>
+      <span><kbd>↑</kbd> / <kbd>W</kbd> / <kbd>Space</kbd> — прыжок</span>
+      <span><kbd>R</kbd> — рестарт</span>
+    </footer>
+  </main>
+
+  <script src="game.js"></script>
+</body>
+</html>

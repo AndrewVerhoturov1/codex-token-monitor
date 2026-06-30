@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
     <title>Codex Token Monitor v2</title>
-<link rel="stylesheet" href="styles.css?v=0063">
+<link rel="stylesheet" href="styles.css?v=0064">
 <style>
 .tl-sel { background: #2a3a2a !important; }
 .tl-click-row:hover { background: #2a2a2a; }
@@ -99,6 +99,7 @@
           <button onclick="auditSession()">Аудит</button>
           <button onclick="copySessionSummary()">Session</button>
           <button onclick="copySessionJson()">Session JSON</button>
+          <button id="groupedAiCallsExportButton" onclick="copyGroupedAiCallsJson()" disabled>Grouped AI JSON</button>
           <button id="rawSessionDownloadButton" onclick="downloadRawTelemetry(false)" disabled>Export raw session</button>
           <button class="primary" onclick="copySessionTable()">Session MD</button>
           <button class="danger" onclick="openShutdown()">Остановить монитор</button>
@@ -144,6 +145,6 @@
 
 <div class="toast" id="toast">Скопировано</div>
 
-  <script src="app.js?v=0078"></script>
+  <script src="app.js?v=0079"></script>
 </body>
 </html>

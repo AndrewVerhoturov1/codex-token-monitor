@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#171312">
+  <title>Песчаный рубеж — мини-RTS</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="game-shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">◇</span>
+        <div>
+          <h1>Песчаный рубеж</h1>
+          <p>Автономная пустынная sci-fi RTS</p>
+        </div>
+      </div>
+      <div class="resource-strip" aria-label="Ресурсы и состояние игры">
+        <div class="resource-card"><span>Кристаллы</span><strong id="resourceValue">0</strong></div>
+        <div class="resource-card"><span>Энергия</span><strong id="powerValue">0 / 0</strong></div>
+        <div class="resource-card"><span>Волна</span><strong id="waveValue">0</strong></div>
+        <div class="resource-card"><span>Время</span><strong id="timeValue">00:00</strong></div>
+      </div>
+      <div class="header-actions">
+        <button id="pauseButton" class="icon-button" type="button">Пауза</button>
+        <button id="restartButton" class="icon-button danger" type="button">Новая игра</button>
+      </div>
+    </header>
+
+    <section class="game-layout">
+      <div class="battlefield-wrap">
+        <canvas id="gameCanvas" width="960" height="600" aria-label="Игровая карта"></canvas>
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+        <div id="startOverlay" class="overlay visible">
+          <div class="overlay-card intro-card">
+            <span class="eyebrow">Операция «Мираж»</span>
+            <h2>Удержите аванпост в течение пяти волн</h2>
+            <p>Добывайте светокамень, расширяйте энергосеть, создавайте технику и защищайте командный узел.</p>
+            <div class="controls-grid">
+              <div><kbd>ЛКМ</kbd><span>выбор</span></div>
+              <div><kbd>ПКМ</kbd><span>движение / атака</span></div>
+              <div><kbd>1–4</kbd><span>строительство</span></div>
+              <div><kbd>Esc</kbd><span>отмена режима</span></div>
+            </div>
+            <button id="startButton" class="primary-button" type="button">Начать операцию</button>
+          </div>
+        </div>
+        <div id="endOverlay" class="overlay">
+          <div class="overlay-card">
+            <span id="endEyebrow" class="eyebrow">Операция завершена</span>
+            <h2 id="endTitle">Победа</h2>
+            <p id="endText"></p>
+            <button id="endRestartButton" class="primary-button" type="button">Сыграть снова</button>
+          </div>
+        </div>
+      </div>
+
+      <aside class="sidebar">
+        <section class="panel objective-panel">
+          <div class="panel-heading">
+            <span>Задача</span>
+            <strong id="objectiveStatus">Подготовка</strong>
+          </div>
+          <p id="objectiveText">Запустите операцию и подготовьте оборону.</p>
+          <div class="progress-track"><div id="waveProgress" class="progress-fill"></div></div>
+        </section>
+
+        <section class="panel selection-panel">
+          <div class="panel-heading"><span>Выбрано</span><strong id="selectionType">—</strong></div>
+          <div id="selectionEmpty" class="selection-empty">Выберите объект на карте</div>
+          <div id="selectionDetails" class="selection-details hidden">
+            <div class="selection-visual" id="selectionIcon">◇</div>
+            <div class="selection-copy">
+              <h3 id="selectionName">Объект</h3>
+              <p id="selectionDescription"></p>
+            </div>
+            <div class="health-row"><span>Прочность</span><strong id="selectionHealth">0 / 0</strong></div>
+            <div class="health-track"><div id="selectionHealthFill" class="health-fill"></div></div>
+            <div id="selectionActions" class="selection-actions"></div>
+          </div>
+        </section>
+
+        <section class="panel build-panel">
+          <div class="panel-heading"><span>Строительство</span><strong id="buildModeLabel">Готово</strong></div>
+          <div class="command-grid">
+            <button class="command-card" type="button" data-build="refinery">
+              <span class="command-hotkey">1</span><span class="command-icon refinery-icon">R</span>
+              <span class="command-name">Экстрактор</span><span class="command-cost">300 ◈</span>
+            </button>
+            <button class="command-card" type="button" data-build="power">
+              <span class="command-hotkey">2</span><span class="command-icon power-icon">P</span>
+              <span class="command-name">Энергоблок</span><span class="command-cost">220 ◈</span>
+            </button>
+            <button class="command-card" type="button" data-build="factory">
+              <span class="command-hotkey">3</span><span class="command-icon factory-icon">F</span>
+              <span class="command-name">Завод</span><span class="command-cost">450 ◈</span>
+            </button>
+            <button class="command-card" type="button" data-build="turret">
+              <span class="command-hotkey">4</span><span class="command-icon turret-icon">T</span>
+              <span class="command-name">Турель</span><span class="command-cost">280 ◈</span>
+            </button>
+          </div>
+          <p class="panel-hint">Разместите строение на свободной клетке рядом с вашей базой.</p>
+        </section>
+
+        <section class="panel log-panel">
+          <div class="panel-heading"><span>Сводка</span><strong>канал 7</strong></div>
+          <div id="eventLog" class="event-log"></div>
+        </section>
+      </aside>
+    </section>
+  </main>
+
+  <script src="game.js"></script>
+</body>
+</html>
