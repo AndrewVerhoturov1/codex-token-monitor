@@ -85,6 +85,19 @@ python scripts/zworker_chatgpt_web_runner.py ^
 
 After `PROMPT_SENT`, the runner must not send the prompt again unless `--force-resend` is explicitly set.
 
+## Chat creation strategy: composer-first, sidebar-fallback
+
+When opening a new chat, the runner follows this order:
+
+1. Navigate to `https://chatgpt.com/`.
+2. If the homepage composer (textarea, contenteditable div, or role="textbox")
+   is already visible, treat the page as ready — no sidebar interaction needed.
+3. Only if the composer is not visible after navigation, fall back to clicking
+   a sidebar "New chat" link/button.
+
+This avoids redundant sidebar clicks that can interfere with an already-ready
+chat input state.
+
 ## Model policy
 
 Preferred model labels:

@@ -136,6 +136,11 @@ def first_visible_locator(page, locators: list[Any], timeout_ms: int = 500) -> A
 
 
 def has_visible_composer(page) -> bool:
+    """Return True if the homepage composer is visible on the current page.
+    
+    This is the primary readiness check — a visible composer means no sidebar
+    "New chat" navigation is needed.
+    """
     composer_selectors = ['textarea', '[contenteditable="true"]', '[role="textbox"]', '#prompt-textarea']
     for selector in composer_selectors:
         try:
@@ -185,6 +190,13 @@ def ensure_login(page, state: ZworkerWebRunState, timeout_ms: int) -> None:
 
 
 def open_new_chat(page, state: ZworkerWebRunState, timeout_ms: int) -> None:
+    """Open a new chat — composer-first with sidebar-fallback.
+
+    1. Navigate to the ChatGPT homepage.
+    2. If the composer is visible on arrival, treat the page as ready.
+    3. Only if the composer is absent, fall back to clicking the sidebar
+       "New chat" button.
+    """
     state.set_state("CHAT_OPENING")
     page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=timeout_ms)
     if has_visible_composer(page):

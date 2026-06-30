@@ -93,6 +93,14 @@ result = client.call("opencode_zworker_auto_run", {
 })
 ```
 
+## Chat Readiness
+
+When using the web-runner (`--use-web-runner`), the runner checks for a visible
+homepage composer before attempting any sidebar "New chat" click. If the
+composer is present on the homepage, the sidebar click is skipped. This
+composer-first strategy prevents unnecessary navigation steps when the chat
+input is already available.
+
 ## Limitations
 
 - No browser automation for password/2FA/CAPTCHA

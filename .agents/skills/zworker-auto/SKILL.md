@@ -172,10 +172,16 @@ Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:9222/json/version'
 
 Before the real run, verify the browser state:
 
-- ChatGPT composer is visible
+- The homepage composer (textarea, contenteditable div, or chat input box) is
+  visible — this confirms the page is ready for input without any extra
+  navigation step
 - the page is not on a login screen
 - the page shows a Plus session signal such as `ChatGPT Plus`, `Plus`, or the
   generic model picker state like `High`
+
+A visible composer on the homepage is a valid ready state. Do **not** force a
+sidebar "New chat" click when the composer is already visible — the sidebar
+"New chat" button is a fallback only when the composer is absent.
 
 If the page is logged out, stop and ask the user to log in manually in that
 browser window.
@@ -204,6 +210,9 @@ Important:
 - prefer the direct web-runner attach path for the real browser flow
 - do not start with `zworker-auto` launch-mode that opens a fresh browser
 - keep the 12-minute answer timeout for ChatGPT Web work
+- The web-runner already implements composer-first chat creation: it checks for
+  a visible composer before falling back to a sidebar "New chat" click. Trust
+  this behavior and do not add extra sidebar clicks before calling the runner.
 
 ### 5. Read result artifacts
 
