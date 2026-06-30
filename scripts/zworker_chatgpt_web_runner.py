@@ -337,7 +337,7 @@ def send_prompt(page, state: ZworkerWebRunState, final_prompt: str, force_resend
     else:
         page.keyboard.press("Enter")
     state.metadata["prompt_sent_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    state.set_state("PROMPT_SENT", chat_url=page.url, prompt_sha256=sha256_text(final_prompt))
+    state.set_state("PROMPT_SENT", chat_url=page.url if is_valid_chat_url(page.url) else "", prompt_sha256=sha256_text(final_prompt))
 
 
 def get_body_text(page) -> str:
