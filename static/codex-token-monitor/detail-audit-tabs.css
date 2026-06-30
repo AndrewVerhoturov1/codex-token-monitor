@@ -30,7 +30,7 @@
 .ai-calls-current-group {
   margin: 0;
   padding: 10px;
-  border-color: rgba(124, 156, 255, .24);
+  border-color: rgba(255, 255, 255, .06);
   background: rgba(17, 24, 39, .76);
 }
 
@@ -53,6 +53,64 @@
   padding: 0;
   border: 0;
   background: transparent;
+}
+
+.ai-calls-current-group-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.ai-call-prompt-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.ai-calls-metric-toggles button.active {
+  background: var(--blue);
+  border-color: var(--blue);
+  color: #07111f;
+}
+
+.ai-calls-breakdown-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  margin-top: 4px;
+}
+
+.ai-calls-breakdown-table th,
+.ai-calls-breakdown-table td {
+  padding: 1px 6px;
+}
+
+.ai-calls-breakdown-table thead tr {
+  background: #333;
+}
+
+.ai-calls-breakdown-table th {
+  text-align: left;
+  padding: 2px 6px;
+}
+
+.ai-calls-breakdown-table td.label {
+  color: #aaa;
+}
+
+.ai-calls-breakdown-table .num {
+  text-align: right;
+}
+
+.ai-calls-breakdown-table .strong {
+  font-weight: 600;
+}
+
+.ai-call-table-summary {
+  background: rgba(124, 156, 255, .06);
+  font-weight: 600;
 }
 
 main.right > .toolbar[hidden],

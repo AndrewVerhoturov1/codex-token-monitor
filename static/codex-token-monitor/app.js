@@ -22,8 +22,6 @@ let currentWorkdirFilter = ALL_WORKDIRS_VALUE;
 // Track expanded step details across re-renders (auto-refresh)
 let expandedSteps = new Set();
 let openTextBlocks = new Set();
-// Grouped-by-request is the primary AI Calls view; flat audit remains available as a diagnostic toggle.
-let aiCallsViewMode = "grouped";
 
 // ── Formatters ──
 const nf = new Intl.NumberFormat("ru-RU");
@@ -3097,10 +3095,6 @@ function renderAiCallsOverview(session) {
           ? "Call-level данные восстановлены из fallback и не являются raw request-level truth."
           : "Каждый AI-вызов учтён отдельно; zero-usage и unmapped не скрываются."))}</div>
       </div>
-      <div class="ai-calls-view-toggle" role="group" aria-label="AI Calls view">
-        <button class="${aiCallsViewMode === 'grouped' ? 'active' : ''}" onclick="setAiCallsViewMode('grouped')">Grouped by request</button>
-        <button class="${aiCallsViewMode === 'flat' ? 'active' : ''}" onclick="setAiCallsViewMode('flat')">Flat audit</button>
-      </div>
     </div>
     ${isFallback ? '<div class="ai-calls-degraded">Rollout JSONL не найден: usage и стоимость fallback-вызовов недоступны, поэтому проценты и сравнение totals не вычисляются.</div>' : ''}
     <div class="ai-calls-honest-summary">
@@ -3220,24 +3214,6 @@ function enhanceGroupedStepCards(root, session) {
   root.appendChild(unmappedCard);
 }
 
-function renderFlatAiCallsAudit(root, session, overview) {
-  const flat = document.createElement("section");
-  flat.className = "ai-calls-flat-audit box";
-  flat.innerHTML = `
-    <div class="ai-call-group-detail-head">
-      <h3>Flat audit — diagnostic call-level list</h3>
-      <span class="muted xsmall">Вторичный диагностический вид. Исходный порядок ai_calls[] сохранён.</span>
-    </div>
-    ${renderAiCallTable(session?.ai_calls || [], session, true)}
-  `;
-  overview.insertAdjacentElement("afterend", flat);
-}
-
-function setAiCallsViewMode(mode) {
-  aiCallsViewMode = mode === "flat" ? "flat" : "grouped";
-  renderSteps();
-}
-
 function copyGroupedAiCallsJson() {
   const session = sessionDetailCache;
   if (!session) {
@@ -3257,11 +3233,7 @@ function renderAiCallsIntoSteps(root, session) {
   if (!root || !session) return;
   const overview = renderAiCallsOverview(session);
   root.prepend(overview);
-  if (aiCallsViewMode === "flat") {
-    renderFlatAiCallsAudit(root, session, overview);
-  } else {
-    enhanceGroupedStepCards(root, session);
-  }
+  enhanceGroupedStepCards(root, session);
 }
 
 const oldRenderHeader = renderHeader;

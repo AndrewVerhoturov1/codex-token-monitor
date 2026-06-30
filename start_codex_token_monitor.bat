@@ -4,10 +4,16 @@ cd /d "%~dp0"
 
 echo Killing old monitor processes...
 
-for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8765"') do (
-    echo Killing process on port 8765 PID %%a...
-    taskkill /f /pid %%a >nul 2>nul
+setlocal enabledelayedexpansion
+set "_killed="
+for /f "tokens=5" %%a in ('netstat -ano ^| findstr ":8765" ^| findstr "LISTENING"') do (
+    if %%a gtr 0 if "!_killed: %%a =!" equ "!_killed!" (
+        set "_killed=!_killed! %%a "
+        echo Killing Codex Token Monitor PID %%a...
+        taskkill /f /pid %%a >nul 2>nul
+    )
 )
+endlocal
 
 echo Starting Codex Token Monitor Server v2...
 echo http://127.0.0.1:8765
