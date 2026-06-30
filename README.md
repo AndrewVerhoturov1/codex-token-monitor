@@ -35,3 +35,7 @@
 ## Совместимость
 
 Нужен современный браузер с поддержкой Canvas 2D и ES6: актуальные Chrome, Edge, Firefox или Safari.
+
+## Экспериментальная сессия token-monitor
+
+Зафиксирована сессия `019f1730-15a6-7e03-adec-dcdb20392a18` — единственный источник raw telemetry для доработок. Подробнее: [docs/session_019f1730.md](docs/session_019f1730.md). Сырые данные: `audit session rts/`.
