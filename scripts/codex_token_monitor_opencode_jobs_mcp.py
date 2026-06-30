@@ -521,6 +521,14 @@ def opencode_zworker_revision_prompt(
 )
 def opencode_zworker_auto_run(
     task_text: str,
+    context: str | None = None,
+    constraints: str | None = None,
+    source_urls: str | None = None,
+    allowed_paths: str | None = None,
+    forbidden_paths: str | None = None,
+    expected_outputs: str | None = None,
+    request_id: str | None = None,
+    max_revisions: int = jobs.ZWORKER_AUTO_DEFAULT_MAX_REVISIONS,
     directory: str | None = None,
     timeout_seconds: int | None = None,
     provider_id: str | None = None,
@@ -531,7 +539,11 @@ def opencode_zworker_auto_run(
     export_session: str | None = None,
     config_path: str | None = None,
     route_c_profile: str | None = None,
+    resume_from_request_id: str | None = None,
+    force_resend: bool = False,
     cdp_url: str | None = None,
+    zip_path: str | None = None,
+    use_web_runner: bool = False,
 ) -> dict[str, Any]:
     normalized_task = _normalize_text(task_text)
     if normalized_task is None:

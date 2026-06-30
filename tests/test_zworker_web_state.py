@@ -345,3 +345,97 @@ def test_open_new_chat_does_not_store_invalid_url(tmp_path: Path) -> None:
     module.open_new_chat(MockPage(), state, 1000)
     assert state.chat_url == ""
     assert state.state == "CHAT_CREATED"
+
+
+def test_open_new_chat_accepts_homepage_composer_without_sidebar_click(tmp_path: Path) -> None:
+    import importlib.util
+    from pathlib import Path as P
+
+    runner_path = P(__file__).resolve().parents[1] / "scripts" / "zworker_chatgpt_web_runner.py"
+    if not runner_path.exists():
+        pytest.skip("web runner script not found")
+
+    spec = importlib.util.spec_from_file_location("zworker_chatgpt_web_runner", runner_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    state = module.ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
+
+    class _VisibleComposer:
+        @property
+        def last(self):
+            return self
+
+        def count(self):
+            return 1
+
+        def is_visible(self):
+            return True
+
+    class _UnexpectedClickLoc:
+        def count(self):
+            raise AssertionError("sidebar click path should not be used when homepage composer is visible")
+
+    class MockPage:
+        @property
+        def url(self):
+            return "https://chatgpt.com/"
+
+        def goto(self, *a, **kw):
+            pass
+
+        def locator(self, selector):
+            if selector in {'textarea', '[contenteditable="true"]', '[role="textbox"]', '#prompt-textarea'}:
+                return _VisibleComposer()
+            raise AssertionError(f"unexpected selector: {selector}")
+
+        def get_by_role(self, *a, **kw):
+            return _UnexpectedClickLoc()
+
+        def get_by_text(self, *a, **kw):
+            return _UnexpectedClickLoc()
+
+    module.open_new_chat(MockPage(), state, 1000)
+    assert state.chat_url == ""
+    assert state.state == "CHAT_CREATED"
+
+
+def test_ensure_model_accepts_generic_high_marker_from_body(tmp_path: Path) -> None:
+    import importlib.util
+    from pathlib import Path as P
+
+    runner_path = P(__file__).resolve().parents[1] / "scripts" / "zworker_chatgpt_web_runner.py"
+    if not runner_path.exists():
+        pytest.skip("web runner script not found")
+
+    spec = importlib.util.spec_from_file_location("zworker_chatgpt_web_runner", runner_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    state = module.ZworkerWebRunState(REQUEST_ID, runtime_root=tmp_path)
+
+    class _BodyLoc:
+        def inner_text(self, timeout=None):
+            return "ChatGPT Plus\nHigh\nСоздать изображение"
+
+    class _UnexpectedLocator:
+        def filter(self, **kwargs):
+            raise AssertionError("generic body marker should short-circuit before locator fallback")
+
+        def count(self):
+            raise AssertionError("generic body marker should short-circuit before locator fallback")
+
+    class MockPage:
+        def locator(self, selector):
+            if selector == "body":
+                return _BodyLoc()
+            return _UnexpectedLocator()
+
+        def get_by_role(self, *a, **kw):
+            return _UnexpectedLocator()
+
+    observed = module.ensure_model(MockPage(), state, ["Pro Extended", "Pro Standard"], 1000, False)
+    assert observed == "High"
+    assert state.state == "MODEL_SELECTED"

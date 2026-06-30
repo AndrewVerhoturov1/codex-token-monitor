@@ -135,6 +135,18 @@ def first_visible_locator(page, locators: list[Any], timeout_ms: int = 500) -> A
     return None
 
 
+def has_visible_composer(page) -> bool:
+    composer_selectors = ['textarea', '[contenteditable="true"]', '[role="textbox"]', '#prompt-textarea']
+    for selector in composer_selectors:
+        try:
+            loc = page.locator(selector)
+            if loc.count() > 0 and loc.last.is_visible():
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def save_diagnostics(page, state: ZworkerWebRunState, stem: str) -> None:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", stem)[:80] or "diagnostic"
     try:
@@ -151,17 +163,11 @@ def ensure_login(page, state: ZworkerWebRunState, timeout_ms: int) -> None:
     state.set_state("LOGIN_CHECKING")
     page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=timeout_ms)
     login_markers = [re.compile(r"log in", re.I), re.compile(r"sign up", re.I), re.compile(r"войти", re.I)]
-    composer_selectors = ['textarea', '[contenteditable="true"]', '[role="textbox"]', '#prompt-textarea']
     deadline = time.monotonic() + timeout_ms / 1000
     while time.monotonic() < deadline:
-        for selector in composer_selectors:
-            try:
-                loc = page.locator(selector)
-                if loc.count() > 0 and loc.last.is_visible():
-                    state.set_state("LOGIN_OK")
-                    return
-            except Exception:
-                pass
+        if has_visible_composer(page):
+            state.set_state("LOGIN_OK")
+            return
         try:
             text = page.locator("body").inner_text(timeout=1000)
         except Exception:
@@ -181,6 +187,12 @@ def ensure_login(page, state: ZworkerWebRunState, timeout_ms: int) -> None:
 def open_new_chat(page, state: ZworkerWebRunState, timeout_ms: int) -> None:
     state.set_state("CHAT_OPENING")
     page.goto(CHATGPT_URL, wait_until="domcontentloaded", timeout=timeout_ms)
+    if has_visible_composer(page):
+        if is_valid_chat_url(page.url):
+            state.set_state("CHAT_CREATED", chat_url=page.url)
+        else:
+            state.set_state("CHAT_CREATED")
+        return
     candidates = [
         page.get_by_role("link", name=re.compile(r"new chat|новый чат", re.I)),
         page.get_by_role("button", name=re.compile(r"new chat|новый чат", re.I)),
@@ -221,46 +233,56 @@ def wait_for_valid_chat_url(page, state: ZworkerWebRunState, timeout_ms: int, *,
 
 def ensure_model(page, state: ZworkerWebRunState, preferred_models: list[str], timeout_ms: int, allow_unverified: bool) -> str:
     state.set_state("MODEL_CHECKING", preferred_models=preferred_models)
-    try:
-        body_text = page.locator("body").inner_text(timeout=3000)
-    except Exception:
-        body_text = ""
-    for model in preferred_models:
-        if model and model in body_text:
-            state.set_state("MODEL_SELECTED", observed_model=model)
-            return model
-
-    picker_candidates = [
-        page.get_by_role("button", name=re.compile(r"model|модель|chatgpt|gpt", re.I)),
-        page.locator("button").filter(has_text=re.compile(r"ChatGPT|GPT|model|модель", re.I)),
-    ]
-    picker = first_visible_locator(page, picker_candidates, timeout_ms=1000)
-    if picker:
+    generic_model_markers = ["High", "Standard", "Fast", "Auto", "Low"]
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
         try:
-            picker.click(timeout=3000)
-            time.sleep(1)
-            for model in preferred_models:
-                target = page.get_by_text(model, exact=False)
-                if target.count() > 0:
-                    target.first.click(timeout=5000)
-                    time.sleep(1)
-                    state.set_state("MODEL_SELECTED", observed_model=model)
-                    return model
+            body_text = page.locator("body").inner_text(timeout=3000)
         except Exception:
-            pass
+            body_text = ""
+        for model in preferred_models:
+            if model and model in body_text:
+                state.set_state("MODEL_SELECTED", observed_model=model)
+                return model
 
-    generic_picker_candidates = [
-        page.get_by_role("button", name=re.compile(r"high|standard|fast|auto|low", re.I)),
-        page.locator("button").filter(has_text=re.compile(r"high|standard|fast|auto|low", re.I)),
-    ]
-    generic_picker = first_visible_locator(page, generic_picker_candidates, timeout_ms=1000)
-    if generic_picker:
-        try:
-            observed = generic_picker.inner_text(timeout=1000).strip() or "generic_picker_visible"
-        except Exception:
-            observed = "generic_picker_visible"
-        state.set_state("MODEL_SELECTED", observed_model=observed)
-        return observed
+        for marker in generic_model_markers:
+            if re.search(rf"\b{re.escape(marker)}\b", body_text, re.I):
+                state.set_state("MODEL_SELECTED", observed_model=marker)
+                return marker
+
+        picker_candidates = [
+            page.get_by_role("button", name=re.compile(r"model|модель|chatgpt|gpt", re.I)),
+            page.locator("button").filter(has_text=re.compile(r"ChatGPT|GPT|model|модель", re.I)),
+        ]
+        picker = first_visible_locator(page, picker_candidates, timeout_ms=1000)
+        if picker:
+            try:
+                picker.click(timeout=3000)
+                time.sleep(1)
+                for model in preferred_models:
+                    target = page.get_by_text(model, exact=False)
+                    if target.count() > 0:
+                        target.first.click(timeout=5000)
+                        time.sleep(1)
+                        state.set_state("MODEL_SELECTED", observed_model=model)
+                        return model
+            except Exception:
+                pass
+
+        generic_picker_candidates = [
+            page.get_by_role("button", name=re.compile(r"high|standard|fast|auto|low", re.I)),
+            page.locator("button").filter(has_text=re.compile(r"high|standard|fast|auto|low", re.I)),
+        ]
+        generic_picker = first_visible_locator(page, generic_picker_candidates, timeout_ms=1000)
+        if generic_picker:
+            try:
+                observed = generic_picker.inner_text(timeout=1000).strip() or "generic_picker_visible"
+            except Exception:
+                observed = "generic_picker_visible"
+            state.set_state("MODEL_SELECTED", observed_model=observed)
+            return observed
+
+        time.sleep(0.5)
 
     save_diagnostics(page, state, "model_not_verified")
     if allow_unverified:

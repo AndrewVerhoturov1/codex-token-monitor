@@ -320,6 +320,62 @@ class OpenCodeJobsMcpAdapterTests(unittest.TestCase):
         self.assertEqual(response["reason"], "invalid_directory")
         self.assertEqual(response["debug_visible_terminal_status"], "not_requested")
 
+    def test_zworker_auto_run_passes_expected_config_to_core(self) -> None:
+        fake_result = jobs.ZworkerAutoRunResult(
+            mode=jobs.ZWORKER_MODE_AUTO,
+            request_id="req-123",
+            status="completed",
+            final_decision="accepted",
+            revision_count=0,
+            error="",
+            events_log_path=str(ROOT / "_local" / "tests" / "zworker-auto" / "events.jsonl"),
+            state_file_path=str(ROOT / "_local" / "tests" / "zworker-auto" / "state.json"),
+        )
+        with mock.patch.object(jobs_mcp.jobs, "zworker_auto_run", return_value=fake_result) as run_auto:
+            response = jobs_mcp.opencode_zworker_auto_run(
+                task_text="Build RTS",
+                context="Standalone static app",
+                constraints="No build step",
+                source_urls="https://example.com/a, https://example.com/b",
+                allowed_paths="static/game/**",
+                forbidden_paths=".env,.git/**",
+                expected_outputs="index.html,game.js,style.css",
+                request_id="req-123",
+                max_revisions=3,
+                provider_id="opencode",
+                model_id="deepseek-v4-flash-free",
+                resume_from_request_id="req-122",
+                force_resend=True,
+                cdp_url="ws://127.0.0.1:9222/devtools/browser/test",
+                zip_path="artifacts/out.zip",
+                use_web_runner=True,
+                directory=str(ROOT),
+                timeout_seconds=123,
+            )
+
+        run_auto.assert_called_once()
+        auto_config = run_auto.call_args.args[0]
+        self.assertEqual(auto_config.task, "Build RTS")
+        self.assertEqual(auto_config.context, "Standalone static app")
+        self.assertEqual(auto_config.constraints, "No build step")
+        self.assertEqual(
+            auto_config.source_urls,
+            ["https://example.com/a", "https://example.com/b"],
+        )
+        self.assertEqual(auto_config.allowed_paths, "static/game/**")
+        self.assertEqual(auto_config.forbidden_paths, ".env,.git/**")
+        self.assertEqual(auto_config.expected_outputs, "index.html,game.js,style.css")
+        self.assertEqual(auto_config.request_id, "req-123")
+        self.assertEqual(auto_config.max_revisions, 3)
+        self.assertEqual(auto_config.provider_id, "opencode")
+        self.assertEqual(auto_config.model_id, "deepseek-v4-flash-free")
+        self.assertEqual(auto_config.resume_from_state, "req-122")
+        self.assertTrue(auto_config.force_resend)
+        self.assertEqual(auto_config.cdp_url, "ws://127.0.0.1:9222/devtools/browser/test")
+        self.assertEqual(run_auto.call_args.kwargs["zip_path"], Path("artifacts/out.zip"))
+        self.assertTrue(run_auto.call_args.kwargs["use_web_runner"])
+        self.assertEqual(response["status"], "completed")
+
 
 class OpenCodeJobsMcpIntegrationTests(unittest.TestCase):
 
@@ -370,6 +426,7 @@ class OpenCodeJobsMcpIntegrationTests(unittest.TestCase):
                 tools = await client.list_tools()
             expected = {
                 jobs_mcp.TOOL_NAME,
+                "opencode_zworker_auto_run",
                 "opencode_zworker_prompt_pack",
                 "opencode_zworker_result_unpack",
                 "opencode_zworker_process_result",
