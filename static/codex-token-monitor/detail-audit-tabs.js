@@ -32,6 +32,8 @@ function getStepModes(stepIndex) {
 
     const groupedExport = document.getElementById("groupedAiCallsExportButton");
     setVisible(groupedExport, !legacy);
+    const currentDownloadBtn = document.getElementById("currentAuditDownloadButton");
+    setVisible(currentDownloadBtn, !legacy);
     renderDetailTabs();
   }
 
@@ -62,6 +64,8 @@ function getStepModes(stepIndex) {
       }
       if (meta) meta.textContent = selectedSession ? selectedSession.title : "";
       updateGroupedAiCallsExportButton(null);
+      const downloadBtn = document.getElementById("currentAuditDownloadButton");
+      if (downloadBtn) downloadBtn.disabled = true;
       return;
     }
 
@@ -87,6 +91,8 @@ function getStepModes(stepIndex) {
       ].filter(Boolean).join(" · ");
     }
     updateGroupedAiCallsExportButton(session);
+    const currentDownloadBtn = document.getElementById("currentAuditDownloadButton");
+    if (currentDownloadBtn) currentDownloadBtn.disabled = !session;
     updateRawDownloadButtons();
   }
 
@@ -387,6 +393,8 @@ function getStepModes(stepIndex) {
         ? "Загрузка AI calls..."
         : "Выберите сессию слева"}</div>`;
       updateGroupedAiCallsExportButton(null);
+      const downloadBtn = document.getElementById("currentAuditDownloadButton");
+      if (downloadBtn) downloadBtn.disabled = true;
       return;
     }
 
@@ -494,6 +502,165 @@ function getStepModes(stepIndex) {
     dialog.appendChild(body);
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
+  };
+
+  globalThis.downloadCurrentAuditMarkdown = function downloadCurrentAuditMarkdown() {
+    const session = sessionDetailCache;
+    if (!session) { showToast("Нет данных для экспорта"); return; }
+
+    const grouping = buildAiCallsGrouping(session);
+    const calls = Array.isArray(session.ai_calls) ? session.ai_calls : [];
+    const summary = session.ai_calls_honest_audit_summary || {};
+    const withUsage = summary.ai_calls_with_usage ?? calls.filter(c => c?.is_zero_usage !== true).length;
+    const zeroUsage = summary.ai_calls_zero_usage ?? calls.filter(c => c?.is_zero_usage === true).length;
+    const unmappedCount = summary.ai_calls_unmapped ?? grouping.unmapped.length;
+    const M = v => v ?? "—";
+
+    const lines = [
+      "# Current Audit: " + (session.title || session.id || "Session"),
+      "",
+      "## Session Info",
+      "- Source: " + (session.source_kind === "live" ? "live" : "архив"),
+      "- Session ID: " + M(session.id),
+      "- Date: " + M(session.date),
+      "- Workdir: " + M(session.workdir),
+      "- Model: " + M(session.model),
+      "",
+      "## AI Calls — Honest Audit Overview",
+      "- Total calls: " + formatAiCallNumber(summary.ai_calls_total ?? calls.length),
+      "- With usage: " + formatAiCallNumber(withUsage),
+      "- Zero usage: " + formatAiCallNumber(zeroUsage),
+      "- Mapped: " + formatAiCallNumber(summary.ai_calls_mapped_to_visible_steps ?? (calls.length - grouping.unmapped.length)),
+      "- Unmapped: " + formatAiCallNumber(unmappedCount),
+      "- Input tokens: " + formatAiCallNumber(summary.ai_calls_total_input_tokens),
+      "- Output tokens: " + formatAiCallNumber(summary.ai_calls_total_output_tokens),
+      "- Cost: " + formatAiCallMoney(summary.ai_calls_total_cost_usd),
+      "",
+    ];
+
+    const sessionSummary = aggregateAiCalls(calls, session);
+    const sessionCategories = computeTokenBreakdown(sessionSummary);
+    const sessionCostBasis = sessionSummary.session_total_cost_usd || sessionSummary.estimated_cost.estimated_total_cost_usd || 0;
+    const sessTotal = sessionCostBasis > 0 ? sessionCostBasis : sessionCategories.reduce((s, c) => s + c.cost, 0);
+    lines.push("## Token Breakdown (Session)");
+    lines.push("| Category | Tokens | Cost USD | % |");
+    lines.push("|----------|--------|----------|---|");
+    sessionCategories.forEach(c => {
+      const p = sessTotal > 0 ? (c.cost / sessTotal * 100) : 0;
+      lines.push("| " + c.label + " | " + nf.format(c.tokens) + " | $" + c.cost.toFixed(5) + " | " + p.toFixed(1) + "% |");
+    });
+    lines.push("");
+
+    const stepIndices = [...grouping.byStep.keys()].sort((a, b) => a - b);
+    stepIndices.forEach(stepIndex => {
+      const step = (session.steps || []).find(s => Number(s.step_index) === stepIndex);
+      const stepCalls = grouping.byStep.get(stepIndex) || [];
+      const stepSummary = aggregateAiCalls(stepCalls, session);
+      const stepCategories = computeTokenBreakdown(stepSummary);
+      const stepTotalCost = stepSummary.estimated_cost.estimated_total_cost_usd || 0;
+      const stepPct = stepSummary.percent_of_session_total != null
+        ? (stepSummary.percent_of_session_total * 100).toFixed(1) + "%" : "—";
+
+      lines.push("## Step " + stepIndex);
+      lines.push("- Model: " + M(step?.model));
+      lines.push("- Timestamp: " + M(step?.timestamp));
+      lines.push("- Turn ID: " + M(step?.turn_id));
+      lines.push("- Reasoning effort: " + M(step?.reasoning_effort));
+      lines.push("- Calls: " + formatAiCallNumber(stepSummary.ai_calls_count));
+      lines.push("- Step cost: " + formatAiCallMoney(stepTotalCost));
+      lines.push("- % of session: " + stepPct);
+      lines.push("");
+
+      if (step?.user_prompt?.available) {
+        lines.push("### Prompt");
+        lines.push("");
+        lines.push(step.user_prompt.text || "");
+        lines.push("");
+      }
+      if (step?.assistant_answer?.available) {
+        lines.push("### Answer");
+        lines.push("");
+        lines.push(step.assistant_answer.text || "");
+        lines.push("");
+      }
+
+      const stepTotal = stepTotalCost > 0 ? stepTotalCost : stepCategories.reduce((s, c) => s + c.cost, 0);
+      lines.push("### Token Breakdown (Step " + stepIndex + ")");
+      lines.push("| Category | Tokens | Cost USD | % |");
+      lines.push("|----------|--------|----------|---|");
+      stepCategories.forEach(c => {
+        const p = stepTotal > 0 ? (c.cost / stepTotal * 100) : 0;
+        lines.push("| " + c.label + " | " + nf.format(c.tokens) + " | $" + c.cost.toFixed(5) + " | " + p.toFixed(1) + "% |");
+      });
+      lines.push("");
+
+      if (stepCalls.length > 0) {
+        lines.push("### AI Calls (Step " + stepIndex + ")");
+        lines.push("| # | Time | Model | Cost | % Step | Cached | New input | Reasoning | Output |");
+        lines.push("|---|------|-------|------|--------|--------|-----------|-----------|--------|");
+        stepCalls.forEach(call => {
+          const callSummary = aggregateAiCalls([call], session);
+          const callCost = callSummary.estimated_cost.estimated_total_cost_usd || 0;
+          const callPct = stepTotalCost > 0 ? (callCost / stepTotalCost * 100).toFixed(1) + "%" : "—";
+          const ts = call?.timestamp ? new Date(call.timestamp).toLocaleTimeString("ru-RU") : "—";
+          const u = call?.usage || {};
+          lines.push(
+            "| " + formatAiCallNumber(call?.call_index) +
+            " | " + ts +
+            " | " + (call?.model || "unknown") +
+            " | " + formatAiCallMoney(callCost) +
+            " | " + callPct +
+            " | " + formatAiCallNumber(u.cached_tokens) +
+            " | " + formatAiCallNumber(u.non_cached_input_tokens) +
+            " | " + formatAiCallNumber(u.reasoning_tokens) +
+            " | " + formatAiCallNumber(u.output_tokens) +
+            " |"
+          );
+        });
+        lines.push("");
+      }
+    });
+
+    if (grouping.unmapped.length > 0) {
+      const unSummary = aggregateAiCalls(grouping.unmapped, session);
+      lines.push("## Unmapped AI Calls");
+      lines.push("- Calls: " + formatAiCallNumber(unSummary.ai_calls_count));
+      lines.push("- Cost: " + formatAiCallMoney(unSummary.estimated_cost.estimated_total_cost_usd));
+      lines.push("- % of session: " + formatAiCallPercent(unSummary.percent_of_session_total));
+      lines.push("");
+      lines.push("| # | Time | Model | Cost | Input | Cached | Output |");
+      lines.push("|---|------|-------|------|-------|--------|--------|");
+      grouping.unmapped.forEach(call => {
+        const callSummary = aggregateAiCalls([call], session);
+        const callCost = callSummary.estimated_cost.estimated_total_cost_usd || 0;
+        const ts = call?.timestamp ? new Date(call.timestamp).toLocaleTimeString("ru-RU") : "—";
+        const u = call?.usage || {};
+        lines.push(
+          "| " + formatAiCallNumber(call?.call_index) +
+          " | " + ts +
+          " | " + (call?.model || "unknown") +
+          " | " + formatAiCallMoney(callCost) +
+          " | " + formatAiCallNumber(u.input_tokens) +
+          " | " + formatAiCallNumber(u.cached_tokens) +
+          " | " + formatAiCallNumber(u.output_tokens) +
+          " |"
+        );
+      });
+      lines.push("");
+    }
+
+    const markdown = lines.join("\n");
+    const filename = "current-audit-" + (session.id || "session") + ".md";
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    showToast("Скачан " + filename);
   };
 
   // Replace only the detail renderer entry points used by renderAll() and filters.
