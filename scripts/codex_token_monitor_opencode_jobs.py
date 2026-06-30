@@ -806,6 +806,7 @@ class ZworkerProcessResultResult:
     auto_applied: bool = False
     auto_apply_files: int = 0
     auto_apply_errors: list[str] = field(default_factory=list)
+    rejection_reasons: list[str] = field(default_factory=list)
     requires_revision: bool = False
     requires_clarification: bool = False
     human_readable_summary: str = ""
@@ -869,11 +870,60 @@ def _normalize_path_list(value: str | list[str] | None) -> list[str] | None:
         value = value.strip()
         if not value:
             return None
-        return [p.strip() for p in value.split(",") if p.strip()]
+        parts = [p.strip() for p in re.split(r"[\r\n,]+", value) if p.strip()]
+        return parts if parts else None
     if isinstance(value, list):
         result = [str(p).strip() for p in value if str(p).strip()]
         return result if result else None
     return None
+
+
+ZWORKER_CODE_LIKE_EXTENSIONS = frozenset({
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cs",
+    ".css",
+    ".go",
+    ".h",
+    ".hpp",
+    ".html",
+    ".java",
+    ".js",
+    ".json",
+    ".jsx",
+    ".kt",
+    ".mdx",
+    ".mjs",
+    ".php",
+    ".py",
+    ".rb",
+    ".rs",
+    ".sass",
+    ".scss",
+    ".sh",
+    ".sql",
+    ".swift",
+    ".ts",
+    ".tsx",
+    ".vue",
+    ".xml",
+    ".yaml",
+    ".yml",
+})
+
+
+def _zworker_is_code_like_path(path: str) -> bool:
+    return Path(path).suffix.lower() in ZWORKER_CODE_LIKE_EXTENSIONS
+
+
+def _zworker_safe_target_path(target_root: Path, relative_path: str) -> Path:
+    dest = (target_root / relative_path).resolve(strict=False)
+    try:
+        dest.relative_to(target_root)
+    except ValueError as exc:
+        raise OSError(f"Resolved path escapes target_root: {relative_path}") from exc
+    return dest
 
 
 
@@ -1174,6 +1224,7 @@ def zworker_prompt_pack(
             "allowed_paths": normalized_allowed,
             "forbidden_paths": normalized_forbidden,
             "expected_outputs": normalized_expected,
+            "exact_expected_paths": normalized_expected,
             "auto_apply_enabled": True,
             "branch_may_be_needed": branch_may_be_needed,
             "create_branch": False,
@@ -1419,10 +1470,14 @@ def _zworker_semantic_remap(
         rel_norm = rel_path.replace("\\", "/")
         basename = Path(rel_norm).name
         ext = Path(rel_norm).suffix.lower()
+        code_like = _zworker_is_code_like_path(rel_norm)
 
         if basename in expected_by_basename and len(expected_by_basename[basename]) == 1:
             exact_match = expected_by_basename[basename][0]
             remapped.append((rel_path, exact_match, "exact_basename"))
+            continue
+
+        if code_like:
             continue
 
         if ext and ext in expected_by_ext and len(expected_by_ext[ext]) == 1:
@@ -1562,6 +1617,7 @@ def zworker_process_result(
     auto_applied = False
     auto_apply_files = 0
     auto_apply_errors: list[str] = []
+    rejection_reasons: list[str] = []
     requires_revision = False
     requires_clarification = False
     decision = "needs_revision"
@@ -1573,6 +1629,7 @@ def zworker_process_result(
     if not answer_read:
         requires_revision = True
         decision = "needs_revision"
+        rejection_reasons.append("answer_md_missing")
         human_readable = (
             f"## Process Result: REVISION REQUIRED\n\n"
             f"**Reason**: answer.md not found in unpack directory `{unpack_dir}`.\n"
@@ -1592,7 +1649,7 @@ def zworker_process_result(
                         entry_path = unpack_dir / orig_rel
                         if entry_path.exists():
                             try:
-                                dest = target_root / target_rel
+                                dest = _zworker_safe_target_path(target_root, target_rel)
                                 dest.parent.mkdir(parents=True, exist_ok=True)
                                 dest.write_bytes(entry_path.read_bytes())
                                 remapped_files.append((entry_path, target_rel, match_type))
@@ -1601,6 +1658,9 @@ def zworker_process_result(
                             except OSError as e:
                                 remap_errors.append(f"Failed to remap {orig_rel}: {e}")
                         break
+
+            if remap_errors:
+                rejection_reasons.extend(f"semantic_remap_failed:{err}" for err in remap_errors)
 
             if remapped_count > 0:
                 repo_files_in_scope += remapped_count
@@ -1612,6 +1672,10 @@ def zworker_process_result(
         if repo_files_out_of_scope > 0:
             requires_clarification = True
             decision = "needs_clarification"
+            if remap_details:
+                rejection_reasons.append("remaining_out_of_scope_files_after_semantic_remap")
+            else:
+                rejection_reasons.append("out_of_scope_files_present")
             oos_text = "\n".join(f"- {detail}" for detail in out_of_scope_details)
             remap_text = "\n".join(f"- {r}" for r in remap_details) if remap_details else "(none)"
             human_readable = (
@@ -1629,7 +1693,7 @@ def zworker_process_result(
             t_apply_start = time.perf_counter_ns()
             for file_path, rel_path in in_scope_files:
                 try:
-                    dest = target_root / rel_path
+                    dest = _zworker_safe_target_path(target_root, rel_path)
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_bytes(file_path.read_bytes())
                     auto_apply_files += 1
@@ -1640,6 +1704,7 @@ def zworker_process_result(
             if auto_apply_errors:
                 decision = "needs_revision"
                 requires_revision = True
+                rejection_reasons.extend(f"auto_apply_write_failed:{err}" for err in auto_apply_errors)
                 err_text = "\n".join(f"- {e}" for e in auto_apply_errors)
                 human_readable = (
                     f"## Process Result: FAILED\n\n"
@@ -1678,6 +1743,7 @@ def zworker_process_result(
     elif repo_files_out_of_scope > 0 and not auto_apply_enabled:
         requires_clarification = True
         decision = "needs_clarification"
+        rejection_reasons.append("out_of_scope_files_present")
         human_readable = (
             f"## Process Result: CLARIFICATION REQUIRED\n\n"
             f"**Reason**: {repo_files_out_of_scope} file(s) are out of scope and auto_apply_enabled is false.\n"
@@ -1687,7 +1753,7 @@ def zworker_process_result(
         t_apply_start = time.perf_counter_ns()
         for file_path, rel_path in in_scope_files:
             try:
-                dest = target_root / rel_path
+                dest = _zworker_safe_target_path(target_root, rel_path)
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(file_path.read_bytes())
                 auto_apply_files += 1
@@ -1698,6 +1764,7 @@ def zworker_process_result(
         if auto_apply_errors:
             decision = "needs_revision"
             requires_revision = True
+            rejection_reasons.extend(f"auto_apply_write_failed:{err}" for err in auto_apply_errors)
             err_text = "\n".join(f"- {e}" for e in auto_apply_errors)
             human_readable = (
                 f"## Process Result: FAILED\n\n"
@@ -1760,6 +1827,7 @@ def zworker_process_result(
         elif not auto_apply_enabled:
             decision = "needs_clarification"
             requires_clarification = True
+            rejection_reasons.append("auto_apply_disabled")
             human_readable = (
                 f"## Process Result: CLARIFICATION REQUIRED\n\n"
                 f"**Reason**: auto_apply_enabled is false and no auto-apply was performed.\n"
@@ -1769,6 +1837,7 @@ def zworker_process_result(
         else:
             requires_revision = True
             decision = "needs_revision"
+            rejection_reasons.append("repo_candidate_files_missing")
             human_readable = (
                 f"## Process Result: REVISION REQUIRED\n\n"
                 f"**Reason**: No repo-candidate files found in unpack directory.\n"
@@ -1812,6 +1881,7 @@ def zworker_process_result(
         auto_applied=auto_applied,
         auto_apply_files=auto_apply_files,
         auto_apply_errors=auto_apply_errors,
+        rejection_reasons=rejection_reasons,
         requires_revision=requires_revision,
         requires_clarification=requires_clarification,
         human_readable_summary=human_readable,
@@ -1824,6 +1894,7 @@ def zworker_revision_prompt(
     request_id: str,
     *,
     feedback: str = "",
+    rejection_reasons: list[str] | None = None,
     revision_number: int = 0,
     manifest_dir: Path | None = None,
 ) -> ZworkerRevisionPromptResult:
@@ -1923,6 +1994,13 @@ def zworker_revision_prompt(
         prompt_lines_list.append("```")
         prompt_lines_list.append("")
 
+    if rejection_reasons:
+        prompt_lines_list.append("## Rejection reasons")
+        prompt_lines_list.append("")
+        for reason in rejection_reasons:
+            prompt_lines_list.append(f"- {reason}")
+        prompt_lines_list.append("")
+
     prompt_lines_list.append("## Original Task")
     prompt_lines_list.append("")
     prompt_lines_list.append(f"{original_task[:2000] if original_task else '(Original task not available, re-request if needed)'}")
@@ -1941,6 +2019,7 @@ def zworker_revision_prompt(
         "created_at": _utcnow(),
         "mode": ZWORKER_MODE_REVISION_PROMPT,
         "feedback": feedback,
+        "rejection_reasons": list(rejection_reasons or []),
     }
     manifest_out = revision_dir / "revision_manifest.json"
     _atomic_write_json(manifest_out, revision_manifest)
@@ -2054,8 +2133,8 @@ def _zworker_auto_validate_zip(
 ) -> tuple[bool, str]:
     try:
         from zworker_web_zip import validate_zip as zworker_validate_zip
-    except ImportError:
-        return True, ""
+    except ImportError as exc:
+        return False, f"zip_validation_module_unavailable: {exc}"
 
     if not zip_path.exists():
         return False, f"zip_not_found: {zip_path}"
@@ -2326,6 +2405,7 @@ def zworker_auto_run(
         revision_result = zworker_revision_prompt(
             request_id,
             feedback=process_result.human_readable_summary,
+            rejection_reasons=process_result.rejection_reasons,
             revision_number=revision_count + 1,
         )
         if revision_result.status != "completed":

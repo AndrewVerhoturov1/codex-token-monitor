@@ -576,6 +576,20 @@ class ZworkerManifestTests(unittest.TestCase):
             manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["files_to_read"], ["https://example.com/a.py", "https://example.com/b.py"])
 
+    def test_manifest_allowed_paths_support_newline_separated_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            result = jobs.zworker_prompt_pack(
+                "Task",
+                output_dir=output_dir,
+                allowed_paths="src/app.js\nsrc/styles.css",
+                expected_outputs="src/app.js,\nsrc/styles.css",
+            )
+            self.assertEqual(result.status, "completed")
+            manifest = json.loads((output_dir / "request_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["allowed_paths"], ["src/app.js", "src/styles.css"])
+            self.assertEqual(manifest["exact_expected_paths"], ["src/app.js", "src/styles.css"])
+
 
 class ZworkerPassportTests(unittest.TestCase):
 
@@ -1191,6 +1205,26 @@ class ZworkerRevisionPromptTests(unittest.TestCase):
             prompt_text = (rev_dir / "revision_prompt.md").read_text(encoding="utf-8")
             self.assertIn("Fix the answer.md", prompt_text)
             self.assertIn("answer.md", prompt_text)
+
+    def test_revision_prompt_includes_rejection_reasons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            revisions = base / "revisions"
+            revisions.mkdir(parents=True, exist_ok=True)
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REVISIONS", base / "revisions"):
+                output = jobs.zworker_revision_prompt(
+                    "ZWORKER-20260627-120000-test",
+                    feedback="Need fixes",
+                    rejection_reasons=["out_of_scope_files_present", "repo_candidate_files_missing"],
+                    revision_number=2,
+                )
+            rev_dir = Path(output.revision_dir)
+            prompt_text = (rev_dir / "revision_prompt.md").read_text(encoding="utf-8")
+            manifest = json.loads((rev_dir / "revision_manifest.json").read_text(encoding="utf-8"))
+            self.assertIn("## Rejection reasons", prompt_text)
+            self.assertIn("- out_of_scope_files_present", prompt_text)
+            self.assertEqual(manifest["rejection_reasons"], ["out_of_scope_files_present", "repo_candidate_files_missing"])
 
     def test_revision_prompt_uses_relaxed_sources_language(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2094,13 +2128,21 @@ class ZworkerSemanticRemapTests(unittest.TestCase):
 
     def test_semantic_remap_unique_extension_match(self) -> None:
         out_of_scope = [
+            ("temp/generated.svg", "not in scope"),
+        ]
+        expected = ["src/assets/icon.svg"]
+        remaps = jobs._zworker_semantic_remap(out_of_scope, expected)
+        self.assertEqual(len(remaps), 1)
+        self.assertEqual(remaps[0][1], "src/assets/icon.svg")
+        self.assertEqual(remaps[0][2], "unique_extension")
+
+    def test_semantic_remap_skips_unique_extension_for_code_like_files(self) -> None:
+        out_of_scope = [
             ("temp/helper.ts", "not in scope"),
         ]
         expected = ["src/utils.ts"]
         remaps = jobs._zworker_semantic_remap(out_of_scope, expected)
-        self.assertEqual(len(remaps), 1)
-        self.assertEqual(remaps[0][1], "src/utils.ts")
-        self.assertEqual(remaps[0][2], "unique_extension")
+        self.assertEqual(remaps, [])
 
     def test_semantic_remap_no_match_when_multiple_extensions(self) -> None:
         out_of_scope = [
@@ -2154,19 +2196,19 @@ class ZworkerSemanticRemapTests(unittest.TestCase):
             self.assertGreater(output.remapped_files, 0)
             self.assertTrue((base / "src" / "Button.tsx").exists())
 
-    def test_process_result_remaps_unique_extension(self) -> None:
+    def test_process_result_remaps_unique_extension_for_non_code_asset(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             request_id = "ZWORKER-20260629-120000-remap2"
             self._make_request_dir(base, request_id, {
-                "allowed_paths": ["src/"],
-                "expected_outputs": ["src/helper.ts"],
+                "allowed_paths": ["src/assets/"],
+                "expected_outputs": ["src/assets/icon.svg"],
             })
             self._make_unpack_dir(base, request_id, {
                 "answer.md": (
                     "# Answer\n\n## Sources Read Report\n\n### Read fully\n- doc1\n\n### Read partially\n- none\n\n### Not read\n- none\n\n### External search used\nNo\n\n"
                 ),
-                "temp/helper.ts": "export const helper = () => {};\n",
+                "temp/generated.svg": "<svg></svg>\n",
             })
 
             with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
@@ -2179,7 +2221,34 @@ class ZworkerSemanticRemapTests(unittest.TestCase):
             self.assertEqual(output.decision, "accepted")
             self.assertTrue(output.auto_applied)
             self.assertGreater(output.remapped_files, 0)
-            self.assertTrue((base / "src" / "helper.ts").exists())
+            self.assertTrue((base / "src" / "assets" / "icon.svg").exists())
+
+    def test_process_result_blocks_unique_extension_remap_for_code_like_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            request_id = "ZWORKER-20260629-120000-remap4"
+            self._make_request_dir(base, request_id, {
+                "allowed_paths": ["src/"],
+                "expected_outputs": ["src/helper.ts"],
+            })
+            self._make_unpack_dir(base, request_id, {
+                "answer.md": (
+                    "# Answer\n\n## Sources Read Report\n\n### Read fully\n- doc1\n\n### Read partially\n- none\n\n### Not read\n- none\n\n### External search used\nNo\n\n"
+                ),
+                "temp/generated.ts": "export const helper = () => {};\n",
+            })
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", base / "requests"):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", base / "inbox"):
+                    output = jobs.zworker_process_result(
+                        request_id,
+                        unpack_dir=base / "inbox" / request_id,
+                        target_root=base,
+                    )
+            self.assertEqual(output.decision, "needs_clarification")
+            self.assertFalse(output.auto_applied)
+            self.assertEqual(output.remapped_files, 0)
+            self.assertIn("out_of_scope_files_present", output.rejection_reasons)
 
     def test_process_result_ambiguous_case_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

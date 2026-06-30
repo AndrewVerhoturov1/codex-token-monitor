@@ -20,6 +20,8 @@ from typing import Any, Iterable
 
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[/\\]")
 _TEMP_DOWNLOAD_SUFFIXES = (".crdownload", ".tmp", ".download")
+_NTFS_ADS_RE = re.compile(r":[^/\\]+$")
+DEFAULT_MAX_ZIP_SIZE_BYTES = 50 * 1024 * 1024
 
 
 @dataclass
@@ -92,6 +94,8 @@ def is_unsafe_zip_path(name: str) -> bool:
         return True
     if _WINDOWS_DRIVE_RE.match(raw) or _WINDOWS_DRIVE_RE.match(normalized):
         return True
+    if _NTFS_ADS_RE.search(normalized):
+        return True
     parts = PurePosixPath(normalized).parts
     if any(part in {"..", "", "."} for part in parts):
         return True
@@ -131,6 +135,7 @@ def validate_zip(
     allowed_paths: list[str] | None = None,
     forbidden_paths: list[str] | None = None,
     manifest_path: str | Path | None = None,
+    max_size_bytes: int = DEFAULT_MAX_ZIP_SIZE_BYTES,
 ) -> ZipValidationReport:
     path = Path(zip_path)
     manifest_allowed, manifest_forbidden = load_manifest_paths(Path(manifest_path) if manifest_path else None)
@@ -147,6 +152,9 @@ def validate_zip(
     report.non_empty = report.size_bytes > 0
     if not report.non_empty:
         report.error = "zip file is empty"
+        return report
+    if max_size_bytes > 0 and report.size_bytes > max_size_bytes:
+        report.error = f"zip file exceeds max size ({report.size_bytes} > {max_size_bytes})"
         return report
     if path.name.endswith(_TEMP_DOWNLOAD_SUFFIXES):
         report.error = "zip path looks like an incomplete browser download"

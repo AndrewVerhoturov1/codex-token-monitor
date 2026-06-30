@@ -78,6 +78,7 @@ def test_unsafe_path_helper() -> None:
     assert is_unsafe_zip_path("/x")
     assert is_unsafe_zip_path("C:/x")
     assert is_unsafe_zip_path("a/../../x")
+    assert is_unsafe_zip_path("docs/file.txt:$DATA")
     assert not is_unsafe_zip_path("docs/x.md")
 
 
@@ -97,3 +98,10 @@ def test_security_reject_takes_precedence_over_warnings(tmp_path: Path) -> None:
     assert report.security_reject
     assert report.status == "security_reject"
     assert report.forbidden_hits
+
+
+def test_zip_larger_than_limit_is_invalid(tmp_path: Path) -> None:
+    zip_path = make_zip(tmp_path / "big.zip", {"answer.md": "# ok\n", "docs/blob.txt": "a" * 4096})
+    report = validate_zip(zip_path, max_size_bytes=128)
+    assert not report.valid
+    assert "exceeds max size" in report.error
