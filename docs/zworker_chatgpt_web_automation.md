@@ -98,6 +98,33 @@ When opening a new chat, the runner follows this order:
 This avoids redundant sidebar clicks that can interfere with an already-ready
 chat input state.
 
+### Critical: `/c/...` URL never appears during `open_new_chat`
+
+The `open_new_chat` function considers a visible homepage composer a success
+and sets state `CHAT_CREATED` **without** requiring or waiting for a `/c/...`
+conversation URL. The `/c/...` pattern (matched by `is_valid_chat_url()` in
+`zworker_web_state.py`) first appears only after `send_prompt` transitions
+state to `PROMPT_SENT`.
+
+**Diagnostic implication**: On sequential Route W runs, the sequence
+`CHAT_CREATED` → `MODEL_CHECK_DONE` with a homepage URL (no `/c/...`) is
+normal. Do not diagnose this as "chat creation
+failed".
+
+### Sequential Route W runs
+
+When the web-runner is invoked repeatedly on the same Chrome session:
+
+1. Prior run left the browser at a `/c/...` conversation URL.
+2. `open_new_chat` navigates to `https://chatgpt.com/`.
+3. Homepage composer appears → `CHAT_CREATED` (homepage URL).
+4. `ensure_model` verifies the model → `MODEL_CHECK_DONE`.
+5. `send_prompt` submits the prompt → `PROMPT_SENT` (new `/c/...` captured).
+6. Normal answer/download/handoff phases follow.
+
+Steps 2–4 are **not** a creation failure — they are the expected pre-prompt
+setup for a fresh conversation on a reused session.
+
 ## Model policy
 
 Preferred model labels:

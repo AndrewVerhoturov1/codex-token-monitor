@@ -224,6 +224,77 @@ Check the runtime outputs:
 
 Treat `HANDOFF_DONE` plus process decision `accepted` as success.
 
+## Web-Runner State Progression (Critical Diagnostic Context)
+
+The web-runner follows a strict sequential state machine. Understanding this
+progression is essential to avoid false "chat creation failed" diagnosis on
+sequential Route W runs.
+
+### State Machine (creation → prompt → answer → download → handoff)
+
+```
+CREATED → CHAT_OPENING → CHAT_CREATED
+  → MODEL_CHECKING → MODEL_SELECTED
+  → PROMPT_SENDING → PROMPT_SENT (/c/... URL appears here)
+  → ANSWER_STREAMING → ANSWER_READY
+  → ZIP_LINK_WAITING → ZIP_LINK_FOUND
+  → ZIP_DOWNLOAD_STARTING → ZIP_DOWNLOAD_STARTED → ZIP_DOWNLOADED
+  → ZIP_VALIDATING → ZIP_VALID
+  → HANDOFF_UNPACKING → HANDOFF_UNPACKED → HANDOFF_PROCESSING → HANDOFF_DONE
+```
+
+### Key Diagnostic Rules (prevents false "chat creation failed" on re-runs)
+
+1. **`CHAT_CREATED` + homepage composer = success**, not failure.
+   `open_new_chat` treats a visible homepage composer (textarea/contenteditable)
+   as a ready chat input. It sets `CHAT_CREATED` immediately, even when the URL
+   is still `https://chatgpt.com/` without a `/c/...` path.
+
+2. **`/c/...` URL appears only after prompt send**, never during `open_new_chat`.
+   The first time a `/c/...` conversation URL is written to state is inside
+   `send_prompt` → `PROMPT_SENT`. Do not wait for a `/c/...` URL before
+   considering chat creation complete.
+
+3. **On sequential Route W runs**, the browser reuses the same ChatGPT session.
+   After a prior run, the browser may already be at a `/c/...` URL from the
+   previous chat. `open_new_chat` navigates to the homepage — the composer
+   appears, `CHAT_CREATED` is set (homepage URL, no new `/c/...` yet). This is
+   **normal** and not a failure.
+
+4. **`MODEL_CHECK_DONE` or `MODEL_SELECTED` before prompt send is also normal**
+   on a reused session. Do not treat reaching these states as "stuck" or
+   "creation failed."
+
+### Distinguish Creation Phase vs Later Phases
+
+| Phase | States | `/c/...` URL? | Meaning |
+|---|---|---|---|
+| **Creation** | `CHAT_OPENING` → `CHAT_CREATED` | No (homepage) | Chat input ready; model check follows |
+| **Model check** | `MODEL_CHECKING` → `MODEL_SELECTED` | No | Model verified on current session |
+| **Prompt send** | `PROMPT_SENDING` → `PROMPT_SENT` | Yes (appears here) | Prompt submitted; conversation exists |
+| **Answer** | `ANSWER_STREAMING` → `ANSWER_READY` | Yes | ChatGPT producing/generated reply |
+| **Download** | `ZIP_LINK_WAITING` → `ZIP_DOWNLOADED` | Yes | ZIP link tracked and ZIP downloaded |
+| **Handoff** | `ZIP_VALIDATING` → `HANDOFF_DONE` | Yes | ZIP validated and processed locally |
+
+### Troubleshooting / Diagnostic Checklist
+
+When a run appears stuck or failed, use this checklist to determine whether it
+is a real chat-creation failure vs a later-phase wait:
+
+| Observation | Most Likely Cause | Action |
+|---|---|---|
+| State ≤ `CHAT_CREATED`, homepage visible, composer absent | Real creation failure — sidebar "New chat" also failed | Check browser for login/anti-bot; restart Chrome if needed |
+| State = `CHAT_CREATED` or `MODEL_CHECK_DONE`, homepage+composer visible, no `/c/...` | **Not a failure** — creation phase complete, awaiting prompt send | Runner will proceed to prompt send; do not abort |
+| State = `PROMPT_SENT`, no `/c/...` URL in state | Prompt sent but /c/ URL not yet captured; may be transient | Check `wait_for_valid_chat_url` in logs; wait for answer phase |
+| State = `ANSWER_STREAMING` or `ANSWER_READY`, no ZIP yet | Normal — ChatGPT still generating or ZIP not yet posted | Wait for download phase; check answer timeout |
+| State = `ZIP_LINK_WAITING`, no ZIP file on disk | Normal — ZIP link not yet detected in page | Wait for download timeout; check ChatGPT output for ZWORKER_ZIP_READY |
+| State = `FAILED` with `FAILED_LOGIN_REQUIRED` | Real login failure | Ask user to log in manually in Chrome |
+| State = `FAILED` with `FAILED_MODEL_NOT_VERIFIED` | Model not found | May need `--allow-unverified-model` or different preferred model |
+
+**Golden rule**: If the state log shows `CHAT_CREATED` followed by
+`MODEL_CHECKING`/`MODEL_SELECTED`, the creation phase succeeded. The run is
+proceeding normally into the prompt phase. Do not restart or re-create the chat.
+
 ## Recovery Rules
 
 If the browser was closed:

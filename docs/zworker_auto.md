@@ -101,6 +101,50 @@ composer is present on the homepage, the sidebar click is skipped. This
 composer-first strategy prevents unnecessary navigation steps when the chat
 input is already available.
 
+## Web-Runner State Progression
+
+The web-runner state machine (from `zworker_chatgpt_web_runner.py` and
+`zworker_web_state.py`) follows this sequence:
+
+```
+CREATED → CHAT_OPENING → CHAT_CREATED → MODEL_CHECKING → MODEL_SELECTED
+  → PROMPT_SENDING → PROMPT_SENT → ANSWER_STREAMING → ANSWER_READY
+  → ZIP_LINK_WAITING → ZIP_LINK_FOUND → ZIP_DOWNLOAD_STARTING
+  → ZIP_DOWNLOAD_STARTED → ZIP_DOWNLOADED → ZIP_VALIDATING → ZIP_VALID
+  → HANDOFF_UNPACKING → HANDOFF_UNPACKED → HANDOFF_PROCESSING → HANDOFF_DONE
+```
+
+### Critical: `/c/...` URL appears only after prompt send
+
+The `is_valid_chat_url()` check matches URLs containing `/c/<alphanumeric>`.
+This pattern **never** appears during `open_new_chat` — that function navigates
+to the homepage and considers a visible composer sufficient to set
+`CHAT_CREATED`. The `/c/...` URL is first captured inside `send_prompt` when
+state transitions to `PROMPT_SENT`.
+
+**Do not diagnose homepage+composer or `CHAT_CREATED` as "chat creation
+failed"**. This is the normal creation-phase terminal state.
+
+### Sequential Route W runs
+
+On a second sequential Route W run, the browser navigates to the ChatGPT
+homepage from a prior `/c/...` conversation URL. The composer appears on the
+homepage, `open_new_chat` sets `CHAT_CREATED` (homepage URL, no `/c/...`),
+`ensure_model` transitions to `MODEL_CHECK_DONE`. This entire sequence is
+**normal and correct**. The run proceeds to prompt send, which then captures
+the new `/c/...` URL.
+
+### Diagnostic checklist
+
+| State observed | Diagnosis |
+|---|---|
+| `CHAT_CREATED` + homepage composer visible | Creation succeeded; awaiting model check + prompt send |
+| `MODEL_CHECK_DONE` + homepage composer visible | Model verified; ready for prompt send — do not abort |
+| `PROMPT_SENT` + `/c/...` URL present | Prompt delivered; awaiting answer/download |
+| `ANSWER_READY` + no ZIP yet | ChatGPT finished answering; waiting for ZIP link or download |
+| `FAILED` with `FAILED_LOGIN_REQUIRED` | Real failure — user must log in |
+| `FAILED` with no prior `CHAT_CREATED` | Real creation failure — browser may be stuck |
+
 ## Limitations
 
 - No browser automation for password/2FA/CAPTCHA
