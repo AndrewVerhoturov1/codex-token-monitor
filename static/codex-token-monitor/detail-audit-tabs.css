@@ -84,7 +84,8 @@
 
 .ai-calls-breakdown-table th,
 .ai-calls-breakdown-table td {
-  padding: 1px 6px;
+  padding: 2px 8px;
+  line-height: 1.45;
 }
 
 .ai-calls-breakdown-table thead tr {
@@ -93,7 +94,7 @@
 
 .ai-calls-breakdown-table th {
   text-align: left;
-  padding: 2px 6px;
+  padding: 3px 8px;
 }
 
 .ai-calls-breakdown-table td.label {
@@ -111,6 +112,36 @@
 .ai-call-table-summary {
   background: rgba(124, 156, 255, .06);
   font-weight: 600;
+}
+
+/* ── Current audit table refinements: more breathing room, subtler borders ── */
+body[data-detail-tab="current"] .ai-calls-table {
+  line-height: 1.4;
+}
+
+body[data-detail-tab="current"] .ai-calls-table th,
+body[data-detail-tab="current"] .ai-calls-table td {
+  border-color: rgba(255, 255, 255, 0.07);
+  padding: 3px 6px;
+}
+
+body[data-detail-tab="current"] .ai-calls-table thead th {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+body[data-detail-tab="current"] .ai-calls-table th.id-block,
+body[data-detail-tab="current"] .ai-calls-table td.id-block {
+  border-right: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+body[data-detail-tab="current"] .ai-calls-table th.ct-compact,
+body[data-detail-tab="current"] .ai-calls-table td.ct-compact {
+  padding: 2px 6px;
+}
+
+body[data-detail-tab="current"] .ai-calls-table td.num,
+body[data-detail-tab="current"] .ai-calls-table th.num {
+  padding: 3px 6px;
 }
 
 main.right > .toolbar[hidden],

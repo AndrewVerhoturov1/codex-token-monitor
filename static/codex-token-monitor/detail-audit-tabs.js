@@ -185,6 +185,8 @@ function getStepModes(stepIndex) {
     const modeOrder = ['tokens', 'cost', 'pct'];
     const activeArr = modeOrder.filter(k => activeModes.has(k));
     const N = activeArr.length;
+    const showTime = activeModes.has('time');
+    const showModel = activeModes.has('model');
 
     const subLabels = activeArr.map(k => {
       if (k === 'tokens') return 'токены';
@@ -196,8 +198,10 @@ function getStepModes(stepIndex) {
     if (N === 1) {
       theadHtml = `<thead><tr>
         <th class="num id-block" rowspan="1">#</th>
-        <th class="ct-compact id-block" rowspan="1">Time</th>
-        <th class="ct-compact id-block" rowspan="1">Model</th>
+        ${showTime ? '<th class="ct-compact id-block" rowspan="1">Time</th>' : ''}
+        ${showModel ? '<th class="ct-compact id-block" rowspan="1">Model</th>' : ''}
+        <th class="num id-block" rowspan="1">Стоимость вызова</th>
+        <th class="num id-block" rowspan="1">% от шага</th>
         ${catLabels.map((name, i) =>
           `<th class="num ${colorClasses[i]}">${name}</th>`
         ).join('')}
@@ -205,8 +209,10 @@ function getStepModes(stepIndex) {
     } else {
       theadHtml = `<thead><tr>
         <th class="num id-block" rowspan="2">#</th>
-        <th class="ct-compact id-block" rowspan="2">Time</th>
-        <th class="ct-compact id-block" rowspan="2">Model</th>
+        ${showTime ? '<th class="ct-compact id-block" rowspan="2">Time</th>' : ''}
+        ${showModel ? '<th class="ct-compact id-block" rowspan="2">Model</th>' : ''}
+        <th class="num id-block" rowspan="2">Стоимость вызова</th>
+        <th class="num id-block" rowspan="2">% от шага</th>
         ${catLabels.map((name, i) =>
           `<th class="num ${colorClasses[i]}" colspan="${N}">${name}</th>`
         ).join('')}
@@ -221,8 +227,10 @@ function getStepModes(stepIndex) {
 
     const summaryRow = `<tr class="ai-call-table-summary">
       <td class="num id-block">Σ</td>
-      <td class="ct-compact id-block">—</td>
-      <td class="ct-compact id-block">${formatAiCallNumber(stepSummary.ai_calls_count)} calls</td>
+      ${showTime ? '<td class="ct-compact id-block">—</td>' : ''}
+      ${showModel ? `<td class="ct-compact id-block">${formatAiCallNumber(stepSummary.ai_calls_count)} calls</td>` : ''}
+      <td class="num id-block">${formatAiCallMoney(stepTotalCost)}</td>
+      <td class="num id-block">100%</td>
       ${renderMultiCategoryCells(stepCategories, stepTotalCost, activeModes)}
     </tr>`;
     const callRows = list.map(call => {
@@ -230,10 +238,13 @@ function getStepModes(stepIndex) {
       const callCategories = computeTokenBreakdown(callSummary);
       const callTotalCost = callSummary.estimated_cost.estimated_total_cost_usd || 0;
       const timestamp = call?.timestamp ? new Date(call.timestamp).toLocaleTimeString("ru-RU") : "—";
+      const callPct = stepTotalCost > 0 ? `${(callTotalCost / stepTotalCost * 100).toFixed(1)}%` : "—";
       return `<tr class="${call?.is_zero_usage ? 'ai-call-zero' : ''}">
         <td class="num id-block">${formatAiCallNumber(call?.call_index)}</td>
-        <td class="ct-compact id-block">${escapeHtml(timestamp)}</td>
-        <td class="ct-compact id-block">${escapeHtml(call?.model || "unknown")}</td>
+        ${showTime ? `<td class="ct-compact id-block">${escapeHtml(timestamp)}</td>` : ''}
+        ${showModel ? `<td class="ct-compact id-block">${escapeHtml(call?.model || "unknown")}</td>` : ''}
+        <td class="num id-block">${formatAiCallMoney(callTotalCost)}</td>
+        <td class="num id-block">${callPct}</td>
         ${renderMultiCategoryCells(callCategories, callTotalCost, activeModes)}
       </tr>`;
     }).join('');
@@ -265,6 +276,8 @@ function getStepModes(stepIndex) {
       { key: 'tokens', label: 'Токены' },
       { key: 'cost', label: 'Стоимость' },
       { key: 'pct', label: '% стоимости' },
+      { key: 'time', label: 'Время' },
+      { key: 'model', label: 'Модель' },
     ];
     const toggleHtml = toggleKeys.map(t =>
       `<button class="ghost small${activeModes.has(t.key) ? ' active' : ''}" data-key="${t.key}">${t.label}</button>`
@@ -298,7 +311,9 @@ function getStepModes(stepIndex) {
           modes = new Set(['tokens', 'cost', 'pct']);
           stepToggleModes.set(si, modes);
         }
-        if (modes.has(key) && modes.size <= 1) return;
+        const isMetric = key === 'tokens' || key === 'cost' || key === 'pct';
+        const activeMetricCount = [...modes].filter(k => k === 'tokens' || k === 'cost' || k === 'pct').length;
+        if (isMetric && activeMetricCount <= 1) return;
         if (modes.has(key)) {
           modes.delete(key);
           this.classList.remove('active');
