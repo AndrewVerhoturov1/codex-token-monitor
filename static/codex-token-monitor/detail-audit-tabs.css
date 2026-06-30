@@ -164,3 +164,267 @@ main.right > .toolbar[hidden],
     flex-direction: column;
   }
 }
+
+.truthful-timeline {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border-color: rgba(255, 255, 255, .06);
+  background: rgba(17, 24, 39, .76);
+}
+
+.truthful-timeline > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.truthful-timeline > summary::-webkit-details-marker {
+  display: none;
+}
+
+.truthful-timeline > summary h3 {
+  margin: 0 0 3px;
+  color: var(--soft);
+}
+
+.truthful-timeline[open] > summary {
+  border-bottom: 1px solid var(--line);
+}
+
+.truth-intro,
+.truth-session-events,
+.truth-step-list,
+.truth-unmapped {
+  margin: 14px 16px;
+}
+
+.truth-intro,
+.truth-lane-note,
+.truth-note,
+.truth-cost-rule,
+.truth-reasoning-unavailable,
+.truth-next-call,
+.truth-empty {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.truth-step {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  margin-bottom: 14px;
+  background: rgba(255, 255, 255, .015);
+}
+
+.truth-step-head,
+.truth-call-head,
+.truth-action-head,
+.truth-tool-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.truth-step h4,
+.truth-call h5,
+.truth-lane h5,
+.truth-session-events h4,
+.truth-unmapped h4 {
+  margin: 0 0 6px;
+}
+
+.truth-step-meta,
+.truth-call-meta,
+.truth-action-meta,
+.truth-object {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.truth-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.truth-state {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 7px;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.truth-state-raw_backed {
+  border-color: #3f7d5a;
+  color: #8dd8a9;
+}
+
+.truth-state-inferred {
+  border-color: #8a7133;
+  color: #e0c36f;
+}
+
+.truth-state-unavailable {
+  border-color: #76505a;
+  color: #dba0af;
+}
+
+.truth-actions,
+.truth-sequence {
+  display: grid;
+  gap: 9px;
+}
+
+.truth-call {
+  border-left: 3px solid #6386b3;
+  background: rgba(80, 120, 170, .07);
+  padding: 12px;
+  border-radius: 7px;
+  margin-top: 10px;
+}
+
+.truth-call-usage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 9px 0;
+  font-size: 11px;
+}
+
+.truth-call-usage span {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 4px 6px;
+}
+
+.truth-reasoning-unavailable {
+  border-left: 2px solid #76505a;
+  padding-left: 8px;
+  margin: 8px 0;
+}
+
+.truth-actions-title {
+  margin: 10px 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--soft);
+}
+
+.truth-action,
+.truth-tool-event,
+.truth-session-event {
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 9px;
+  background: rgba(255, 255, 255, .02);
+}
+
+.truth-cost-rule {
+  margin-top: 6px;
+  font-style: italic;
+}
+
+.truth-lane {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+}
+
+.truth-lane-note {
+  margin-bottom: 8px;
+}
+
+.truth-tool-event {
+  border-left: 3px solid #7a6ca8;
+}
+
+.truth-tool-result {
+  border-left-color: #3f7d5a;
+  margin-left: 18px;
+}
+
+.truth-sequence {
+  position: relative;
+}
+
+.truth-sequence::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -7px;
+  border-left: 1px dashed var(--line);
+}
+
+.truth-next-call {
+  margin-top: 5px;
+  border-left: 2px solid #8a7133;
+  padding-left: 7px;
+}
+
+.truth-tool-preview {
+  margin: 7px 0 0;
+  padding: 8px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: 11px;
+}
+.truth-tool-type {
+  color: var(--muted);
+  font-weight: 400;
+}
+.truth-preview-decoded,
+.truth-preview-raw {
+  display: block;
+  font-size: 10px;
+  font-style: italic;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.truth-raw-preview {
+  margin-top: 6px;
+  border-color: rgba(255, 100, 100, .3);
+  background: rgba(255, 100, 100, .05);
+}
+
+.truth-session-event {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+  font-size: 11px;
+}
+
+.truth-unmapped {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+
+@media(max-width:900px) {
+  .truthful-timeline > summary,
+  .truth-step-head,
+  .truth-call-head,
+  .truth-action-head,
+  .truth-tool-head {
+    flex-direction: column;
+  }
+
+  .truth-badges {
+    justify-content: flex-start;
+  }
+}
