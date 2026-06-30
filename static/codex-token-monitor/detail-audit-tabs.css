@@ -1,0 +1,77 @@
+.detail-tabs {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 3px;
+  margin-top: 10px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: rgba(0, 0, 0, .18);
+}
+
+.detail-tabs button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.detail-tabs button.active {
+  border-color: var(--blue);
+  background: var(--blue);
+  color: #07111f;
+}
+
+.detail-tabs button:focus-visible {
+  outline: 2px solid #bfd0ff;
+  outline-offset: 2px;
+}
+
+.ai-calls-current-group {
+  margin: 0;
+  padding: 10px;
+  border-color: rgba(124, 156, 255, .24);
+  background: rgba(17, 24, 39, .76);
+}
+
+.ai-calls-current-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 2px;
+}
+
+.ai-calls-current-group-head h3 {
+  margin-bottom: 4px;
+  color: var(--soft);
+}
+
+.ai-calls-current-table {
+  margin-top: 8px;
+  margin-bottom: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+main.right > .toolbar[hidden],
+#stats[hidden],
+#auditPanel[hidden],
+#groupedAiCallsExportButton[hidden] {
+  display: none !important;
+}
+
+@media(max-width:760px) {
+  .detail-tabs {
+    width: 100%;
+  }
+
+  .detail-tabs button {
+    flex: 1;
+  }
+
+  .ai-calls-current-group-head {
+    flex-direction: column;
+  }
+}
