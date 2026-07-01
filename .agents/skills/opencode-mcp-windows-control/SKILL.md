@@ -938,6 +938,7 @@ Without a separate Codex decision, do not run:
 - network commands;
 - server or watch commands;
 - commands requiring secrets;
+- commands that write external directories;
 - Git write commands.
 
 ## Git write restrictions
