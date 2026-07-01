@@ -1,17 +1,20 @@
----
+﻿---
 name: zworker-auto
-description: Use when the user explicitly invokes `/zworker-auto` or asks Codex to run the fully automated zworker ChatGPT Web route with browser reuse, ZIP download, and automatic handoff into the local repository.
+description: Use when the user explicitly invokes `/zworker-auto` or when the main routing skill deliberately selects Route W / Web Zworker Auto for a high-reasoning phase with sufficient published GitHub context.
 ---
 
 # Zworker Auto
 
 ## Purpose
 
-Load this skill only for the explicit `zworker-auto` route.
+Load this skill only for the explicit `zworker-auto` route or when the main
+route planner deliberately selects Route W / Web Zworker Auto for a meaningful
+phase.
 
 Do not load it for ordinary local repo work.
 Do not load it merely for ordinary OpenCode delegation.
 Do not load it for manual `/zworker`.
+Do not load it when GitHub context is not publishable for the needed Web phase.
 
 `/zworker-auto` means Codex should execute the external ChatGPT Web route
 itself:
@@ -33,6 +36,40 @@ Keep the current zworker stages as the source of truth:
 
 Do not reimplement their logic inside the skill.
 
+## Route W preference
+
+Route W is the preferred strongest-model phase when all are true:
+
+- the task benefits from high reasoning quality;
+- GitHub context is current and sufficient;
+- the output can be returned as a zworker ZIP.
+
+Before sending a prompt to ChatGPT Web:
+
+- run Route A reconnaissance if repo facts are needed;
+- ensure GitHub/raw URLs are current;
+- use a temporary context branch when needed;
+- do not send local-only assumptions.
+
+## Published GitHub Context Rule
+
+Before the ChatGPT Web phase, Codex MUST ensure that all required repository
+context is available through externally-readable GitHub/raw URLs.
+
+If required files or changes exist only locally, or local state is newer than
+GitHub, Codex MUST use OpenCode to publish the minimum required context before
+running `zworker-auto`.
+
+Preferred method:
+
+- create or update `zworker-context/<request-id>`;
+- push only the files required by the Web phase;
+- place raw GitHub URLs from that branch into the prompt.
+
+If the needed context cannot be safely published, Route W is blocked for that
+phase and Codex should use Route A / Route C locally or stop with a clear
+blocker.
+
 ## Phase Composition Rule
 
 `/zworker-auto` does not replace the main route planner.
@@ -51,8 +88,9 @@ verification, and follow-up fixes must still use per-phase routing from
 Within one user request, Codex MAY combine:
 
 - Route A for reconnaissance, reading, and verification
+- GitHub/context sync through OpenCode when Web needs fresher published context
 - `zworker-auto` for the external ChatGPT Web run
-- Route C for medium post-handoff implementation or fixes
+- Route C for hard local post-handoff implementation or fixes
 - Route A again for final verification
 
 Do not treat `/zworker-auto` as an exclusive whole-task route.
@@ -65,6 +103,10 @@ For the current workstation, prefer this concrete route:
 1. `zworker_prompt_pack`
 2. direct `zworker_chatgpt_web_runner.py --cdp-url ... --handoff`
 3. existing local handoff through `result_unpack` and `process_result`
+
+This direct attach-mode runner is the canonical route for future chats on this
+machine. The broader `zworker-auto` orchestrator must mirror its confirmed
+result, not invent browser phases ahead of it.
 
 Treat this as the primary operational path even though the repository also has
 broader `zworker-auto` orchestration code and an MCP wrapper.
@@ -84,9 +126,11 @@ flow unless the user explicitly asks for that fallback.
 Example route chain for one request:
 
 1. Route A -> inspect current repo state and gather bounded context
-2. `zworker-auto` -> run the external ChatGPT Web flow and download the ZIP
-3. Route C -> refine the accepted result if medium code changes are needed
-4. Route A -> verify changed files and checks
+2. GitHub/context sync -> publish the minimum required context when GitHub is stale
+3. `zworker-auto` -> run the external ChatGPT Web flow and download the ZIP
+4. Route A -> review the ZIP, apply safe changes, and verify
+5. Route C -> repair hard local issues if needed
+6. Codex -> issue the final decision
 
 ## Browser Policy
 
@@ -96,6 +140,12 @@ Use only:
 - headful mode
 - ChatGPT Web
 - Playwright attach-mode via CDP when possible
+
+Attach-mode rule:
+
+- always open a dedicated new page in the attached Chrome context
+- do not reuse or close the user's existing ChatGPT tab
+- do not close an externally owned browser/context on success or failure
 
 Do not use:
 
@@ -172,16 +222,10 @@ Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:9222/json/version'
 
 Before the real run, verify the browser state:
 
-- The homepage composer (textarea, contenteditable div, or chat input box) is
-  visible — this confirms the page is ready for input without any extra
-  navigation step
+- ChatGPT composer is visible
 - the page is not on a login screen
 - the page shows a Plus session signal such as `ChatGPT Plus`, `Plus`, or the
   generic model picker state like `High`
-
-A visible composer on the homepage is a valid ready state. Do **not** force a
-sidebar "New chat" click when the composer is already visible — the sidebar
-"New chat" button is a fallback only when the composer is absent.
 
 If the page is logged out, stop and ask the user to log in manually in that
 browser window.
@@ -210,16 +254,16 @@ Important:
 - prefer the direct web-runner attach path for the real browser flow
 - do not start with `zworker-auto` launch-mode that opens a fresh browser
 - keep the 12-minute answer timeout for ChatGPT Web work
-- The web-runner already implements composer-first chat creation: it checks for
-  a visible composer before falling back to a sidebar "New chat" click. Trust
-  this behavior and do not add extra sidebar clicks before calling the runner.
+- a successful web-runner return must also yield a valid ZIP; `exit 0` without a valid ZIP is a failure, not `awaiting_zip`
+- canonical ZIP name is `.ai/zworker/runtime/web/output/<request-id>/<request-id>-zworker-result.zip`
+- legacy `<request-id>.zip` may be accepted only for compatibility during transition
 
 ### 5. Read result artifacts
 
 Check the runtime outputs:
 
 - `.ai/zworker/runtime/web/sessions/<request-id>/run_state.json`
-- `.ai/zworker/runtime/web/output/<request-id>/<request-id>.zip`
+- `.ai/zworker/runtime/web/output/<request-id>/<request-id>-zworker-result.zip`
 - `.ai/zworker/runtime/inbox/<request-id>/process_report.md`
 
 Treat `HANDOFF_DONE` plus process decision `accepted` as success.
@@ -310,6 +354,9 @@ If the run failed before `PROMPT_SENT`, rerun normally.
 
 If the run reached `PROMPT_SENT` or later, do not resend blindly. Reuse the
 recorded state and chat whenever possible.
+
+If outer `zworker-auto` state and inner web-runner state disagree, trust the
+inner web state from `.ai/zworker/runtime/web/sessions/<request-id>/run_state.json`.
 
 If a ZIP was downloaded but naming/layout differs, prefer the current semantic
 handoff logic and evaluate the result by substance, not by cosmetic filenames
