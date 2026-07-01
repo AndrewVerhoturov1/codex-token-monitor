@@ -160,6 +160,84 @@ class ZworkerRequestIdTests(unittest.TestCase):
         ))
 
 
+class ZworkerCanonicalizeRequestIdTests(unittest.TestCase):
+
+    def test_canonicalize_passthrough_valid_zworker_id(self) -> None:
+        rid = "ZWORKER-20260627-120000-valid-slug"
+        result = jobs._zworker_canonicalize_request_id(rid)
+        self.assertEqual(result, rid)
+
+    def test_canonicalize_friendly_id(self) -> None:
+        result = jobs._zworker_canonicalize_request_id("greeting-card-anechka-alena")
+        self.assertTrue(result.startswith("ZWORKER-00000000-000000-"))
+        self.assertIn("greeting-card-anechka-alena", result)
+        self.assertTrue(jobs._zworker_request_name_is_valid(result),
+                        f"Canonicalized ID should be valid: {result}")
+
+    def test_canonicalize_friendly_id_with_special_chars(self) -> None:
+        result = jobs._zworker_canonicalize_request_id("My Friendly @#$ ID")
+        self.assertTrue(result.startswith("ZWORKER-00000000-000000-"))
+        self.assertIn("my-friendly-id", result)
+        self.assertTrue(jobs._zworker_request_name_is_valid(result))
+
+    def test_canonicalize_empty_string(self) -> None:
+        self.assertEqual(jobs._zworker_canonicalize_request_id(""), "")
+
+    def test_canonicalize_deterministic(self) -> None:
+        rid1 = jobs._zworker_canonicalize_request_id("hello-world-test")
+        rid2 = jobs._zworker_canonicalize_request_id("hello-world-test")
+        self.assertEqual(rid1, rid2)
+
+    def test_canonicalize_passthrough_zworker_revision(self) -> None:
+        rid = "ZWORKER-20260627-120000-some-task-ver2"
+        result = jobs._zworker_canonicalize_request_id(rid)
+        self.assertEqual(result, rid)
+
+    def test_auto_run_accepts_friendly_request_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            auto_dir = Path(tmp) / "auto"
+            auto_dir.mkdir(parents=True, exist_ok=True)
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", auto_dir):
+                config = jobs.ZworkerAutoRunConfig(
+                    task="Test friendly ID",
+                    request_id="greeting-card-anechka-alena",
+                    max_revisions=2,
+                )
+                result = jobs.zworker_auto_run(config)
+
+            self.assertNotEqual(result.status, "failed",
+                                f"Should not fail with friendly request_id: {result.error}")
+            self.assertIn("ZWORKER-", result.request_id,
+                          "request_id should be canonicalized to ZWORKER- format")
+
+    def test_auto_run_deterministic_friendly_id_produces_same_canonical(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            auto_dir = Path(tmp) / "auto"
+            auto_dir.mkdir(parents=True, exist_ok=True)
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", auto_dir):
+                config1 = jobs.ZworkerAutoRunConfig(
+                    task="Deterministic test",
+                    request_id="my-friendly-task",
+                )
+                result1 = jobs.zworker_auto_run(config1)
+
+            auto_dir2 = Path(tmp) / "auto2"
+            auto_dir2.mkdir(parents=True, exist_ok=True)
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", auto_dir2):
+                config2 = jobs.ZworkerAutoRunConfig(
+                    task="Deterministic test",
+                    request_id="my-friendly-task",
+                    force_resend=True,
+                )
+                result2 = jobs.zworker_auto_run(config2)
+
+            # Different run dirs but same friendly ID → same canonical request_id
+            self.assertEqual(result1.request_id, result2.request_id)
+
+
 class ZworkerManualDocsTests(unittest.TestCase):
 
     def test_manual_exists_and_is_readable(self) -> None:
@@ -1768,6 +1846,7 @@ class ZworkerAutoModeTests(unittest.TestCase):
         self.assertIn(jobs.ZWORKER_MODE_AUTO, jobs.ZWORKER_VALID_MODES)
 
     def test_zworker_auto_valid_states(self) -> None:
+        self.assertIn(jobs.ZWORKER_AUTO_STATE_INITIALIZING, jobs.ZWORKER_AUTO_VALID_STATES)
         self.assertIn(jobs.ZWORKER_AUTO_STATE_REQUEST_PACKED, jobs.ZWORKER_AUTO_VALID_STATES)
         self.assertIn(jobs.ZWORKER_AUTO_STATE_WEB_RUNNER_RUNNING, jobs.ZWORKER_AUTO_VALID_STATES)
         self.assertIn(jobs.ZWORKER_AUTO_STATE_PROMPT_SENT, jobs.ZWORKER_AUTO_VALID_STATES)
@@ -1996,6 +2075,24 @@ class ZworkerAutoIntegrationTests(unittest.TestCase):
             events_content = Path(result.events_log_path).read_text(encoding="utf-8")
             self.assertIn("prompt_pack_completed", events_content)
 
+    def test_auto_run_writes_initializing_event_before_prompt_pack(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            auto_dir = Path(tmp) / "auto"
+            auto_dir.mkdir(parents=True, exist_ok=True)
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", auto_dir):
+                config = jobs.ZworkerAutoRunConfig(task="Initializing event")
+                result = jobs.zworker_auto_run(config)
+
+            events_content = Path(result.events_log_path).read_text(encoding="utf-8")
+            self.assertIn("initializing", events_content)
+            self.assertIn("prompt_pack_completed", events_content)
+            self.assertLess(
+                events_content.index("initializing"),
+                events_content.index("prompt_pack_completed"),
+                "initializing event must appear before prompt_pack_completed",
+            )
+
 
 class ZworkerAutoOrchestrationTests(unittest.TestCase):
 
@@ -2206,6 +2303,262 @@ class ZworkerAutoOrchestrationTests(unittest.TestCase):
 
             self.assertEqual(result.status, "completed")
             self.assertEqual(result.final_decision, "accepted")
+
+    def test_auto_run_web_runner_timeout_after_prompt_sent_becomes_awaiting_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+            request_id = "ZWORKER-20260629-120000-timeout-resume"
+            web_runtime_root = base / ".ai" / "zworker" / "runtime" / "web"
+
+            session_dir = web_runtime_root / "sessions" / request_id
+            session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "run_state.json").write_text(
+                json.dumps(
+                    {
+                        "request_id": request_id,
+                        "state": "ANSWER_STREAMING",
+                        "chat_url": "https://chatgpt.com/c/test-timeout-resume",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                    with unittest.mock.patch.object(jobs, "REPO_ROOT", base):
+                        with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", return_value=(False, "web_runner_timeout")):
+                            config = jobs.ZworkerAutoRunConfig(
+                                task="Timeout resume test",
+                                request_id=request_id,
+                            )
+                            result = jobs.zworker_auto_run(config, use_web_runner=True)
+
+            self.assertEqual(result.status, "awaiting_zip")
+            self.assertEqual(result.final_decision, "awaiting_zip")
+            state_payload = json.loads(Path(result.state_file_path).read_text(encoding="utf-8"))
+            self.assertEqual(state_payload["state"], jobs.ZWORKER_AUTO_STATE_PROMPT_SENT)
+            events_content = Path(result.events_log_path).read_text(encoding="utf-8")
+            self.assertIn("web_runner_resume_available", events_content)
+
+    def test_auto_run_web_runner_timeout_with_zip_still_processes_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+            request_id = "ZWORKER-20260629-120000-timeout-zip"
+            web_runtime_root = base / ".ai" / "zworker" / "runtime" / "web"
+
+            zip_path = web_runtime_root / "output" / request_id / f"{request_id}-zworker-result.zip"
+            zip_path.parent.mkdir(parents=True, exist_ok=True)
+            with jobs.zipfile.ZipFile(zip_path, "w", jobs.zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("answer.md", "# Answer\n\n## Sources Read Report\n\n### Read fully\n- doc1\n\n### Read partially\n- none\n\n### Not read\n- none\n\n### External search used\nNo\n")
+                zf.writestr("src/file.py", "print('hello')\n")
+
+            session_dir = web_runtime_root / "sessions" / request_id
+            session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "run_state.json").write_text(
+                json.dumps(
+                    {
+                        "request_id": request_id,
+                        "state": "ZIP_VALID",
+                        "zip_path": str(zip_path),
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", runtime["inbox"]):
+                    with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                        with unittest.mock.patch.object(jobs, "REPO_ROOT", base):
+                            with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", return_value=(False, "web_runner_timeout")):
+                                config = jobs.ZworkerAutoRunConfig(
+                                    task="Timeout zip test",
+                                    request_id=request_id,
+                                    allowed_paths="src/",
+                                )
+                                result = jobs.zworker_auto_run(config, use_web_runner=True)
+
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.final_decision, "accepted")
+            events_content = Path(result.events_log_path).read_text(encoding="utf-8")
+            self.assertIn("web_runner_failed_but_zip_present", events_content)
+
+    def test_auto_run_web_runner_not_started_marks_not_started_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+            request_id = "ZWORKER-20260629-120000-not-started"
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                    with unittest.mock.patch.object(
+                        jobs,
+                        "_zworker_auto_invoke_web_runner",
+                        return_value=(False, "web_runner_not_started: session_state_missing; diag_dir=/tmp/diag"),
+                    ):
+                        config = jobs.ZworkerAutoRunConfig(
+                            task="Not started test",
+                            request_id=request_id,
+                        )
+                        result = jobs.zworker_auto_run(config, use_web_runner=True)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("web_state=not_started", result.error)
+            events_content = Path(result.events_log_path).read_text(encoding="utf-8")
+            self.assertIn('"web_state": "not_started"', events_content)
+
+    def test_auto_run_retries_once_after_web_runner_not_started(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+            request_id = "ZWORKER-20260629-120000-retry-not-started"
+            web_runtime_root = base / ".ai" / "zworker" / "runtime" / "web"
+
+            zip_path = web_runtime_root / "output" / request_id / f"{request_id}-zworker-result.zip"
+            zip_path.parent.mkdir(parents=True, exist_ok=True)
+            with jobs.zipfile.ZipFile(zip_path, "w", jobs.zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("answer.md", "# Answer\n\n## Sources Read Report\n\n### Read fully\n- doc1\n\n### Read partially\n- none\n\n### Not read\n- none\n\n### External search used\nNo\n")
+                zf.writestr("src/file.py", "print('hello')\n")
+
+            session_dir = web_runtime_root / "sessions" / request_id
+            session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "run_state.json").write_text(
+                json.dumps({"request_id": request_id, "state": "ZIP_VALID", "zip_path": str(zip_path)}),
+                encoding="utf-8",
+            )
+
+            invoke_mock = unittest.mock.Mock(side_effect=[
+                (False, "web_runner_not_started: session_state_missing; diag_dir=/tmp/diag"),
+                (True, ""),
+            ])
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", runtime["inbox"]):
+                    with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                        with unittest.mock.patch.object(jobs, "REPO_ROOT", base):
+                            with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", invoke_mock):
+                                with unittest.mock.patch.object(jobs.time, "sleep", return_value=None) as sleep_mock:
+                                    config = jobs.ZworkerAutoRunConfig(
+                                        task="Retry startup timeout",
+                                        request_id=request_id,
+                                        allowed_paths="src/",
+                                    )
+                                    result = jobs.zworker_auto_run(config, use_web_runner=True)
+
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.final_decision, "accepted")
+            self.assertEqual(invoke_mock.call_count, 2)
+            sleep_mock.assert_called()
+            events_content = Path(result.events_log_path).read_text(encoding="utf-8")
+            self.assertIn("web_runner_retry_scheduled", events_content)
+            self.assertIn("web_runner_retrying", events_content)
+
+    def test_auto_run_writes_full_diagnostics_timeline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+            request_id = "ZWORKER-20260629-120000-diagnostics"
+            web_runtime_root = base / ".ai" / "zworker" / "runtime" / "web"
+
+            zip_path = web_runtime_root / "output" / request_id / f"{request_id}-zworker-result.zip"
+            zip_path.parent.mkdir(parents=True, exist_ok=True)
+            with jobs.zipfile.ZipFile(zip_path, "w", jobs.zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("answer.md", "# Answer\n\n## Sources Read Report\n\n### Read fully\n- doc1\n\n### Read partially\n- none\n\n### Not read\n- none\n\n### External search used\nNo\n")
+                zf.writestr("src/file.py", "print('hello')\n")
+
+            session_dir = web_runtime_root / "sessions" / request_id
+            session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "run_state.json").write_text(
+                json.dumps(
+                    {
+                        "request_id": request_id,
+                        "state": "HANDOFF_DONE",
+                        "chat_url": "https://chatgpt.com/c/test-diagnostics",
+                        "zip_path": str(zip_path),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (session_dir / "events.jsonl").write_text(
+                "\n".join([
+                    json.dumps({"ts": "2026-06-29T12:00:01.000Z", "event": "state_changed", "state": "CHAT_CREATED", "new_state": "CHAT_CREATED"}),
+                    json.dumps({"ts": "2026-06-29T12:00:02.000Z", "event": "state_changed", "state": "PROMPT_SENT", "new_state": "PROMPT_SENT"}),
+                    json.dumps({"ts": "2026-06-29T12:00:03.000Z", "event": "state_changed", "state": "HANDOFF_DONE", "new_state": "HANDOFF_DONE"}),
+                ]) + "\n",
+                encoding="utf-8",
+            )
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", runtime["inbox"]):
+                    with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                        with unittest.mock.patch.object(jobs, "REPO_ROOT", base):
+                            with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", return_value=(True, "")):
+                                config = jobs.ZworkerAutoRunConfig(
+                                    task="Diagnostics timeline",
+                                    request_id=request_id,
+                                    allowed_paths="src/",
+                                )
+                                result = jobs.zworker_auto_run(config, use_web_runner=True)
+
+            self.assertEqual(result.status, "completed")
+            diagnostics_path = runtime["auto"] / request_id / "diagnostics" / "full_timeline.json"
+            self.assertTrue(diagnostics_path.exists())
+            diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+            self.assertEqual(diagnostics["request_id"], request_id)
+            self.assertEqual(diagnostics["final_outcome"]["status"], "completed")
+            self.assertEqual(diagnostics["web"]["state"]["state"], "HANDOFF_DONE")
+            sources = {item["source"] for item in diagnostics["timeline"]}
+            self.assertIn("auto", sources)
+            self.assertIn("web", sources)
+            events = [item["event"] for item in diagnostics["timeline"]]
+            self.assertIn("prompt_pack_completed", events)
+            self.assertIn("state_changed", events)
+
+    def test_auto_run_diagnostics_capture_startup_timeout_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+            request_id = "ZWORKER-20260629-120000-diagnostics-startup-timeout"
+            web_runtime_root = base / ".ai" / "zworker" / "runtime" / "web"
+            diag_dir = web_runtime_root / "diagnostics" / request_id
+            diag_dir.mkdir(parents=True, exist_ok=True)
+            (diag_dir / "launch.json").write_text(
+                json.dumps(
+                    {
+                        "request_id": request_id,
+                        "timestamp": "2026-06-29T12:00:05.000Z",
+                        "phase": "startup_timeout",
+                        "returncode": 1,
+                        "stdout_log": str(diag_dir / "stdout.log"),
+                        "stderr_log": str(diag_dir / "stderr.log"),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (diag_dir / "stdout.log").write_text("", encoding="utf-8")
+            (diag_dir / "stderr.log").write_text("startup hang", encoding="utf-8")
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                    with unittest.mock.patch.object(jobs, "REPO_ROOT", base):
+                        with unittest.mock.patch.object(
+                            jobs,
+                            "_zworker_auto_invoke_web_runner",
+                            return_value=(False, "web_runner_not_started: session_state_missing; diag_dir=/tmp/diag"),
+                        ):
+                            config = jobs.ZworkerAutoRunConfig(
+                                task="Diagnostics startup timeout",
+                                request_id=request_id,
+                            )
+                            result = jobs.zworker_auto_run(config, use_web_runner=True)
+
+            self.assertEqual(result.status, "failed")
+            diagnostics_path = Path(result.diagnostics_report_path)
+            self.assertTrue(diagnostics_path.exists())
+            diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+            self.assertEqual(diagnostics["web_runner_diagnostics"]["phase"], "startup_timeout")
+            self.assertTrue(any(item["source"] == "web_runner_diagnostics" for item in diagnostics["timeline"]))
 
     def test_auto_run_max_revisions_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2441,6 +2794,29 @@ class ZworkerSemanticRemapTests(unittest.TestCase):
 
 class ZworkerAutoAttachModeTests(unittest.TestCase):
 
+    def test_resolve_cdp_url_prefers_existing_debugger(self) -> None:
+        with unittest.mock.patch.object(jobs, "_zworker_auto_read_cdp_url", return_value="ws://localhost:9222/devtools/browser/live"):
+            with unittest.mock.patch.object(jobs, "_zworker_auto_launch_chrome_plus_profile") as launch_mock:
+                result = jobs._zworker_auto_resolve_cdp_url(wait_seconds=0)
+        self.assertEqual(result, "ws://localhost:9222/devtools/browser/live")
+        launch_mock.assert_not_called()
+
+    def test_resolve_cdp_url_prefers_live_debugger_over_stale_preferred_url(self) -> None:
+        with unittest.mock.patch.object(jobs, "_zworker_auto_read_cdp_url", return_value="ws://localhost:9222/devtools/browser/live"):
+            result = jobs._zworker_auto_resolve_cdp_url(
+                preferred_url="ws://localhost:9222/devtools/browser/stale",
+                wait_seconds=0,
+            )
+        self.assertEqual(result, "ws://localhost:9222/devtools/browser/live")
+
+    def test_resolve_cdp_url_launches_plus_profile_when_needed(self) -> None:
+        with unittest.mock.patch.object(jobs, "_zworker_auto_read_cdp_url", side_effect=["", "ws://localhost:9222/devtools/browser/new"]):
+            with unittest.mock.patch.object(jobs, "_zworker_auto_launch_chrome_plus_profile", return_value=True) as launch_mock:
+                with unittest.mock.patch.object(jobs.time, "sleep", return_value=None):
+                    result = jobs._zworker_auto_resolve_cdp_url(wait_seconds=1)
+        self.assertEqual(result, "ws://localhost:9222/devtools/browser/new")
+        launch_mock.assert_called_once()
+
     def test_invoke_web_runner_with_cdp_url_passes_attach_check(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime_root = Path(tmp) / "runtime"
@@ -2458,22 +2834,150 @@ class ZworkerAutoAttachModeTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertNotIn("FAILED_ATTACH_REQUIRED", error)
 
-    def test_invoke_web_runner_without_cdp_url_fails(self) -> None:
+    def test_invoke_web_runner_without_cdp_url_uses_resolved_attach_url(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             runtime_root = Path(tmp) / "runtime"
             runtime_root.mkdir(parents=True, exist_ok=True)
 
             with unittest.mock.patch.object(jobs, "REPO_ROOT", Path(tmp)):
-                ok, error = jobs._zworker_auto_invoke_web_runner(
-                    request_id="ZWORKER-20260629-120000-test002",
-                    runtime_root=runtime_root,
-                    resume=False,
-                    force_resend=False,
-                    cdp_url="",
-                    timeout_seconds=10,
-                )
+                with unittest.mock.patch.object(jobs, "_zworker_auto_resolve_cdp_url", return_value="ws://localhost:9222/devtools/browser/test"):
+                    ok, error = jobs._zworker_auto_invoke_web_runner(
+                        request_id="ZWORKER-20260629-120000-test002",
+                        runtime_root=runtime_root,
+                        resume=False,
+                        force_resend=False,
+                        cdp_url="",
+                        timeout_seconds=10,
+                    )
             self.assertFalse(ok)
-            self.assertIn("FAILED_ATTACH_REQUIRED", error) or self.assertIn("attach", error.lower())
+            self.assertNotIn("FAILED_ATTACH_REQUIRED", error)
+
+    def test_invoke_web_runner_without_cdp_url_fails_when_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_root = Path(tmp) / "runtime"
+            runtime_root.mkdir(parents=True, exist_ok=True)
+
+            with unittest.mock.patch.object(jobs, "REPO_ROOT", Path(tmp)):
+                with unittest.mock.patch.object(jobs, "_zworker_auto_resolve_cdp_url", return_value=""):
+                    ok, error = jobs._zworker_auto_invoke_web_runner(
+                        request_id="ZWORKER-20260629-120000-test003",
+                        runtime_root=runtime_root,
+                        resume=False,
+                        force_resend=False,
+                        cdp_url="",
+                        timeout_seconds=10,
+                    )
+            self.assertFalse(ok)
+            self.assertIn("cdp_url_unavailable", error)
+
+    def test_invoke_web_runner_fails_fast_when_session_state_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_root = Path(tmp) / "runtime"
+            runtime_root.mkdir(parents=True, exist_ok=True)
+
+            class FakeProcess:
+                def __init__(self):
+                    self.returncode = None
+                    self.killed = False
+
+                def poll(self):
+                    return None
+
+                def kill(self):
+                    self.killed = True
+                    self.returncode = -9
+
+                def communicate(self, timeout=None):
+                    return ("", "startup hang")
+
+            fake_process = FakeProcess()
+
+            monotonic_values = iter([0.0, 0.0, 0.3, 0.7, 1.2, 1.4])
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_AUTO_WEB_RUNNER_STARTUP_TIMEOUT_SECONDS", 1.0):
+                with unittest.mock.patch.object(jobs, "REPO_ROOT", Path(tmp)):
+                    with unittest.mock.patch.object(jobs, "_zworker_auto_resolve_cdp_url", return_value="ws://localhost:9222/devtools/browser/live"):
+                        with unittest.mock.patch.object(jobs.subprocess, "Popen", return_value=fake_process):
+                            with unittest.mock.patch.object(jobs.time, "monotonic", side_effect=lambda: next(monotonic_values)):
+                                with unittest.mock.patch.object(jobs.time, "sleep", return_value=None):
+                                    ok, error = jobs._zworker_auto_invoke_web_runner(
+                                        request_id="ZWORKER-20260629-120000-startfail",
+                                        runtime_root=runtime_root,
+                                        cdp_url="ws://localhost:9222/devtools/browser/stale",
+                                        timeout_seconds=10,
+                                    )
+
+            self.assertFalse(ok)
+            self.assertTrue(fake_process.killed)
+            self.assertIn("web_runner_not_started", error)
+            self.assertIn("diag_dir=", error)
+            diag_dir = runtime_root / "diagnostics" / "ZWORKER-20260629-120000-startfail"
+            self.assertTrue((diag_dir / "launch.json").exists())
+            self.assertTrue((diag_dir / "stderr.log").exists())
+
+    def test_invoke_web_runner_detects_early_exit_with_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_root = Path(tmp) / "runtime"
+            runtime_root.mkdir(parents=True, exist_ok=True)
+
+            class FakeProcessEarlyExit:
+                def __init__(self):
+                    self.returncode = 1
+                    self.killed = False
+
+                def poll(self):
+                    return 1
+
+                def kill(self):
+                    self.killed = True
+
+                def communicate(self, timeout=None):
+                    return ("", "ModuleNotFoundError: No module named 'playwright'")
+
+            fake_process = FakeProcessEarlyExit()
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_AUTO_WEB_RUNNER_STARTUP_TIMEOUT_SECONDS", 5.0):
+                with unittest.mock.patch.object(jobs, "REPO_ROOT", Path(tmp)):
+                    with unittest.mock.patch.object(jobs, "_zworker_auto_resolve_cdp_url", return_value="ws://localhost:9222/devtools/browser/live"):
+                        with unittest.mock.patch.object(jobs.subprocess, "Popen", return_value=fake_process):
+                            with unittest.mock.patch.object(jobs.time, "monotonic", return_value=0.5):
+                                with unittest.mock.patch.object(jobs.time, "sleep", return_value=None):
+                                    ok, error = jobs._zworker_auto_invoke_web_runner(
+                                        request_id="ZWORKER-20260629-120000-early-exit",
+                                        runtime_root=runtime_root,
+                                        cdp_url="ws://localhost:9222/devtools/browser/live",
+                                        timeout_seconds=10,
+                                    )
+
+            self.assertFalse(ok)
+            self.assertFalse(fake_process.killed)
+            self.assertIn("ModuleNotFoundError", error)
+            self.assertIn("diag_dir=", error)
+            diag_dir = runtime_root / "diagnostics" / "ZWORKER-20260629-120000-early-exit"
+            self.assertTrue((diag_dir / "launch.json").exists())
+            self.assertTrue((diag_dir / "stderr.log").exists())
+            self.assertIn("startup_early_exit", (diag_dir / "launch.json").read_text(encoding="utf-8"))
+
+    def test_write_web_runner_diagnostics_creates_empty_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_root = Path(tmp) / "runtime"
+            runtime_root.mkdir(parents=True, exist_ok=True)
+
+            diag_dir = jobs._zworker_auto_write_web_runner_diagnostics(
+                runtime_root,
+                "ZWORKER-20260629-120000-empty-logs",
+                cmd=["python", "runner.py"],
+                cdp_url="ws://localhost:9222/devtools/browser/live",
+                returncode=None,
+                stdout_text="",
+                stderr_text="",
+                phase="startup_timeout",
+            )
+
+            self.assertTrue((diag_dir / "stdout.log").exists())
+            self.assertTrue((diag_dir / "stderr.log").exists())
+            self.assertEqual((diag_dir / "stdout.log").read_text(encoding="utf-8"), "")
+            self.assertEqual((diag_dir / "stderr.log").read_text(encoding="utf-8"), "")
 
 
 class ZworkerAutoChatUrlValidationTests(unittest.TestCase):
@@ -2619,6 +3123,35 @@ class ZworkerAutoChatUrlValidationTests(unittest.TestCase):
 
         self.assertEqual(observed, "High")
         self.assertEqual(state.metadata["observed_model"], "High")
+
+
+class ZworkerAutoCliTests(unittest.TestCase):
+
+    def test_main_zworker_auto_enables_web_runner(self) -> None:
+        fake_result = jobs.ZworkerAutoRunResult(
+            request_id="ZWORKER-20260629-120000-cli-smoke",
+            status="completed",
+            final_decision="accepted",
+        )
+        argv = [
+            "codex_token_monitor_opencode_jobs.py",
+            "--zworker-auto",
+            "--zworker-auto-task",
+            "CLI smoke task",
+            "--zworker-auto-allowed-paths",
+            "_w_route_smoke/smoke-note.md",
+        ]
+
+        with unittest.mock.patch.object(jobs, "zworker_auto_run", return_value=fake_result) as run_mock:
+            with unittest.mock.patch.object(jobs.sys, "argv", argv):
+                with unittest.mock.patch("builtins.print"):
+                    with self.assertRaises(SystemExit) as exc:
+                        jobs.main()
+
+        self.assertEqual(exc.exception.code, jobs.EXIT_COMPLETED)
+        self.assertTrue(run_mock.called)
+        self.assertTrue(run_mock.call_args.kwargs["use_web_runner"])
+        self.assertIn("job_config", run_mock.call_args.kwargs)
 
 
 if __name__ == "__main__":

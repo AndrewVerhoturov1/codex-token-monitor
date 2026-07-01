@@ -1,6 +1,7 @@
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.request import urlopen
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
@@ -66,6 +68,7 @@ ZWORKER_VALID_MODES = frozenset({
     ZWORKER_MODE_AUTO,
 })
 
+ZWORKER_AUTO_STATE_INITIALIZING = "INITIALIZING"
 ZWORKER_AUTO_STATE_REQUEST_PACKED = "REQUEST_PACKED"
 ZWORKER_AUTO_STATE_WEB_RUNNER_RUNNING = "WEB_RUNNER_RUNNING"
 ZWORKER_AUTO_STATE_PROMPT_SENT = "PROMPT_SENT"
@@ -77,6 +80,7 @@ ZWORKER_AUTO_STATE_ACCEPTED = "ACCEPTED"
 ZWORKER_AUTO_STATE_CLARIFICATION_REQUIRED = "CLARIFICATION_REQUIRED"
 ZWORKER_AUTO_STATE_FAILED = "FAILED"
 ZWORKER_AUTO_VALID_STATES = frozenset({
+    ZWORKER_AUTO_STATE_INITIALIZING,
     ZWORKER_AUTO_STATE_REQUEST_PACKED,
     ZWORKER_AUTO_STATE_WEB_RUNNER_RUNNING,
     ZWORKER_AUTO_STATE_PROMPT_SENT,
@@ -89,6 +93,22 @@ ZWORKER_AUTO_VALID_STATES = frozenset({
     ZWORKER_AUTO_STATE_FAILED,
 })
 
+ZWORKER_WEB_RESUMABLE_PROMPT_STATES = frozenset({
+    "PROMPT_SENT",
+    "ANSWER_STREAMING",
+    "ANSWER_READY",
+})
+
+ZWORKER_WEB_RESUMABLE_DOWNLOAD_STATES = frozenset({
+    "ZIP_LINK_WAITING",
+    "ZIP_LINK_FOUND",
+    "ZIP_DOWNLOAD_STARTING",
+    "ZIP_DOWNLOAD_STARTED",
+    "ZIP_DOWNLOADED",
+    "ZIP_VALIDATING",
+    "ZIP_VALID",
+})
+
 ZWORKER_AUTO_DEFAULT_MAX_REVISIONS = 2
 
 ZWORKER_RUNTIME_REQUESTS = REPO_ROOT / ".ai" / "zworker" / "runtime" / "requests"
@@ -96,6 +116,12 @@ ZWORKER_RUNTIME_INBOX = REPO_ROOT / ".ai" / "zworker" / "runtime" / "inbox"
 ZWORKER_RUNTIME_REVISIONS = REPO_ROOT / ".ai" / "zworker" / "runtime" / "revisions"
 ZWORKER_RUNTIME_AUTO = REPO_ROOT / ".ai" / "zworker" / "runtime" / "auto"
 ZWORKER_TEMPLATE_DIR = REPO_ROOT / ".ai" / "zworker" / "templates"
+ZWORKER_AUTO_CDP_VERSION_URL = "http://127.0.0.1:9222/json/version"
+ZWORKER_AUTO_CHROME_PLUS_PROFILE = Path.home() / "AppData" / "Local" / "Temp" / "chrome-zworker-plus"
+ZWORKER_AUTO_WEB_RUNNER_STARTUP_TIMEOUT_SECONDS = 20.0
+ZWORKER_AUTO_WEB_RUNNER_STARTUP_POLL_SECONDS = 0.25
+ZWORKER_AUTO_WEB_RUNNER_NOT_STARTED_RETRY_COUNT = 1
+ZWORKER_AUTO_WEB_RUNNER_NOT_STARTED_RETRY_DELAY_SECONDS = 3.0
 
 @dataclass
 class JobConfig:
@@ -863,6 +889,7 @@ class ZworkerAutoRunResult:
     error: str = ""
     events_log_path: str = ""
     state_file_path: str = ""
+    diagnostics_report_path: str = ""
     timings: dict[str, int] = field(default_factory=dict)
 
 
@@ -1085,6 +1112,15 @@ def _zworker_revision_name(base_name: str, revision: int) -> str:
     if revision < 2:
         raise ValueError("Revision must be >= 2")
     return f"{base_name}-ver{revision}"
+
+
+def _zworker_canonicalize_request_id(friendly_id: str) -> str:
+    if not friendly_id:
+        return friendly_id
+    if _zworker_request_name_is_valid(friendly_id):
+        return friendly_id
+    slug = _zworker_task_to_slug(friendly_id)
+    return f"ZWORKER-00000000-000000-{slug}"
 
 
 def _zworker_validate_request_id_slug(request_id: str, task: str) -> tuple[bool, str]:
@@ -2085,6 +2121,124 @@ def _zworker_auto_append_event(
     )
 
 
+def _zworker_auto_read_cdp_url(
+    version_url: str = ZWORKER_AUTO_CDP_VERSION_URL,
+    *,
+    timeout_seconds: float = 2.0,
+) -> str:
+    try:
+        with urlopen(version_url, timeout=timeout_seconds) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    except Exception:
+        return ""
+    return str(payload.get("webSocketDebuggerUrl", "") or "").strip()
+
+
+def _zworker_auto_find_chrome_executable() -> str:
+    candidates = [
+        shutil.which("chrome"),
+        shutil.which("chrome.exe"),
+        str(Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Google" / "Chrome" / "Application" / "chrome.exe"),
+        str(Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Google" / "Chrome" / "Application" / "chrome.exe"),
+        str(Path(os.environ.get("LocalAppData", str(Path.home() / "AppData" / "Local"))) / "Google" / "Chrome" / "Application" / "chrome.exe"),
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return str(Path(candidate))
+    return ""
+
+
+def _zworker_auto_launch_chrome_plus_profile() -> bool:
+    chrome_executable = _zworker_auto_find_chrome_executable()
+    if not chrome_executable:
+        return False
+    ZWORKER_AUTO_CHROME_PLUS_PROFILE.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.Popen(
+            [
+                chrome_executable,
+                "--remote-debugging-port=9222",
+                f"--user-data-dir={ZWORKER_AUTO_CHROME_PLUS_PROFILE}",
+                "https://chatgpt.com/",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            cwd=str(REPO_ROOT),
+        )
+        return True
+    except OSError:
+        return False
+
+
+def _zworker_auto_resolve_cdp_url(
+    *,
+    preferred_url: str = "",
+    wait_seconds: float = 15.0,
+) -> str:
+    cdp_url = _zworker_auto_read_cdp_url()
+    if cdp_url:
+        return cdp_url
+    if not _zworker_auto_launch_chrome_plus_profile():
+        return ""
+    deadline = time.monotonic() + max(wait_seconds, 0.0)
+    while time.monotonic() < deadline:
+        cdp_url = _zworker_auto_read_cdp_url()
+        if cdp_url:
+            return cdp_url
+        time.sleep(0.5)
+    return preferred_url.strip()
+
+
+def _zworker_auto_web_session_state_path(runtime_root: Path, request_id: str) -> Path:
+    return Path(runtime_root) / "sessions" / request_id / "run_state.json"
+
+
+def _zworker_auto_web_session_dir_path(runtime_root: Path, request_id: str) -> Path:
+    return Path(runtime_root) / "sessions" / request_id
+
+
+def _zworker_auto_web_runner_started(runtime_root: Path, request_id: str) -> bool:
+    session_state_path = _zworker_auto_web_session_state_path(runtime_root, request_id)
+    if session_state_path.exists():
+        return True
+    session_dir = _zworker_auto_web_session_dir_path(runtime_root, request_id)
+    return session_dir.exists()
+
+
+def _zworker_auto_write_web_runner_diagnostics(
+    runtime_root: Path,
+    request_id: str,
+    *,
+    cmd: list[str],
+    cdp_url: str,
+    returncode: int | None,
+    stdout_text: str,
+    stderr_text: str,
+    phase: str,
+) -> Path:
+    diag_dir = Path(runtime_root) / "diagnostics" / request_id
+    diag_dir.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "request_id": request_id,
+        "timestamp": _utcnow(),
+        "phase": phase,
+        "cwd": str(REPO_ROOT),
+        "command": list(cmd),
+        "cdp_url": cdp_url,
+        "returncode": returncode,
+        "stdout_log": str(diag_dir / "stdout.log"),
+        "stderr_log": str(diag_dir / "stderr.log"),
+    }
+    (diag_dir / "launch.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    (diag_dir / "stdout.log").write_text(stdout_text or "", encoding="utf-8")
+    (diag_dir / "stderr.log").write_text(stderr_text or "", encoding="utf-8")
+    return diag_dir
+
+
 def _zworker_auto_invoke_web_runner(
     request_id: str,
     runtime_root: Path,
@@ -2096,6 +2250,9 @@ def _zworker_auto_invoke_web_runner(
     runner_script = _SCRIPT_DIR / "zworker_chatgpt_web_runner.py"
     if not runner_script.exists():
         return False, "web_runner_script_not_found"
+    effective_cdp_url = _zworker_auto_resolve_cdp_url(preferred_url=cdp_url)
+    if not effective_cdp_url:
+        return False, "cdp_url_unavailable"
 
     cmd = [
         sys.executable,
@@ -2109,23 +2266,115 @@ def _zworker_auto_invoke_web_runner(
         cmd.append("--resume")
     if force_resend:
         cmd.append("--force-resend")
-    if cdp_url and cdp_url.strip():
-        cmd.extend(["--cdp-url", cdp_url.strip()])
+    cmd.extend(["--cdp-url", effective_cdp_url])
 
     effective_timeout = timeout_seconds if timeout_seconds > 0 else ZWORKER_AUTO_DEFAULT_WEB_RUNNER_TIMEOUT_SECONDS
+    session_state_path = _zworker_auto_web_session_state_path(runtime_root, request_id)
+    started_monotonic = time.monotonic()
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             cmd,
             cwd=str(REPO_ROOT),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=effective_timeout,
         )
-        return result.returncode == 0, result.stderr[-2000:] if result.stderr else ""
-    except subprocess.TimeoutExpired:
-        return False, "web_runner_timeout"
     except Exception as e:
         return False, f"web_runner_exception: {e}"
+
+    startup_timeout = min(float(effective_timeout), ZWORKER_AUTO_WEB_RUNNER_STARTUP_TIMEOUT_SECONDS)
+    startup_deadline = started_monotonic + max(startup_timeout, 0.0)
+    while process.poll() is None and not _zworker_auto_web_runner_started(runtime_root, request_id) and time.monotonic() < startup_deadline:
+        time.sleep(ZWORKER_AUTO_WEB_RUNNER_STARTUP_POLL_SECONDS)
+
+    if process.poll() is not None:
+        try:
+            stdout_text, stderr_text = process.communicate(timeout=GRACE_TERMINATE_SECONDS)
+        except Exception:
+            stdout_text, stderr_text = "", ""
+        if process.returncode != 0 or stderr_text or stdout_text:
+            diag_dir = _zworker_auto_write_web_runner_diagnostics(
+                runtime_root,
+                request_id,
+                cmd=cmd,
+                cdp_url=effective_cdp_url,
+                returncode=process.returncode,
+                stdout_text=stdout_text,
+                stderr_text=stderr_text,
+                phase="startup_early_exit",
+            )
+        else:
+            diag_dir = None
+        if process.returncode != 0:
+            error_tail = stderr_text[-2000:] if stderr_text else stdout_text[-2000:] if stdout_text else ""
+            if error_tail:
+                return False, f"{error_tail}; diag_dir={diag_dir}" if diag_dir else error_tail
+            return False, f"web_runner_early_exit: returncode={process.returncode}; diag_dir={diag_dir}" if diag_dir else f"web_runner_early_exit: returncode={process.returncode}"
+        return False, f"web_runner_early_exit_empty: diag_dir={diag_dir}" if diag_dir else "web_runner_early_exit_empty"
+
+    if not _zworker_auto_web_runner_started(runtime_root, request_id):
+        process.kill()
+        try:
+            stdout_text, stderr_text = process.communicate(timeout=GRACE_TERMINATE_SECONDS)
+        except Exception:
+            stdout_text, stderr_text = "", ""
+        diag_dir = _zworker_auto_write_web_runner_diagnostics(
+            runtime_root,
+            request_id,
+            cmd=cmd,
+            cdp_url=effective_cdp_url,
+            returncode=process.returncode,
+            stdout_text=stdout_text,
+            stderr_text=stderr_text,
+            phase="startup_timeout",
+        )
+        return False, f"web_runner_not_started: session_state_missing; diag_dir={diag_dir}"
+
+    remaining_timeout = max(1.0, float(effective_timeout) - max(0.0, time.monotonic() - started_monotonic))
+    try:
+        stdout_text, stderr_text = process.communicate(timeout=remaining_timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            stdout_text, stderr_text = process.communicate(timeout=GRACE_TERMINATE_SECONDS)
+        except Exception:
+            stdout_text, stderr_text = "", ""
+        diag_dir = _zworker_auto_write_web_runner_diagnostics(
+            runtime_root,
+            request_id,
+            cmd=cmd,
+            cdp_url=effective_cdp_url,
+            returncode=process.returncode,
+            stdout_text=stdout_text,
+            stderr_text=stderr_text,
+            phase="runtime_timeout",
+        )
+        return False, f"web_runner_timeout: diag_dir={diag_dir}"
+    except Exception as e:
+        return False, f"web_runner_exception: {e}"
+
+    if process.returncode != 0 or stdout_text or stderr_text:
+        diag_dir = _zworker_auto_write_web_runner_diagnostics(
+            runtime_root,
+            request_id,
+            cmd=cmd,
+            cdp_url=effective_cdp_url,
+            returncode=process.returncode,
+            stdout_text=stdout_text,
+            stderr_text=stderr_text,
+            phase="completed" if process.returncode == 0 else "failed",
+        )
+    else:
+        diag_dir = None
+
+    if process.returncode == 0:
+        return True, ""
+    error_tail = stderr_text[-2000:] if stderr_text else stdout_text[-2000:] if stdout_text else ""
+    if diag_dir is not None:
+        if error_tail:
+            return False, f"{error_tail}; diag_dir={diag_dir}"
+        return False, f"web_runner_failed_no_output; diag_dir={diag_dir}"
+    return False, error_tail
 
 
 def _zworker_auto_read_web_run_state(
@@ -2133,6 +2382,143 @@ def _zworker_auto_read_web_run_state(
     request_id: str,
 ) -> dict[str, Any]:
     return _read_json_safe(runtime_root / "sessions" / request_id / "run_state.json") or {}
+
+
+def _zworker_auto_read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    items: list[dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line_no, raw_line in enumerate(handle, start=1):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    payload = {"event": "json_decode_error", "raw": line, "line_no": line_no}
+                if isinstance(payload, dict):
+                    items.append(payload)
+                else:
+                    items.append({"event": "non_mapping_jsonl_event", "payload": payload, "line_no": line_no})
+    except OSError:
+        return []
+    return items
+
+
+def _zworker_auto_timeline_item(source: str, payload: dict[str, Any]) -> dict[str, Any]:
+    timestamp = str(payload.get("timestamp", "") or payload.get("ts", "") or "")
+    event_name = str(payload.get("event", "") or payload.get("phase", "") or "unknown")
+    state_name = str(
+        payload.get("state", "")
+        or payload.get("new_state", "")
+        or payload.get("outer_state", "")
+        or ""
+    )
+    return {
+        "source": source,
+        "ts": timestamp,
+        "event": event_name,
+        "state": state_name,
+        "payload": payload,
+    }
+
+
+def _zworker_auto_write_full_diagnostics_report(
+    run_dir: Path,
+    runtime_root: Path,
+    request_id: str,
+    *,
+    status: str,
+    final_decision: str,
+    error: str,
+    timings: dict[str, int],
+) -> Path:
+    diagnostics_dir = run_dir / "diagnostics"
+    diagnostics_dir.mkdir(parents=True, exist_ok=True)
+
+    auto_state_path = run_dir / "run_state.json"
+    auto_events_path = run_dir / "events.jsonl"
+    web_session_dir = runtime_root / "sessions" / request_id
+    web_state_path = web_session_dir / "run_state.json"
+    web_events_path = web_session_dir / "events.jsonl"
+    web_output_dir = runtime_root / "output" / request_id
+    inbox_dir = ZWORKER_RUNTIME_INBOX / request_id
+    process_report_path = inbox_dir / "process_report.md"
+    web_runner_diag_dir = runtime_root / "diagnostics" / request_id
+    web_runner_launch_path = web_runner_diag_dir / "launch.json"
+
+    auto_state = _read_json_safe(auto_state_path) or {}
+    web_state = _read_json_safe(web_state_path) or {}
+    web_runner_launch = _read_json_safe(web_runner_launch_path) or {}
+    auto_events = _zworker_auto_read_jsonl(auto_events_path)
+    web_events = _zworker_auto_read_jsonl(web_events_path)
+
+    timeline: list[dict[str, Any]] = []
+    timeline.extend(_zworker_auto_timeline_item("auto", item) for item in auto_events)
+    timeline.extend(_zworker_auto_timeline_item("web", item) for item in web_events)
+    if web_runner_launch:
+        timeline.append(
+            _zworker_auto_timeline_item(
+                "web_runner_diagnostics",
+                {
+                    "timestamp": web_runner_launch.get("timestamp", ""),
+                    "event": "launch_diagnostics",
+                    "phase": web_runner_launch.get("phase", ""),
+                    "returncode": web_runner_launch.get("returncode"),
+                    "stdout_log": web_runner_launch.get("stdout_log", ""),
+                    "stderr_log": web_runner_launch.get("stderr_log", ""),
+                },
+            )
+        )
+    timeline.sort(key=lambda item: (str(item.get("ts", "") or ""), item.get("source", ""), item.get("event", "")))
+
+    resolved_zip_path = _zworker_auto_resolve_zip_path(runtime_root, request_id)
+    zip_path = str(web_state.get("zip_path", "") or auto_state.get("zip_path", "") or resolved_zip_path or "")
+
+    payload = {
+        "request_id": request_id,
+        "generated_at": _utcnow(),
+        "final_outcome": {
+            "status": status,
+            "final_decision": final_decision,
+            "error": error,
+        },
+        "paths": {
+            "run_dir": str(run_dir),
+            "auto_state_path": str(auto_state_path),
+            "auto_events_path": str(auto_events_path),
+            "web_session_dir": str(web_session_dir),
+            "web_state_path": str(web_state_path),
+            "web_events_path": str(web_events_path),
+            "web_output_dir": str(web_output_dir),
+            "inbox_dir": str(inbox_dir),
+            "process_report_path": str(process_report_path),
+            "web_runner_diagnostics_dir": str(web_runner_diag_dir),
+            "web_runner_launch_path": str(web_runner_launch_path),
+        },
+        "auto": {
+            "state": auto_state,
+            "events_count": len(auto_events),
+        },
+        "web": {
+            "state": web_state,
+            "events_count": len(web_events),
+        },
+        "web_runner_diagnostics": web_runner_launch,
+        "artifacts": {
+            "zip_path": zip_path,
+            "process_report_exists": process_report_path.exists(),
+            "web_output_exists": web_output_dir.exists(),
+        },
+        "timeline": timeline,
+        "timings": dict(timings),
+    }
+
+    report_path = diagnostics_dir / "full_timeline.json"
+    _atomic_write_json(report_path, payload)
+    return report_path
 
 
 def _zworker_auto_resolve_zip_path(
@@ -2189,6 +2575,15 @@ def _zworker_auto_validate_zip(
     return True, ""
 
 
+def _zworker_auto_outer_state_from_web_state(web_state_name: str) -> str:
+    normalized = str(web_state_name or "").strip().upper()
+    if normalized in ZWORKER_WEB_RESUMABLE_PROMPT_STATES:
+        return ZWORKER_AUTO_STATE_PROMPT_SENT
+    if normalized in ZWORKER_WEB_RESUMABLE_DOWNLOAD_STATES:
+        return ZWORKER_AUTO_STATE_AWAITING_ZIP
+    return ""
+
+
 def zworker_auto_run(
     config: ZworkerAutoRunConfig,
     *,
@@ -2207,6 +2602,8 @@ def zworker_auto_run(
     else:
         request_id = _zworker_request_name(config.task)
 
+    request_id = _zworker_canonicalize_request_id(request_id)
+
     run_dir = ZWORKER_RUNTIME_AUTO / request_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2215,6 +2612,36 @@ def zworker_auto_run(
 
     current_state = _zworker_auto_read_state(run_dir)
     revision_count = current_state.get("revision_count", 0) if current_state else 0
+    runtime_root = REPO_ROOT / ".ai" / "zworker" / "runtime" / "web"
+
+    def finish(
+        *,
+        status: str,
+        final_decision: str = "",
+        error: str = "",
+        revision_count_override: int | None = None,
+    ) -> ZworkerAutoRunResult:
+        effective_revision_count = revision_count if revision_count_override is None else revision_count_override
+        diagnostics_report_path = _zworker_auto_write_full_diagnostics_report(
+            run_dir,
+            runtime_root,
+            request_id,
+            status=status,
+            final_decision=final_decision,
+            error=error,
+            timings=timings,
+        )
+        return ZworkerAutoRunResult(
+            request_id=request_id,
+            status=status,
+            final_decision=final_decision,
+            revision_count=effective_revision_count,
+            error=error,
+            events_log_path=str(events_path),
+            state_file_path=str(state_file_path),
+            diagnostics_report_path=str(diagnostics_report_path),
+            timings=timings,
+        )
 
     if current_state and not config.force_resend:
         saved_state = current_state.get("state", "")
@@ -2228,15 +2655,25 @@ def zworker_auto_run(
                     "state": saved_state,
                 },
             )
-            return ZworkerAutoRunResult(
-                request_id=request_id,
-                status="resumed",
-                final_decision="awaiting_zip",
-                revision_count=revision_count,
-                events_log_path=str(events_path),
-                state_file_path=str(state_file_path),
-                timings=timings,
-            )
+            return finish(status="resumed", final_decision="awaiting_zip")
+
+    _zworker_auto_write_state(
+        run_dir,
+        {
+            "request_id": request_id,
+            "state": ZWORKER_AUTO_STATE_INITIALIZING,
+            "revision_count": revision_count,
+            "started_at": _utcnow(),
+        },
+    )
+    _zworker_auto_append_event(
+        events_path,
+        {
+            "event": "initializing",
+            "request_id": request_id,
+            "timestamp": _utcnow(),
+        },
+    )
 
     timings["prompt_pack_start_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
     pack_result = zworker_prompt_pack(
@@ -2271,14 +2708,7 @@ def zworker_auto_run(
                 "error": pack_result.error,
             },
         )
-        return ZworkerAutoRunResult(
-            request_id=request_id,
-            status="failed",
-            error=f"prompt_pack_failed: {pack_result.error}",
-            events_log_path=str(events_path),
-            state_file_path=str(state_file_path),
-            timings=timings,
-        )
+        return finish(status="failed", error=f"prompt_pack_failed: {pack_result.error}")
 
     _zworker_auto_write_state(
         run_dir,
@@ -2311,7 +2741,6 @@ def zworker_auto_run(
         },
     )
 
-    runtime_root = REPO_ROOT / ".ai" / "zworker" / "runtime" / "web"
     resolved_zip_path = _zworker_auto_resolve_zip_path(runtime_root, request_id, explicit_zip_path=zip_path)
     use_resume = bool(current_state and current_state.get("state") != "")
 
@@ -2319,25 +2748,97 @@ def zworker_auto_run(
         _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_WEB_RUNNER_RUNNING))
         _zworker_auto_append_event(events_path, {"event": "web_runner_invoked", "request_id": request_id, "timestamp": _utcnow()})
 
-        web_ok, web_error = _zworker_auto_invoke_web_runner(
-            request_id,
-            runtime_root,
-            resume=use_resume,
-            force_resend=config.force_resend,
-            cdp_url=config.cdp_url,
-            timeout_seconds=config.web_runner_timeout_seconds,
-        )
-        if not web_ok:
-            _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
-            _zworker_auto_append_event(events_path, {"event": "web_runner_failed", "request_id": request_id, "timestamp": _utcnow(), "error": web_error})
-            return ZworkerAutoRunResult(
-                request_id=request_id,
-                status="failed",
-                error=f"web_runner_failed: {web_error}",
-                events_log_path=str(events_path),
-                state_file_path=str(state_file_path),
-                timings=timings,
+        web_ok = False
+        web_error = ""
+        retry_budget = max(0, ZWORKER_AUTO_WEB_RUNNER_NOT_STARTED_RETRY_COUNT)
+        retry_attempt = 0
+        current_resume = use_resume
+        while True:
+            web_ok, web_error = _zworker_auto_invoke_web_runner(
+                request_id,
+                runtime_root,
+                resume=current_resume,
+                force_resend=config.force_resend,
+                cdp_url=config.cdp_url,
+                timeout_seconds=config.web_runner_timeout_seconds,
             )
+            if web_ok or "web_runner_not_started" not in web_error or retry_attempt >= retry_budget:
+                break
+
+            retry_attempt += 1
+            _zworker_auto_append_event(
+                events_path,
+                {
+                    "event": "web_runner_retry_scheduled",
+                    "request_id": request_id,
+                    "timestamp": _utcnow(),
+                    "retry_attempt": retry_attempt,
+                    "retry_budget": retry_budget,
+                    "error": web_error,
+                },
+            )
+            time.sleep(ZWORKER_AUTO_WEB_RUNNER_NOT_STARTED_RETRY_DELAY_SECONDS)
+            current_resume = _zworker_auto_web_runner_started(runtime_root, request_id) or use_resume
+            _zworker_auto_append_event(
+                events_path,
+                {
+                    "event": "web_runner_retrying",
+                    "request_id": request_id,
+                    "timestamp": _utcnow(),
+                    "retry_attempt": retry_attempt,
+                    "resume": current_resume,
+                },
+            )
+
+        if not web_ok:
+            web_state = _zworker_auto_read_web_run_state(runtime_root, request_id)
+            web_state_name = str(web_state.get("state", "") or "")
+            if not web_state_name and "web_runner_not_started" in web_error:
+                web_state_name = "not_started"
+            resolved_zip_path = _zworker_auto_resolve_zip_path(runtime_root, request_id, explicit_zip_path=resolved_zip_path)
+            resumable_outer_state = _zworker_auto_outer_state_from_web_state(web_state_name)
+            if resolved_zip_path is not None and resolved_zip_path.exists():
+                _zworker_auto_append_event(
+                    events_path,
+                    {
+                        "event": "web_runner_failed_but_zip_present",
+                        "request_id": request_id,
+                        "timestamp": _utcnow(),
+                        "error": web_error,
+                        "web_state": web_state_name or "unknown",
+                        "zip_path": str(resolved_zip_path),
+                    },
+                )
+            elif resumable_outer_state:
+                _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=resumable_outer_state))
+                _zworker_auto_append_event(
+                    events_path,
+                    {
+                        "event": "web_runner_resume_available",
+                        "request_id": request_id,
+                        "timestamp": _utcnow(),
+                        "error": web_error,
+                        "web_state": web_state_name,
+                        "outer_state": resumable_outer_state,
+                    },
+                )
+                return finish(status="awaiting_zip", final_decision="awaiting_zip")
+            else:
+                _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
+                _zworker_auto_append_event(
+                    events_path,
+                    {
+                        "event": "web_runner_failed",
+                        "request_id": request_id,
+                        "timestamp": _utcnow(),
+                        "error": web_error,
+                        "web_state": web_state_name or "unknown",
+                    },
+                )
+                return finish(
+                    status="failed",
+                    error=f"web_runner_failed: {web_error}; web_state={web_state_name or 'unknown'}",
+                )
 
         resolved_zip_path = _zworker_auto_resolve_zip_path(runtime_root, request_id, explicit_zip_path=resolved_zip_path)
         if resolved_zip_path is None:
@@ -2354,27 +2855,12 @@ def zworker_auto_run(
                     "web_state": web_state_name,
                 },
             )
-            return ZworkerAutoRunResult(
-                request_id=request_id,
-                status="failed",
-                error=f"web_runner_contract_no_zip: state={web_state_name or 'unknown'}",
-                events_log_path=str(events_path),
-                state_file_path=str(state_file_path),
-                timings=timings,
-            )
+            return finish(status="failed", error=f"web_runner_contract_no_zip: state={web_state_name or 'unknown'}")
 
     if resolved_zip_path is None or not resolved_zip_path.exists():
         _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_AWAITING_ZIP))
         _zworker_auto_append_event(events_path, {"event": "awaiting_zip", "request_id": request_id, "timestamp": _utcnow()})
-        return ZworkerAutoRunResult(
-            request_id=request_id,
-            status="awaiting_zip",
-            final_decision="awaiting_zip",
-            revision_count=revision_count,
-            events_log_path=str(events_path),
-            state_file_path=str(state_file_path),
-            timings=timings,
-        )
+        return finish(status="awaiting_zip", final_decision="awaiting_zip")
 
     manifest_path = Path(pack_result.output_dir) / "request_manifest.json" if pack_result.output_dir else None
     timings["zip_validation_start_ms"] = int((time.perf_counter_ns() - t_total_start) / 1_000_000)
@@ -2384,14 +2870,7 @@ def zworker_auto_run(
     if not zip_valid:
         _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
         _zworker_auto_append_event(events_path, {"event": "zip_validation_failed", "request_id": request_id, "timestamp": _utcnow(), "error": zip_error})
-        return ZworkerAutoRunResult(
-            request_id=request_id,
-            status="failed",
-            error=f"zip_validation_failed: {zip_error}",
-            events_log_path=str(events_path),
-            state_file_path=str(state_file_path),
-            timings=timings,
-        )
+        return finish(status="failed", error=f"zip_validation_failed: {zip_error}")
 
     _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_ZIP_RECEIVED))
     _zworker_auto_append_event(events_path, {"event": "zip_valid", "request_id": request_id, "timestamp": _utcnow(), "zip_path": str(resolved_zip_path)})
@@ -2403,14 +2882,7 @@ def zworker_auto_run(
     if unpack_result.status != "completed":
         _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
         _zworker_auto_append_event(events_path, {"event": "unpack_failed", "request_id": request_id, "timestamp": _utcnow(), "error": unpack_result.error})
-        return ZworkerAutoRunResult(
-            request_id=request_id,
-            status="failed",
-            error=f"unpack_failed: {unpack_result.error}",
-            events_log_path=str(events_path),
-            state_file_path=str(state_file_path),
-            timings=timings,
-        )
+        return finish(status="failed", error=f"unpack_failed: {unpack_result.error}")
 
     _zworker_auto_append_event(events_path, {"event": "unpack_completed", "request_id": request_id, "timestamp": _utcnow(), "unpack_dir": unpack_result.unpack_dir})
 
@@ -2424,40 +2896,17 @@ def zworker_auto_run(
     if process_result.requires_clarification:
         _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_CLARIFICATION_REQUIRED))
         _zworker_auto_append_event(events_path, {"event": "clarification_required", "request_id": request_id, "timestamp": _utcnow()})
-        return ZworkerAutoRunResult(
-            request_id=request_id,
-            status="completed",
-            final_decision="needs_clarification",
-            revision_count=revision_count,
-            events_log_path=str(events_path),
-            state_file_path=str(state_file_path),
-            timings=timings,
-        )
+        return finish(status="completed", final_decision="needs_clarification")
 
     if process_result.decision == "accepted":
         _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_ACCEPTED))
         _zworker_auto_append_event(events_path, {"event": "accepted", "request_id": request_id, "timestamp": _utcnow()})
-        return ZworkerAutoRunResult(
-            request_id=request_id,
-            status="completed",
-            final_decision="accepted",
-            revision_count=revision_count,
-            events_log_path=str(events_path),
-            state_file_path=str(state_file_path),
-            timings=timings,
-        )
+        return finish(status="completed", final_decision="accepted")
 
     if not process_result.requires_revision and process_result.decision != "needs_revision":
         _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
         _zworker_auto_append_event(events_path, {"event": "unexpected_decision", "request_id": request_id, "timestamp": _utcnow(), "decision": process_result.decision})
-        return ZworkerAutoRunResult(
-            request_id=request_id,
-            status="failed",
-            error=f"unexpected_decision: {process_result.decision}",
-            events_log_path=str(events_path),
-            state_file_path=str(state_file_path),
-            timings=timings,
-        )
+        return finish(status="failed", error=f"unexpected_decision: {process_result.decision}")
 
     max_revisions = config.max_revisions
     while revision_count < max_revisions:
@@ -2474,39 +2923,27 @@ def zworker_auto_run(
         if revision_result.status != "completed":
             _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
             _zworker_auto_append_event(events_path, {"event": "revision_prompt_failed", "request_id": request_id, "timestamp": _utcnow(), "error": revision_result.error})
-            return ZworkerAutoRunResult(
-                request_id=request_id,
+            return finish(
                 status="failed",
                 error=f"revision_prompt_failed: {revision_result.error}",
-                revision_count=revision_count,
-                events_log_path=str(events_path),
-                state_file_path=str(state_file_path),
-                timings=timings,
+                revision_count_override=revision_count,
             )
 
         _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_AWAITING_ZIP))
         _zworker_auto_append_event(events_path, {"event": "revision_prompt_completed", "request_id": request_id, "timestamp": _utcnow(), "revision_dir": revision_result.revision_dir})
 
-        return ZworkerAutoRunResult(
-            request_id=request_id,
+        return finish(
             status="needs_revision",
             final_decision="awaiting_zip",
-            revision_count=revision_count,
-            events_log_path=str(events_path),
-            state_file_path=str(state_file_path),
-            timings=timings,
+            revision_count_override=revision_count,
         )
 
     _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
     _zworker_auto_append_event(events_path, {"event": "max_revisions_exceeded", "request_id": request_id, "timestamp": _utcnow(), "revision_count": revision_count})
-    return ZworkerAutoRunResult(
-        request_id=request_id,
+    return finish(
         status="failed",
         error="max_revisions_exceeded",
-        revision_count=revision_count,
-        events_log_path=str(events_path),
-        state_file_path=str(state_file_path),
-        timings=timings,
+        revision_count_override=revision_count,
     )
 
 
@@ -3411,7 +3848,7 @@ def main() -> None:
             force_resend=args.zworker_auto_force_resend,
             web_runner_timeout_seconds=args.zworker_auto_web_timeout,
         )
-        result = zworker_auto_run(auto_config, job_config=config)
+        result = zworker_auto_run(auto_config, job_config=config, use_web_runner=True)
         print(json.dumps(asdict(result), ensure_ascii=False, indent=2))
         sys.exit(EXIT_COMPLETED if result.status == "completed" else EXIT_FAILED)
 
