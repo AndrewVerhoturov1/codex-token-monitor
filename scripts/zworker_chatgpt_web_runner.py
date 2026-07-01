@@ -720,6 +720,7 @@ def main(argv: list[str] | None = None) -> int:
     repo_root = Path(args.repo_root).resolve()
     runtime_root = Path(args.runtime_root).resolve() if args.runtime_root else default_runtime_root(repo_root)
     state = ZworkerWebRunState.load(args.request_id, runtime_root=runtime_root)
+    state.persist()
     try:
         return run_browser_flow(args)
     except WebRunnerError as exc:
