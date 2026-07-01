@@ -104,6 +104,10 @@ For the current workstation, prefer this concrete route:
 2. direct `zworker_chatgpt_web_runner.py --cdp-url ... --handoff`
 3. existing local handoff through `result_unpack` and `process_result`
 
+This direct attach-mode runner is the canonical route for future chats on this
+machine. The broader `zworker-auto` orchestrator must mirror its confirmed
+result, not invent browser phases ahead of it.
+
 Treat this as the primary operational path even though the repository also has
 broader `zworker-auto` orchestration code and an MCP wrapper.
 This preference applies to the external web phase, not to every other phase of
@@ -136,6 +140,12 @@ Use only:
 - headful mode
 - ChatGPT Web
 - Playwright attach-mode via CDP when possible
+
+Attach-mode rule:
+
+- always open a dedicated new page in the attached Chrome context
+- do not reuse or close the user's existing ChatGPT tab
+- do not close an externally owned browser/context on success or failure
 
 Do not use:
 
@@ -244,13 +254,16 @@ Important:
 - prefer the direct web-runner attach path for the real browser flow
 - do not start with `zworker-auto` launch-mode that opens a fresh browser
 - keep the 12-minute answer timeout for ChatGPT Web work
+- a successful web-runner return must also yield a valid ZIP; `exit 0` without a valid ZIP is a failure, not `awaiting_zip`
+- canonical ZIP name is `.ai/zworker/runtime/web/output/<request-id>/<request-id>-zworker-result.zip`
+- legacy `<request-id>.zip` may be accepted only for compatibility during transition
 
 ### 5. Read result artifacts
 
 Check the runtime outputs:
 
 - `.ai/zworker/runtime/web/sessions/<request-id>/run_state.json`
-- `.ai/zworker/runtime/web/output/<request-id>/<request-id>.zip`
+- `.ai/zworker/runtime/web/output/<request-id>/<request-id>-zworker-result.zip`
 - `.ai/zworker/runtime/inbox/<request-id>/process_report.md`
 
 Treat `HANDOFF_DONE` plus process decision `accepted` as success.
@@ -270,6 +283,9 @@ If the run failed before `PROMPT_SENT`, rerun normally.
 
 If the run reached `PROMPT_SENT` or later, do not resend blindly. Reuse the
 recorded state and chat whenever possible.
+
+If outer `zworker-auto` state and inner web-runner state disagree, trust the
+inner web state from `.ai/zworker/runtime/web/sessions/<request-id>/run_state.json`.
 
 If a ZIP was downloaded but naming/layout differs, prefer the current semantic
 handoff logic and evaluate the result by substance, not by cosmetic filenames

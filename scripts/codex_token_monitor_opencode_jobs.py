@@ -66,6 +66,8 @@ ZWORKER_VALID_MODES = frozenset({
     ZWORKER_MODE_AUTO,
 })
 
+ZWORKER_AUTO_STATE_REQUEST_PACKED = "REQUEST_PACKED"
+ZWORKER_AUTO_STATE_WEB_RUNNER_RUNNING = "WEB_RUNNER_RUNNING"
 ZWORKER_AUTO_STATE_PROMPT_SENT = "PROMPT_SENT"
 ZWORKER_AUTO_STATE_AWAITING_ZIP = "AWAITING_ZIP"
 ZWORKER_AUTO_STATE_ZIP_RECEIVED = "ZIP_RECEIVED"
@@ -75,6 +77,8 @@ ZWORKER_AUTO_STATE_ACCEPTED = "ACCEPTED"
 ZWORKER_AUTO_STATE_CLARIFICATION_REQUIRED = "CLARIFICATION_REQUIRED"
 ZWORKER_AUTO_STATE_FAILED = "FAILED"
 ZWORKER_AUTO_VALID_STATES = frozenset({
+    ZWORKER_AUTO_STATE_REQUEST_PACKED,
+    ZWORKER_AUTO_STATE_WEB_RUNNER_RUNNING,
     ZWORKER_AUTO_STATE_PROMPT_SENT,
     ZWORKER_AUTO_STATE_AWAITING_ZIP,
     ZWORKER_AUTO_STATE_ZIP_RECEIVED,
@@ -1084,19 +1088,16 @@ def _zworker_revision_name(base_name: str, revision: int) -> str:
 
 
 def _zworker_validate_request_id_slug(request_id: str, task: str) -> tuple[bool, str]:
-    if not request_id or not task:
+    if not request_id:
         return True, ""
-    task_slug = _zworker_task_to_slug(task)
-    if not request_id.endswith(f"-{task_slug}") and not request_id.endswith(f"-{task_slug}-ver"):
-        rev_match = bool(re.match(r"^ZWORKER-\d{8}-\d{6}-(.+?)-ver\d+$", request_id))
-        if rev_match:
-            return True, ""
-        return False, (
-            f"Request ID slug mismatch: request_id '{request_id}' does not match "
-            f"task-derived slug '{task_slug}'. "
-            f"Request ID must end with '-{task_slug}' (e.g. ZWORKER-YYYYMMDD-HHMMSS-{task_slug})."
-        )
-    return True, ""
+    if _zworker_request_name_is_valid(request_id):
+        return True, ""
+    if re.match(r"^ZWORKER-\d{8}-\d{6}-[A-Za-z0-9][A-Za-z0-9_-]*-ver\d+$", request_id):
+        return True, ""
+    return False, (
+        f"Invalid request_id format: '{request_id}'. "
+        "Expected ZWORKER-YYYYMMDD-HHMMSS-task-slug or a matching -verN revision suffix."
+    )
 
 
 def zworker_prompt_pack(
@@ -2127,6 +2128,49 @@ def _zworker_auto_invoke_web_runner(
         return False, f"web_runner_exception: {e}"
 
 
+def _zworker_auto_read_web_run_state(
+    runtime_root: Path,
+    request_id: str,
+) -> dict[str, Any]:
+    return _read_json_safe(runtime_root / "sessions" / request_id / "run_state.json") or {}
+
+
+def _zworker_auto_resolve_zip_path(
+    runtime_root: Path,
+    request_id: str,
+    explicit_zip_path: Path | None = None,
+) -> Path | None:
+    candidates: list[Path] = []
+    if explicit_zip_path is not None:
+        candidates.append(Path(explicit_zip_path))
+
+    web_state = _zworker_auto_read_web_run_state(runtime_root, request_id)
+    web_zip_path = str(web_state.get("zip_path", "") or "").strip()
+    if web_zip_path:
+        candidate = Path(web_zip_path)
+        if not candidate.is_absolute():
+            candidate = runtime_root / "output" / request_id / candidate.name
+        candidates.append(candidate)
+
+    output_dir = runtime_root / "output" / request_id
+    candidates.extend([
+        output_dir / f"{request_id}-zworker-result.zip",
+        output_dir / f"{request_id}.zip",
+    ])
+    if output_dir.exists():
+        candidates.extend(sorted(output_dir.glob("*.zip"), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True))
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate.resolve()) if candidate.exists() else str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _zworker_auto_validate_zip(
     zip_path: Path,
     manifest_path: Path | None,
@@ -2174,7 +2218,7 @@ def zworker_auto_run(
 
     if current_state and not config.force_resend:
         saved_state = current_state.get("state", "")
-        if saved_state == ZWORKER_AUTO_STATE_PROMPT_SENT:
+        if saved_state in {ZWORKER_AUTO_STATE_PROMPT_SENT, ZWORKER_AUTO_STATE_AWAITING_ZIP}:
             _zworker_auto_append_event(
                 events_path,
                 {
@@ -2240,7 +2284,7 @@ def zworker_auto_run(
         run_dir,
         {
             "request_id": request_id,
-            "state": ZWORKER_AUTO_STATE_PROMPT_SENT,
+            "state": ZWORKER_AUTO_STATE_REQUEST_PACKED,
             "revision_count": revision_count,
             "config": {
                 "task": config.task,
@@ -2268,11 +2312,11 @@ def zworker_auto_run(
     )
 
     runtime_root = REPO_ROOT / ".ai" / "zworker" / "runtime" / "web"
-    resolved_zip_path = zip_path
+    resolved_zip_path = _zworker_auto_resolve_zip_path(runtime_root, request_id, explicit_zip_path=zip_path)
     use_resume = bool(current_state and current_state.get("state") != "")
 
     if use_web_runner:
-        _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_AWAITING_ZIP))
+        _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_WEB_RUNNER_RUNNING))
         _zworker_auto_append_event(events_path, {"event": "web_runner_invoked", "request_id": request_id, "timestamp": _utcnow()})
 
         web_ok, web_error = _zworker_auto_invoke_web_runner(
@@ -2295,10 +2339,29 @@ def zworker_auto_run(
                 timings=timings,
             )
 
-        web_output_dir = runtime_root / "output" / request_id
-        candidate_zip = web_output_dir / f"{request_id}.zip"
-        if candidate_zip.exists():
-            resolved_zip_path = candidate_zip
+        resolved_zip_path = _zworker_auto_resolve_zip_path(runtime_root, request_id, explicit_zip_path=resolved_zip_path)
+        if resolved_zip_path is None:
+            web_state = _zworker_auto_read_web_run_state(runtime_root, request_id)
+            web_state_name = str(web_state.get("state", "") or "")
+            _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED))
+            _zworker_auto_append_event(
+                events_path,
+                {
+                    "event": "web_runner_contract_failed",
+                    "request_id": request_id,
+                    "timestamp": _utcnow(),
+                    "error": "runner_completed_without_valid_zip",
+                    "web_state": web_state_name,
+                },
+            )
+            return ZworkerAutoRunResult(
+                request_id=request_id,
+                status="failed",
+                error=f"web_runner_contract_no_zip: state={web_state_name or 'unknown'}",
+                events_log_path=str(events_path),
+                state_file_path=str(state_file_path),
+                timings=timings,
+            )
 
     if resolved_zip_path is None or not resolved_zip_path.exists():
         _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_AWAITING_ZIP))

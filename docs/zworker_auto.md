@@ -17,40 +17,36 @@ Stops on: accepted / needs_clarification / revision limit / failures.
 ## Runtime Artifacts
 
 Created in `.ai/zworker/runtime/auto/<request-id>/`:
-- `run_state.json` - Runtime state machine (PROMPT_SENT, AWAITING_ZIP, PROCESSED, etc.)
+- `run_state.json` - Runtime state machine (`REQUEST_PACKED`, `WEB_RUNNER_RUNNING`, `AWAITING_ZIP`, `PROCESSED`, etc.)
 - `events.jsonl` - Event log for debugging and resume
 
 ## Resume-Safe Behavior
 
-- Does NOT resend prompt if state is PROMPT_SENT (unless force_resend=true)
+- Does NOT resend prompt if the saved state already indicates a confirmed prompt-delivery phase (`PROMPT_SENT`) or explicit waiting phase (`AWAITING_ZIP`), unless `force_resend=true`
 - Resuming reads existing state and returns immediately with await_zip decision
+- Outer auto-state is intentionally coarser than the web-runner state. When diagnosing a resumed Route W run, treat `.ai/zworker/runtime/web/sessions/<request-id>/run_state.json` as the source of truth for browser phases
 
 ## ZIP Pre-Validation
 
-Before calling result_unpack, zworker-auto validates via `zworker_web_zip.validate_zip`:
-- ZIP is valid and readable
+Before calling `result_unpack`, zworker-auto validates via `zworker_web_zip.validate_zip`:
+- ZIP exists and is readable
 - ZIP is not empty
-- answer.md exists at ZIP root (not in subdirectory)
+- ZIP is a real ZIP file, not an incomplete browser artifact
+- `answer.md` exists at ZIP root (not in subdirectory)
 - No unsafe paths (absolute, traversal, forbidden prefixes)
 - No forbidden paths per manifest
 - No files outside allowed scope
 
-This prevents wasted unpack cycles on malformed results.
+Any invalid ZIP now fails before handoff. A successful web-runner exit without a valid ZIP is treated as a contract failure, not as `awaiting_zip`.
 
 ## State Machine
 
-```
-PROMPT_SENT -> AWAITING_ZIP -> ZIP_RECEIVED -> PROCESSED
-                                              |
-                                    +----------+----------+
-                                    |          |          |
-                              ACCEPTED   CLARIFICATION  NEEDS_REVISION
-                                    |                     |
-                              (done)            REVISION_REQUESTED -> AWAITING_ZIP
-                                    |                     |
-                                    +--- max revisions ---+
-                                              |
-                                           FAILED
+```text
+REQUEST_PACKED -> WEB_RUNNER_RUNNING -> ZIP_RECEIVED -> PROCESSED
+       |                    |                              |
+       |                    +--> FAILED                    +--> ACCEPTED
+       |                                                   +--> CLARIFICATION_REQUIRED
+       +--> AWAITING_ZIP (manual/pre-existing ZIP)         +--> REVISION_REQUESTED -> AWAITING_ZIP
 ```
 
 ## Usage
@@ -92,6 +88,17 @@ result = client.call("opencode_zworker_auto_run", {
     "use_web_runner": True,
 })
 ```
+
+## Runner Contract
+
+When `use_web_runner=True`, a successful runner call must leave a valid ZIP in
+the web output directory or expose its absolute `zip_path` in the inner web
+state. Exit code `0` without a valid ZIP is a failure (`web_runner_contract_no_zip`).
+
+Accepted ZIP names:
+
+- `<request-id>-zworker-result.zip` (canonical)
+- `<request-id>.zip` (legacy compatibility)
 
 ## Chat Readiness
 

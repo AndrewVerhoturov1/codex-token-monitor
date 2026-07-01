@@ -430,29 +430,29 @@ def find_zip_download_button(page, request_id: str):
     if visible:
         return visible[-1]
 
-    zip_name = f"{request_id}.zip"
-    fallback_candidates = [
-        page.get_by_role("button", name=zip_name),
-        page.get_by_role("link", name=zip_name),
-        page.locator("button").filter(has_text=zip_name),
-        page.locator("a").filter(has_text=zip_name),
-        page.get_by_role("button", name=request_id),
-        page.get_by_role("link", name=request_id),
-        page.locator("button").filter(has_text=request_id),
-        page.locator("a").filter(has_text=request_id),
-    ]
-    visible_fallback = []
-    for loc in fallback_candidates:
-        try:
-            for i in range(loc.count()):
-                item = loc.nth(i)
-                if item.is_visible():
-                    visible_fallback.append(item)
-        except Exception:
-            continue
-    if not visible_fallback:
-        raise WebRunnerError("FAILED_NO_ZIP_LINK", "ZIP marker found, but no visible Download button/link was found.", recoverable=True)
-    return visible_fallback[-1]
+    for zip_name in (f"{request_id}-zworker-result.zip", f"{request_id}.zip"):
+        fallback_candidates = [
+            page.get_by_role("button", name=zip_name),
+            page.get_by_role("link", name=zip_name),
+            page.locator("button").filter(has_text=zip_name),
+            page.locator("a").filter(has_text=zip_name),
+            page.get_by_role("button", name=request_id),
+            page.get_by_role("link", name=request_id),
+            page.locator("button").filter(has_text=request_id),
+            page.locator("a").filter(has_text=request_id),
+        ]
+        visible_fallback = []
+        for loc in fallback_candidates:
+            try:
+                for i in range(loc.count()):
+                    item = loc.nth(i)
+                    if item.is_visible():
+                        visible_fallback.append(item)
+            except Exception:
+                continue
+        if visible_fallback:
+            return visible_fallback[-1]
+    raise WebRunnerError("FAILED_NO_ZIP_LINK", "ZIP marker found, but no visible Download button/link was found.", recoverable=True)
 
 
 def wait_for_zip_in_dir(downloads_dir: Path, request_id: str, timeout_ms: int) -> Path | None:
@@ -479,15 +479,19 @@ def download_zip(page, state: ZworkerWebRunState, request_id: str, timeout_ms: i
     state.set_state("ZIP_LINK_FOUND")
     state.output_dir.mkdir(parents=True, exist_ok=True)
     state.downloads_dir.mkdir(parents=True, exist_ok=True)
-    target_zip = state.output_dir / f"{request_id}.zip"
+    target_zip = state.output_dir / f"{request_id}-zworker-result.zip"
     state.set_state("ZIP_DOWNLOAD_STARTING")
     try:
         with page.expect_download(timeout=timeout_ms) as download_info:
             button.click(timeout=timeout_ms)
         download = download_info.value
         download.save_as(str(target_zip))
-        state.set_state("ZIP_DOWNLOADED", zip_path=str(target_zip), suggested_filename=download.suggested_filename, method="playwright_download_event")
-        return target_zip
+        size_bytes = target_zip.stat().st_size if target_zip.exists() else 0
+        if size_bytes > 0:
+            state.set_state("ZIP_DOWNLOADED", zip_path=str(target_zip), suggested_filename=download.suggested_filename, method="playwright_download_event")
+            return target_zip
+        state.event("download_primary_invalid", zip_path=str(target_zip), size_bytes=size_bytes)
+        target_zip.unlink(missing_ok=True)
     except Exception as exc:
         state.event("download_primary_failed", error=str(exc))
     try:
@@ -509,7 +513,7 @@ def validate_downloaded_zip(state: ZworkerWebRunState, zip_path: Path, manifest_
     report_path = state.output_dir / "zip_report.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report.to_dict(), ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    if report.security_reject:
+    if not report.valid:
         raise WebRunnerError("FAILED_BAD_ZIP", report.error or "ZIP pre-validation failed.", recoverable=True)
     if report.warnings:
         state.event("zip_validation_warnings", warnings=report.warnings)
@@ -583,20 +587,45 @@ def run_browser_flow(args: argparse.Namespace) -> int:
     state.set_state("BROWSER_STARTING")
 
     with sync_playwright() as p:
+        browser = None
+        owned_context = False
+        owned_page = False
+
+        def close_browser_resources() -> None:
+            if owned_page:
+                try:
+                    page.close()
+                except Exception:
+                    pass
+            if use_attach_mode:
+                if owned_context:
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
+            else:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+
         if use_attach_mode:
             browser = p.chromium.connect_over_cdp(args.cdp_url.strip())
             contexts = browser.contexts
             if contexts:
                 context = contexts[0]
             else:
-                context = browser.new_context()
-            page = context.pages[0] if context.pages else context.new_page()
+                context = browser.new_context(accept_downloads=True)
+                owned_context = True
+            page = context.new_page()
+            owned_page = True
             state.set_state(
                 "BROWSER_READY",
                 browser_mode="attach",
                 cdp_url=args.cdp_url.strip(),
                 browser_channel="chrome",
                 headless=False,
+                page_mode="dedicated",
             )
         else:
             context = p.chromium.launch_persistent_context(
@@ -612,14 +641,14 @@ def run_browser_flow(args: argparse.Namespace) -> int:
             ensure_login(page, state, args.login_timeout_ms)
             if args.login_check:
                 state.set_state("LOGIN_CHECK_DONE")
-                context.close()
+                close_browser_resources()
                 return 0
             open_new_chat(page, state, args.chat_timeout_ms)
             preferred = [m.strip() for m in args.preferred_model if m.strip()]
             ensure_model(page, state, preferred, args.model_timeout_ms, args.allow_unverified_model)
             if args.model_check:
                 state.set_state("MODEL_CHECK_DONE")
-                context.close()
+                close_browser_resources()
                 return 0
             if args.resume and state.can_skip_prompt_send():
                 resume_point = state.get_resume_point()
@@ -645,13 +674,13 @@ def run_browser_flow(args: argparse.Namespace) -> int:
             wait_answer_ready(page, state, args.request_id, args.answer_timeout_ms, args.stable_answer_ms)
             zip_path = download_zip(page, state, args.request_id, args.download_timeout_ms)
             validate_downloaded_zip(state, zip_path, manifest_path)
-            context.close()
+            close_browser_resources()
         except WebRunnerError:
-            context.close()
+            close_browser_resources()
             raise
         except Exception as exc:
             save_diagnostics(page, state, "unexpected_error")
-            context.close()
+            close_browser_resources()
             raise WebRunnerError("FAILED_UNKNOWN", str(exc), recoverable=True) from exc
 
     if args.handoff:

@@ -89,7 +89,7 @@ class ZworkerRequestIdTests(unittest.TestCase):
             self.assertEqual(result.status, "completed")
             self.assertIn("build-login-page", result.request_id)
 
-    def test_zworker_rejects_stale_slug(self) -> None:
+    def test_zworker_accepts_explicit_request_id_with_different_slug(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp) / "zworker_output"
             result = jobs.zworker_prompt_pack(
@@ -97,8 +97,19 @@ class ZworkerRequestIdTests(unittest.TestCase):
                 output_dir=output_dir,
                 request_id="ZWORKER-20260627-191435-stylish-calculator",
             )
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.request_id, "ZWORKER-20260627-191435-stylish-calculator")
+
+    def test_zworker_rejects_invalid_request_id_format(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "zworker_output"
+            result = jobs.zworker_prompt_pack(
+                "Make beautiful tetris",
+                output_dir=output_dir,
+                request_id="bad-request-id",
+            )
             self.assertEqual(result.status, "failed")
-            self.assertIn("slug mismatch", result.error.lower())
+            self.assertIn("invalid request_id format", result.error.lower())
 
     def test_zworker_accepts_matching_slug(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -741,7 +752,7 @@ class ZworkerWebZipDownloadTests(unittest.TestCase):
         spec.loader.exec_module(runner)
 
         request_id = "ZWORKER-20260629-TEST-001"
-        zip_name = f"{request_id}.zip"
+        zip_name = f"{request_id}-zworker-result.zip"
 
         class MockLocator:
             def __init__(self, items):
@@ -782,6 +793,100 @@ class ZworkerWebZipDownloadTests(unittest.TestCase):
             self.assertIsNotNone(result)
         except runner.WebRunnerError:
             pass
+
+    def test_validate_downloaded_zip_rejects_empty_zip(self) -> None:
+        import importlib.util
+
+        runner_path = ROOT / "scripts" / "zworker_chatgpt_web_runner.py"
+        spec = importlib.util.spec_from_file_location("zworker_chatgpt_web_runner_validate", runner_path)
+        runner = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(runner)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            state = runner.ZworkerWebRunState("ZWORKER-20260629-120000-empty-zip", runtime_root=Path(tmp))
+            empty_zip = Path(tmp) / "empty.zip"
+            empty_zip.write_bytes(b"")
+
+            with self.assertRaises(runner.WebRunnerError) as ctx:
+                runner.validate_downloaded_zip(state, empty_zip, None)
+
+        self.assertEqual(ctx.exception.code, "FAILED_BAD_ZIP")
+
+
+class ZworkerWebRunnerAttachModeTests(unittest.TestCase):
+
+    def test_attach_mode_uses_dedicated_page_and_keeps_existing_context_open(self) -> None:
+        import importlib.util
+
+        runner_path = ROOT / "scripts" / "zworker_chatgpt_web_runner.py"
+        spec = importlib.util.spec_from_file_location("zworker_chatgpt_web_runner_attach_mode", runner_path)
+        runner = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(runner)
+
+        class FakePage:
+            def __init__(self, name: str):
+                self.name = name
+                self.closed = False
+                self.url = "https://chatgpt.com/"
+
+            def close(self):
+                self.closed = True
+
+        class FakeContext:
+            def __init__(self):
+                self.pages = [FakePage("existing")]
+                self.closed = False
+                self.new_page_calls = 0
+
+            def new_page(self):
+                self.new_page_calls += 1
+                return FakePage("dedicated")
+
+            def close(self):
+                self.closed = True
+
+        class FakeBrowser:
+            def __init__(self, context):
+                self.contexts = [context]
+
+        class FakeChromium:
+            def __init__(self, browser):
+                self._browser = browser
+
+            def connect_over_cdp(self, _url):
+                return self._browser
+
+        class FakePlaywright:
+            def __init__(self, browser):
+                self.chromium = FakeChromium(browser)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        fake_context = FakeContext()
+        fake_browser = FakeBrowser(fake_context)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = runner.parse_args([
+                "--request-id", "ZWORKER-20260629-120000-attach-page",
+                "--runtime-root", tmp,
+                "--cdp-url", "ws://localhost:9222/devtools/browser/test",
+                "--login-check",
+            ])
+
+            with unittest.mock.patch.object(runner, "require_playwright", return_value=lambda: FakePlaywright(fake_browser)):
+                with unittest.mock.patch.object(runner, "ensure_login", return_value=None):
+                    result = runner.run_browser_flow(args)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(fake_context.new_page_calls, 1)
+        self.assertFalse(fake_context.closed)
+        self.assertFalse(fake_context.pages[0].closed)
 
 
 class ZworkerProcessResultTests(unittest.TestCase):
@@ -1663,6 +1768,8 @@ class ZworkerAutoModeTests(unittest.TestCase):
         self.assertIn(jobs.ZWORKER_MODE_AUTO, jobs.ZWORKER_VALID_MODES)
 
     def test_zworker_auto_valid_states(self) -> None:
+        self.assertIn(jobs.ZWORKER_AUTO_STATE_REQUEST_PACKED, jobs.ZWORKER_AUTO_VALID_STATES)
+        self.assertIn(jobs.ZWORKER_AUTO_STATE_WEB_RUNNER_RUNNING, jobs.ZWORKER_AUTO_VALID_STATES)
         self.assertIn(jobs.ZWORKER_AUTO_STATE_PROMPT_SENT, jobs.ZWORKER_AUTO_VALID_STATES)
         self.assertIn(jobs.ZWORKER_AUTO_STATE_AWAITING_ZIP, jobs.ZWORKER_AUTO_VALID_STATES)
         self.assertIn(jobs.ZWORKER_AUTO_STATE_ACCEPTED, jobs.ZWORKER_AUTO_VALID_STATES)
@@ -2043,6 +2150,62 @@ class ZworkerAutoOrchestrationTests(unittest.TestCase):
             self.assertEqual(result.status, "needs_revision")
             self.assertEqual(result.final_decision, "awaiting_zip")
             self.assertEqual(result.revision_count, 1)
+
+    def test_auto_run_web_runner_contract_requires_zip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+            request_id = "ZWORKER-20260629-120000-contract"
+            web_runtime_root = base / ".ai" / "zworker" / "runtime" / "web"
+
+            session_dir = web_runtime_root / "sessions" / request_id
+            session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "run_state.json").write_text(json.dumps({"request_id": request_id, "state": "ANSWER_READY"}), encoding="utf-8")
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                    with unittest.mock.patch.object(jobs, "REPO_ROOT", base):
+                        with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", return_value=(True, "")):
+                            config = jobs.ZworkerAutoRunConfig(
+                                task="Contract zip test",
+                                request_id=request_id,
+                            )
+                            result = jobs.zworker_auto_run(config, use_web_runner=True)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("web_runner_contract_no_zip", result.error)
+
+    def test_auto_run_web_runner_accepts_contract_zip_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+            request_id = "ZWORKER-20260629-120000-contract-zip"
+            web_runtime_root = base / ".ai" / "zworker" / "runtime" / "web"
+
+            zip_path = web_runtime_root / "output" / request_id / f"{request_id}-zworker-result.zip"
+            zip_path.parent.mkdir(parents=True, exist_ok=True)
+            with jobs.zipfile.ZipFile(zip_path, "w", jobs.zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("answer.md", "# Answer\n\n## Sources Read Report\n\n### Read fully\n- doc1\n\n### Read partially\n- none\n\n### Not read\n- none\n\n### External search used\nNo\n")
+                zf.writestr("src/file.py", "print('hello')\n")
+
+            session_dir = web_runtime_root / "sessions" / request_id
+            session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "run_state.json").write_text(json.dumps({"request_id": request_id, "state": "ZIP_VALID", "zip_path": str(zip_path)}), encoding="utf-8")
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", runtime["inbox"]):
+                    with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                        with unittest.mock.patch.object(jobs, "REPO_ROOT", base):
+                            with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", return_value=(True, "")):
+                                config = jobs.ZworkerAutoRunConfig(
+                                    task="Contract zip test",
+                                    request_id=request_id,
+                                    allowed_paths="src/",
+                                )
+                                result = jobs.zworker_auto_run(config, use_web_runner=True)
+
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.final_decision, "accepted")
 
     def test_auto_run_max_revisions_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

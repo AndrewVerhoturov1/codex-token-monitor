@@ -41,7 +41,7 @@
     traces/
   downloads/<request-id>/
   output/<request-id>/
-    <request-id>.zip
+    <request-id>-zworker-result.zip
     zip_report.json
 ```
 
@@ -97,6 +97,13 @@ When opening a new chat, the runner follows this order:
 
 This avoids redundant sidebar clicks that can interfere with an already-ready
 chat input state.
+
+## Attach-mode ownership rule
+
+When attaching over CDP, the runner must open a dedicated new page in the
+existing browser context instead of reusing the first already-open page. It
+must close only the page it created itself. It must not close an externally
+owned browser window or context unless it had to create a brand-new context.
 
 ### Critical: `/c/...` URL never appears during `open_new_chat`
 
@@ -154,16 +161,17 @@ ZWORKER_ZIP_MANIFEST_END
 ZWORKER_ZIP_READY
 ```
 
-These markers are text anchors for Playwright. The real acceptance condition is the downloaded ZIP passing `zworker_web_zip.validate_zip`.
+These markers are text anchors for Playwright. The real acceptance condition is
+the downloaded ZIP passing `zworker_web_zip.validate_zip`. Zero-byte files,
+non-ZIP downloads, or other invalid artifacts fail the run before handoff.
 
-## Integration later
+## Integration status
 
-Future local integration points:
+Current local integration points:
 
-- add a thin `zworker-auto` mode to `scripts/codex_token_monitor_opencode_jobs.py`;
-- call `scripts/zworker_chatgpt_web_runner.py` from that mode;
-- add MCP wrapper functions in `scripts/codex_token_monitor_opencode_jobs_mcp.py`;
-- keep `zworker_prompt_pack`, `zworker_result_unpack`, `zworker_process_result`, `zworker_revision_prompt` as source of truth.
+- `scripts/codex_token_monitor_opencode_jobs.py` invokes the web-runner for `zworker-auto`;
+- the outer auto-runner treats exit `0` without a valid ZIP as a contract failure;
+- `zworker_prompt_pack`, `zworker_result_unpack`, `zworker_process_result`, and `zworker_revision_prompt` remain the source of truth.
 
 ## Verification
 
