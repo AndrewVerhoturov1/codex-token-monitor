@@ -2327,12 +2327,13 @@ class ZworkerAutoOrchestrationTests(unittest.TestCase):
             with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
                 with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
                     with unittest.mock.patch.object(jobs, "REPO_ROOT", base):
-                        with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", return_value=(False, "web_runner_timeout")):
-                            config = jobs.ZworkerAutoRunConfig(
-                                task="Timeout resume test",
-                                request_id=request_id,
-                            )
-                            result = jobs.zworker_auto_run(config, use_web_runner=True)
+                        with unittest.mock.patch.object(jobs, "_zworker_auto_run_model_preflight", return_value=(True, "")):
+                            with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", return_value=(False, "web_runner_timeout")):
+                                config = jobs.ZworkerAutoRunConfig(
+                                    task="Timeout resume test",
+                                    request_id=request_id,
+                                )
+                                result = jobs.zworker_auto_run(config, use_web_runner=True)
 
             self.assertEqual(result.status, "awaiting_zip")
             self.assertEqual(result.final_decision, "awaiting_zip")
@@ -2371,13 +2372,14 @@ class ZworkerAutoOrchestrationTests(unittest.TestCase):
                 with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", runtime["inbox"]):
                     with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
                         with unittest.mock.patch.object(jobs, "REPO_ROOT", base):
-                            with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", return_value=(False, "web_runner_timeout")):
-                                config = jobs.ZworkerAutoRunConfig(
-                                    task="Timeout zip test",
-                                    request_id=request_id,
-                                    allowed_paths="src/",
-                                )
-                                result = jobs.zworker_auto_run(config, use_web_runner=True)
+                            with unittest.mock.patch.object(jobs, "_zworker_auto_run_model_preflight", return_value=(True, "")):
+                                with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", return_value=(False, "web_runner_timeout")):
+                                    config = jobs.ZworkerAutoRunConfig(
+                                        task="Timeout zip test",
+                                        request_id=request_id,
+                                        allowed_paths="src/",
+                                    )
+                                    result = jobs.zworker_auto_run(config, use_web_runner=True)
 
             self.assertEqual(result.status, "completed")
             self.assertEqual(result.final_decision, "accepted")
@@ -2392,16 +2394,17 @@ class ZworkerAutoOrchestrationTests(unittest.TestCase):
 
             with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
                 with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
-                    with unittest.mock.patch.object(
-                        jobs,
-                        "_zworker_auto_invoke_web_runner",
-                        return_value=(False, "web_runner_not_started: session_state_missing; diag_dir=/tmp/diag"),
-                    ):
-                        config = jobs.ZworkerAutoRunConfig(
-                            task="Not started test",
-                            request_id=request_id,
-                        )
-                        result = jobs.zworker_auto_run(config, use_web_runner=True)
+                    with unittest.mock.patch.object(jobs, "_zworker_auto_run_model_preflight", return_value=(True, "")):
+                        with unittest.mock.patch.object(
+                            jobs,
+                            "_zworker_auto_invoke_web_runner",
+                            return_value=(False, "web_runner_not_started: session_state_missing; diag_dir=/tmp/diag"),
+                        ):
+                            config = jobs.ZworkerAutoRunConfig(
+                                task="Not started test",
+                                request_id=request_id,
+                            )
+                            result = jobs.zworker_auto_run(config, use_web_runner=True)
 
             self.assertEqual(result.status, "failed")
             self.assertIn("web_state=not_started", result.error)
@@ -2437,14 +2440,15 @@ class ZworkerAutoOrchestrationTests(unittest.TestCase):
                 with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", runtime["inbox"]):
                     with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
                         with unittest.mock.patch.object(jobs, "REPO_ROOT", base):
-                            with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", invoke_mock):
-                                with unittest.mock.patch.object(jobs.time, "sleep", return_value=None) as sleep_mock:
-                                    config = jobs.ZworkerAutoRunConfig(
-                                        task="Retry startup timeout",
-                                        request_id=request_id,
-                                        allowed_paths="src/",
-                                    )
-                                    result = jobs.zworker_auto_run(config, use_web_runner=True)
+                            with unittest.mock.patch.object(jobs, "_zworker_auto_run_model_preflight", return_value=(True, "")):
+                                with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", invoke_mock):
+                                    with unittest.mock.patch.object(jobs.time, "sleep", return_value=None) as sleep_mock:
+                                        config = jobs.ZworkerAutoRunConfig(
+                                            task="Retry startup timeout",
+                                            request_id=request_id,
+                                            allowed_paths="src/",
+                                        )
+                                        result = jobs.zworker_auto_run(config, use_web_runner=True)
 
             self.assertEqual(result.status, "completed")
             self.assertEqual(result.final_decision, "accepted")
@@ -2453,6 +2457,117 @@ class ZworkerAutoOrchestrationTests(unittest.TestCase):
             events_content = Path(result.events_log_path).read_text(encoding="utf-8")
             self.assertIn("web_runner_retry_scheduled", events_content)
             self.assertIn("web_runner_retrying", events_content)
+
+    def test_auto_run_runs_model_preflight_before_main_web_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+            request_id = "ZWORKER-20260629-120000-preflight-first"
+            web_runtime_root = base / ".ai" / "zworker" / "runtime" / "web"
+
+            zip_path = web_runtime_root / "output" / request_id / f"{request_id}-zworker-result.zip"
+            zip_path.parent.mkdir(parents=True, exist_ok=True)
+            with jobs.zipfile.ZipFile(zip_path, "w", jobs.zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("answer.md", "# Answer\n\n## Sources Read Report\n\n### Read fully\n- doc1\n\n### Read partially\n- none\n\n### Not read\n- none\n\n### External search used\nNo\n")
+                zf.writestr("src/file.py", "print('hello')\n")
+
+            session_dir = web_runtime_root / "sessions" / request_id
+            session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "run_state.json").write_text(
+                json.dumps({"request_id": request_id, "state": "ZIP_VALID", "zip_path": str(zip_path)}),
+                encoding="utf-8",
+            )
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", runtime["inbox"]):
+                    with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                        with unittest.mock.patch.object(jobs, "REPO_ROOT", base):
+                            with unittest.mock.patch.object(jobs, "_zworker_auto_run_model_preflight", return_value=(True, "")) as preflight_mock:
+                                with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", return_value=(True, "")) as invoke_mock:
+                                    config = jobs.ZworkerAutoRunConfig(
+                                        task="Preflight first",
+                                        request_id=request_id,
+                                        allowed_paths="src/",
+                                    )
+                                    result = jobs.zworker_auto_run(config, use_web_runner=True)
+
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.final_decision, "accepted")
+            preflight_mock.assert_called_once()
+            invoke_mock.assert_called_once()
+            events_content = Path(result.events_log_path).read_text(encoding="utf-8")
+            self.assertIn("web_runner_preflight_started", events_content)
+            self.assertIn("web_runner_preflight_completed", events_content)
+
+    def test_auto_run_preflight_failure_stops_before_main_web_runner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+            request_id = "ZWORKER-20260629-120000-preflight-fail"
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                    with unittest.mock.patch.object(jobs, "REPO_ROOT", base):
+                        with unittest.mock.patch.object(jobs, "_zworker_auto_run_model_preflight", return_value=(False, "FAILED_MODEL_NOT_VERIFIED")) as preflight_mock:
+                            with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner") as invoke_mock:
+                                config = jobs.ZworkerAutoRunConfig(
+                                    task="Preflight fail",
+                                    request_id=request_id,
+                                )
+                                result = jobs.zworker_auto_run(config, use_web_runner=True)
+
+            self.assertEqual(result.status, "failed")
+            self.assertIn("web_runner_preflight_failed", result.error)
+            self.assertIn("FAILED_MODEL_NOT_VERIFIED", result.error)
+            preflight_mock.assert_called_once()
+            invoke_mock.assert_not_called()
+
+    def test_auto_run_retries_with_model_preflight_after_not_started(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            runtime = self._setup_runtime(base)
+            request_id = "ZWORKER-20260629-120000-preflight-retry"
+            web_runtime_root = base / ".ai" / "zworker" / "runtime" / "web"
+
+            zip_path = web_runtime_root / "output" / request_id / f"{request_id}-zworker-result.zip"
+            zip_path.parent.mkdir(parents=True, exist_ok=True)
+            with jobs.zipfile.ZipFile(zip_path, "w", jobs.zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("answer.md", "# Answer\n\n## Sources Read Report\n\n### Read fully\n- doc1\n\n### Read partially\n- none\n\n### Not read\n- none\n\n### External search used\nNo\n")
+                zf.writestr("src/file.py", "print('hello')\n")
+
+            session_dir = web_runtime_root / "sessions" / request_id
+            session_dir.mkdir(parents=True, exist_ok=True)
+            (session_dir / "run_state.json").write_text(
+                json.dumps({"request_id": request_id, "state": "ZIP_VALID", "zip_path": str(zip_path)}),
+                encoding="utf-8",
+            )
+
+            invoke_mock = unittest.mock.Mock(side_effect=[
+                (False, "web_runner_not_started: session_state_missing; diag_dir=/tmp/diag"),
+                (True, ""),
+            ])
+
+            with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_REQUESTS", runtime["requests"]):
+                with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_INBOX", runtime["inbox"]):
+                    with unittest.mock.patch.object(jobs, "ZWORKER_RUNTIME_AUTO", runtime["auto"]):
+                        with unittest.mock.patch.object(jobs, "REPO_ROOT", base):
+                            with unittest.mock.patch.object(jobs, "_zworker_auto_run_model_preflight", return_value=(True, "")) as preflight_mock:
+                                with unittest.mock.patch.object(jobs, "_zworker_auto_invoke_web_runner", invoke_mock):
+                                    with unittest.mock.patch.object(jobs.time, "sleep", return_value=None):
+                                        config = jobs.ZworkerAutoRunConfig(
+                                            task="Preflight retry",
+                                            request_id=request_id,
+                                            allowed_paths="src/",
+                                        )
+                                        result = jobs.zworker_auto_run(config, use_web_runner=True)
+
+            self.assertEqual(result.status, "completed")
+            self.assertEqual(result.final_decision, "accepted")
+            self.assertEqual(invoke_mock.call_count, 2)
+            self.assertEqual(preflight_mock.call_count, 2)
+            events_content = Path(result.events_log_path).read_text(encoding="utf-8")
+            self.assertIn("web_runner_preflight_started", events_content)
+            self.assertIn("web_runner_retry_preflight_completed", events_content)
 
     def test_auto_run_writes_full_diagnostics_timeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2892,7 +3007,7 @@ class ZworkerAutoAttachModeTests(unittest.TestCase):
 
             fake_process = FakeProcess()
 
-            monotonic_values = iter([0.0, 0.0, 0.3, 0.7, 1.2, 1.4])
+            monotonic_values = iter([0.0, 0.0, 0.3, 0.7, 1.2, 1.4, 1.5, 1.6])
 
             with unittest.mock.patch.object(jobs, "ZWORKER_AUTO_WEB_RUNNER_STARTUP_TIMEOUT_SECONDS", 1.0):
                 with unittest.mock.patch.object(jobs, "REPO_ROOT", Path(tmp)):
@@ -2914,6 +3029,14 @@ class ZworkerAutoAttachModeTests(unittest.TestCase):
             diag_dir = runtime_root / "diagnostics" / "ZWORKER-20260629-120000-startfail"
             self.assertTrue((diag_dir / "launch.json").exists())
             self.assertTrue((diag_dir / "stderr.log").exists())
+            launch = json.loads((diag_dir / "launch.json").read_text(encoding="utf-8"))
+            self.assertEqual(launch["phase"], "startup_timeout")
+            self.assertEqual(launch["probe_mode"], "")
+            self.assertEqual(launch["pid"], 0)
+            self.assertFalse(launch["session_dir_exists"])
+            self.assertFalse(launch["session_state_exists"])
+            self.assertGreaterEqual(launch["startup_timeout_seconds"], 1.0)
+            self.assertTrue(launch["startup_trace"])
 
     def test_invoke_web_runner_detects_early_exit_with_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2957,6 +3080,50 @@ class ZworkerAutoAttachModeTests(unittest.TestCase):
             self.assertTrue((diag_dir / "launch.json").exists())
             self.assertTrue((diag_dir / "stderr.log").exists())
             self.assertIn("startup_early_exit", (diag_dir / "launch.json").read_text(encoding="utf-8"))
+
+    def test_invoke_web_runner_model_check_adds_probe_flag_to_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            runtime_root = Path(tmp) / "runtime"
+            runtime_root.mkdir(parents=True, exist_ok=True)
+            request_id = "ZWORKER-20260629-120000-model-check"
+
+            class FakeProcessEarlyExit:
+                def __init__(self):
+                    self.returncode = 1
+                    self.killed = False
+                    self.pid = 4242
+
+                def poll(self):
+                    return 1
+
+                def kill(self):
+                    self.killed = True
+
+                def communicate(self, timeout=None):
+                    return ("", "model check fail")
+
+            fake_process = FakeProcessEarlyExit()
+
+            with unittest.mock.patch.object(jobs, "REPO_ROOT", Path(tmp)):
+                with unittest.mock.patch.object(jobs, "_zworker_auto_resolve_cdp_url", return_value="ws://localhost:9222/devtools/browser/live"):
+                    with unittest.mock.patch.object(jobs.subprocess, "Popen", return_value=fake_process) as popen_mock:
+                        with unittest.mock.patch.object(jobs.time, "monotonic", return_value=0.5):
+                            with unittest.mock.patch.object(jobs.time, "sleep", return_value=None):
+                                ok, error = jobs._zworker_auto_invoke_web_runner(
+                                    request_id=request_id,
+                                    runtime_root=runtime_root,
+                                    cdp_url="ws://localhost:9222/devtools/browser/live",
+                                    timeout_seconds=10,
+                                    probe_mode="model_check",
+                                )
+
+            self.assertFalse(ok)
+            self.assertIn("diag_dir=", error)
+            invoked_cmd = popen_mock.call_args.args[0]
+            self.assertIn("--model-check", invoked_cmd)
+            diag_dir = runtime_root / "diagnostics" / request_id
+            launch = json.loads((diag_dir / "launch.json").read_text(encoding="utf-8"))
+            self.assertEqual(launch["probe_mode"], "model_check")
 
     def test_write_web_runner_diagnostics_creates_empty_logs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

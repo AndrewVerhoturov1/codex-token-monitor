@@ -2206,6 +2206,15 @@ def _zworker_auto_web_runner_started(runtime_root: Path, request_id: str) -> boo
     return session_dir.exists()
 
 
+def _zworker_auto_web_runner_start_observation(runtime_root: Path, request_id: str) -> dict[str, bool]:
+    session_dir = _zworker_auto_web_session_dir_path(runtime_root, request_id)
+    session_state_path = _zworker_auto_web_session_state_path(runtime_root, request_id)
+    return {
+        "session_dir_exists": session_dir.exists(),
+        "session_state_exists": session_state_path.exists(),
+    }
+
+
 def _zworker_auto_write_web_runner_diagnostics(
     runtime_root: Path,
     request_id: str,
@@ -2216,6 +2225,13 @@ def _zworker_auto_write_web_runner_diagnostics(
     stdout_text: str,
     stderr_text: str,
     phase: str,
+    probe_mode: str = "",
+    pid: int = 0,
+    startup_timeout_seconds: float = 0.0,
+    startup_elapsed_seconds: float = 0.0,
+    session_dir_exists: bool = False,
+    session_state_exists: bool = False,
+    startup_trace: list[dict[str, Any]] | None = None,
 ) -> Path:
     diag_dir = Path(runtime_root) / "diagnostics" / request_id
     diag_dir.mkdir(parents=True, exist_ok=True)
@@ -2229,6 +2245,13 @@ def _zworker_auto_write_web_runner_diagnostics(
         "returncode": returncode,
         "stdout_log": str(diag_dir / "stdout.log"),
         "stderr_log": str(diag_dir / "stderr.log"),
+        "probe_mode": probe_mode,
+        "pid": int(pid or 0),
+        "startup_timeout_seconds": float(startup_timeout_seconds or 0.0),
+        "startup_elapsed_seconds": float(startup_elapsed_seconds or 0.0),
+        "session_dir_exists": bool(session_dir_exists),
+        "session_state_exists": bool(session_state_exists),
+        "startup_trace": list(startup_trace or []),
     }
     (diag_dir / "launch.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
@@ -2246,6 +2269,7 @@ def _zworker_auto_invoke_web_runner(
     force_resend: bool = False,
     cdp_url: str = "",
     timeout_seconds: int = ZWORKER_AUTO_DEFAULT_WEB_RUNNER_TIMEOUT_SECONDS,
+    probe_mode: str = "",
 ) -> tuple[bool, str]:
     runner_script = _SCRIPT_DIR / "zworker_chatgpt_web_runner.py"
     if not runner_script.exists():
@@ -2266,11 +2290,27 @@ def _zworker_auto_invoke_web_runner(
         cmd.append("--resume")
     if force_resend:
         cmd.append("--force-resend")
+    if probe_mode == "login_check":
+        cmd.append("--login-check")
+    elif probe_mode == "model_check":
+        cmd.append("--model-check")
     cmd.extend(["--cdp-url", effective_cdp_url])
 
     effective_timeout = timeout_seconds if timeout_seconds > 0 else ZWORKER_AUTO_DEFAULT_WEB_RUNNER_TIMEOUT_SECONDS
-    session_state_path = _zworker_auto_web_session_state_path(runtime_root, request_id)
     started_monotonic = time.monotonic()
+    startup_timeout = min(float(effective_timeout), ZWORKER_AUTO_WEB_RUNNER_STARTUP_TIMEOUT_SECONDS)
+    startup_trace: list[dict[str, Any]] = []
+
+    def record_startup_trace() -> dict[str, Any]:
+        observation = _zworker_auto_web_runner_start_observation(runtime_root, request_id)
+        payload = {
+            "elapsed_ms": int(max(0.0, time.monotonic() - started_monotonic) * 1000),
+            "returncode": process.poll() if "process" in locals() else None,
+            **observation,
+        }
+        startup_trace.append(payload)
+        return payload
+
     try:
         process = subprocess.Popen(
             cmd,
@@ -2281,13 +2321,16 @@ def _zworker_auto_invoke_web_runner(
         )
     except Exception as e:
         return False, f"web_runner_exception: {e}"
+    process_pid = int(getattr(process, "pid", 0) or 0)
+    record_startup_trace()
 
-    startup_timeout = min(float(effective_timeout), ZWORKER_AUTO_WEB_RUNNER_STARTUP_TIMEOUT_SECONDS)
     startup_deadline = started_monotonic + max(startup_timeout, 0.0)
     while process.poll() is None and not _zworker_auto_web_runner_started(runtime_root, request_id) and time.monotonic() < startup_deadline:
         time.sleep(ZWORKER_AUTO_WEB_RUNNER_STARTUP_POLL_SECONDS)
+        record_startup_trace()
 
     if process.poll() is not None:
+        last_observation = record_startup_trace()
         try:
             stdout_text, stderr_text = process.communicate(timeout=GRACE_TERMINATE_SECONDS)
         except Exception:
@@ -2302,6 +2345,13 @@ def _zworker_auto_invoke_web_runner(
                 stdout_text=stdout_text,
                 stderr_text=stderr_text,
                 phase="startup_early_exit",
+                probe_mode=probe_mode,
+                pid=process_pid,
+                startup_timeout_seconds=startup_timeout,
+                startup_elapsed_seconds=max(0.0, time.monotonic() - started_monotonic),
+                session_dir_exists=bool(last_observation["session_dir_exists"]),
+                session_state_exists=bool(last_observation["session_state_exists"]),
+                startup_trace=startup_trace,
             )
         else:
             diag_dir = None
@@ -2314,6 +2364,7 @@ def _zworker_auto_invoke_web_runner(
 
     if not _zworker_auto_web_runner_started(runtime_root, request_id):
         process.kill()
+        last_observation = record_startup_trace()
         try:
             stdout_text, stderr_text = process.communicate(timeout=GRACE_TERMINATE_SECONDS)
         except Exception:
@@ -2327,6 +2378,13 @@ def _zworker_auto_invoke_web_runner(
             stdout_text=stdout_text,
             stderr_text=stderr_text,
             phase="startup_timeout",
+            probe_mode=probe_mode,
+            pid=process_pid,
+            startup_timeout_seconds=startup_timeout,
+            startup_elapsed_seconds=max(0.0, time.monotonic() - started_monotonic),
+            session_dir_exists=bool(last_observation["session_dir_exists"]),
+            session_state_exists=bool(last_observation["session_state_exists"]),
+            startup_trace=startup_trace,
         )
         return False, f"web_runner_not_started: session_state_missing; diag_dir={diag_dir}"
 
@@ -2348,6 +2406,13 @@ def _zworker_auto_invoke_web_runner(
             stdout_text=stdout_text,
             stderr_text=stderr_text,
             phase="runtime_timeout",
+            probe_mode=probe_mode,
+            pid=process_pid,
+            startup_timeout_seconds=startup_timeout,
+            startup_elapsed_seconds=max(0.0, time.monotonic() - started_monotonic),
+            session_dir_exists=True,
+            session_state_exists=True,
+            startup_trace=startup_trace,
         )
         return False, f"web_runner_timeout: diag_dir={diag_dir}"
     except Exception as e:
@@ -2363,6 +2428,13 @@ def _zworker_auto_invoke_web_runner(
             stdout_text=stdout_text,
             stderr_text=stderr_text,
             phase="completed" if process.returncode == 0 else "failed",
+            probe_mode=probe_mode,
+            pid=process_pid,
+            startup_timeout_seconds=startup_timeout,
+            startup_elapsed_seconds=max(0.0, time.monotonic() - started_monotonic),
+            session_dir_exists=True,
+            session_state_exists=True,
+            startup_trace=startup_trace,
         )
     else:
         diag_dir = None
@@ -2382,6 +2454,30 @@ def _zworker_auto_read_web_run_state(
     request_id: str,
 ) -> dict[str, Any]:
     return _read_json_safe(runtime_root / "sessions" / request_id / "run_state.json") or {}
+
+
+def _zworker_auto_preflight_request_id(request_id: str, attempt_no: int = 1) -> str:
+    suffix = f"pfm{max(1, int(attempt_no))}"
+    return f"{request_id}-{suffix}"
+
+
+def _zworker_auto_run_model_preflight(
+    request_id: str,
+    runtime_root: Path,
+    *,
+    cdp_url: str = "",
+    timeout_seconds: int = ZWORKER_AUTO_DEFAULT_WEB_RUNNER_TIMEOUT_SECONDS,
+    attempt_no: int = 1,
+) -> tuple[bool, str]:
+    preflight_request_id = _zworker_auto_preflight_request_id(request_id, attempt_no=attempt_no)
+    preflight_timeout = max(30, min(int(timeout_seconds or 0) if timeout_seconds else 90, 90))
+    return _zworker_auto_invoke_web_runner(
+        preflight_request_id,
+        runtime_root,
+        cdp_url=cdp_url,
+        timeout_seconds=preflight_timeout,
+        probe_mode="model_check",
+    )
 
 
 def _zworker_auto_read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -2748,6 +2844,36 @@ def zworker_auto_run(
         _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_WEB_RUNNER_RUNNING))
         _zworker_auto_append_event(events_path, {"event": "web_runner_invoked", "request_id": request_id, "timestamp": _utcnow()})
 
+        if not use_resume:
+            _zworker_auto_append_event(
+                events_path,
+                {"event": "web_runner_preflight_started", "request_id": request_id, "timestamp": _utcnow(), "attempt_no": 1},
+            )
+            preflight_ok, preflight_error = _zworker_auto_run_model_preflight(
+                request_id,
+                runtime_root,
+                cdp_url=config.cdp_url,
+                timeout_seconds=config.web_runner_timeout_seconds,
+                attempt_no=1,
+            )
+            if not preflight_ok:
+                _zworker_auto_append_event(
+                    events_path,
+                    {
+                        "event": "web_runner_preflight_failed",
+                        "request_id": request_id,
+                        "timestamp": _utcnow(),
+                        "attempt_no": 1,
+                        "error": preflight_error,
+                    },
+                )
+                _zworker_auto_write_state(run_dir, dict(_zworker_auto_read_state(run_dir), state=ZWORKER_AUTO_STATE_FAILED, error=f"web_runner_preflight_failed: {preflight_error}"))
+                return finish(status="failed", error=f"web_runner_preflight_failed: {preflight_error}")
+            _zworker_auto_append_event(
+                events_path,
+                {"event": "web_runner_preflight_completed", "request_id": request_id, "timestamp": _utcnow(), "attempt_no": 1},
+            )
+
         web_ok = False
         web_error = ""
         retry_budget = max(0, ZWORKER_AUTO_WEB_RUNNER_NOT_STARTED_RETRY_COUNT)
@@ -2778,6 +2904,44 @@ def zworker_auto_run(
                 },
             )
             time.sleep(ZWORKER_AUTO_WEB_RUNNER_NOT_STARTED_RETRY_DELAY_SECONDS)
+            _zworker_auto_append_event(
+                events_path,
+                {
+                    "event": "web_runner_retry_preflight_started",
+                    "request_id": request_id,
+                    "timestamp": _utcnow(),
+                    "retry_attempt": retry_attempt,
+                },
+            )
+            preflight_ok, preflight_error = _zworker_auto_run_model_preflight(
+                request_id,
+                runtime_root,
+                cdp_url=config.cdp_url,
+                timeout_seconds=config.web_runner_timeout_seconds,
+                attempt_no=retry_attempt + 1,
+            )
+            if not preflight_ok:
+                web_error = f"web_runner_retry_preflight_failed: {preflight_error}"
+                _zworker_auto_append_event(
+                    events_path,
+                    {
+                        "event": "web_runner_retry_preflight_failed",
+                        "request_id": request_id,
+                        "timestamp": _utcnow(),
+                        "retry_attempt": retry_attempt,
+                        "error": preflight_error,
+                    },
+                )
+                break
+            _zworker_auto_append_event(
+                events_path,
+                {
+                    "event": "web_runner_retry_preflight_completed",
+                    "request_id": request_id,
+                    "timestamp": _utcnow(),
+                    "retry_attempt": retry_attempt,
+                },
+            )
             current_resume = _zworker_auto_web_runner_started(runtime_root, request_id) or use_resume
             _zworker_auto_append_event(
                 events_path,
