@@ -96,22 +96,21 @@ Within one user request, Codex MAY combine:
 Do not treat `/zworker-auto` as an exclusive whole-task route.
 Treat it as a specialized execution phase inside a multi-route workflow.
 
-## Preferred Entry On This Machine
+## Route W Entrypoint
 
-For the current workstation, prefer this concrete route:
+Route W execution MUST use the MCP tool `opencode_zworker_auto_run`
+(namespace `mcp__opencode_jobs`).
 
-1. `zworker_prompt_pack`
-2. direct `zworker_chatgpt_web_runner.py --cdp-url ... --handoff`
-3. existing local handoff through `result_unpack` and `process_result`
+Codex MUST call this tool immediately after selecting Route W. If Route W is
+selected and no hard blocker exists, the same model turn MUST produce a tool
+call — commentary-only "запускаю Route W" without a tool call is forbidden.
 
-This direct attach-mode runner is the canonical route for future chats on this
-machine. The broader `zworker-auto` orchestrator must mirror its confirmed
-result, not invent browser phases ahead of it.
+If `opencode_zworker_auto_run` is unavailable, Codex MUST stop and report the
+blocker. Do not fall back to `zworker_chatgpt_web_runner.py` without explicit
+user permission.
 
-Treat this as the primary operational path even though the repository also has
-broader `zworker-auto` orchestration code and an MCP wrapper.
-This preference applies to the external web phase, not to every other phase of
-the same user request.
+The raw `zworker_chatgpt_web_runner.py` script is a manual/diagnostic fallback
+only — for human-driven debugging, not for primary Codex execution.
 
 ## Route Boundaries
 
@@ -235,24 +234,25 @@ After that, retry the same browser session instead of switching profiles.
 
 ### 4. Execute the automated web run
 
-Use the direct web-runner with attach-mode and handoff:
+Use `opencode_zworker_auto_run` (primary — Codex execution path):
 
-```powershell
-python scripts/zworker_chatgpt_web_runner.py `
-  --request-id <request-id> `
-  --repo-root . `
-  --runtime-root .ai/zworker/runtime/web `
-  --cdp-url <ws://127.0.0.1:9222/devtools/browser/...> `
-  --handoff `
-  --chat-timeout-ms 60000 `
-  --answer-timeout-ms 720000 `
-  --download-timeout-ms 300000
+```text
+mcp__opencode_jobs.opencode_zworker_auto_run(
+  task_text="<task>",
+  context="<context>",
+  cdp_url="<ws://...>",
+  use_web_runner=true,
+  allowed_paths="<paths>",
+  source_urls="<raw GitHub URLs>",
+  timeout_seconds=1200
+)
 ```
+
+Do NOT call `zworker_chatgpt_web_runner.py` directly in the Codex turn. That
+script is a manual diagnostic fallback only (see diagnostic-check sections).
 
 Important:
 
-- prefer the direct web-runner attach path for the real browser flow
-- do not start with `zworker-auto` launch-mode that opens a fresh browser
 - keep the 12-minute answer timeout for ChatGPT Web work
 - a successful web-runner return must also yield a valid ZIP; `exit 0` without a valid ZIP is a failure, not `awaiting_zip`
 - canonical ZIP name is `.ai/zworker/runtime/web/output/<request-id>/<request-id>-zworker-result.zip`

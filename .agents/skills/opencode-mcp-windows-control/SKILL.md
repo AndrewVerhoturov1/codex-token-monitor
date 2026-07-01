@@ -474,6 +474,12 @@ Codex remains responsible for:
 - reviewing evidence;
 - final user explanation.
 
+### Route W: zworker-auto external web phase
+
+Route W executes through the MCP tool `mcp__opencode_jobs.opencode_zworker_auto_run`.
+Use when per-phase planning selects the external ChatGPT Web route.
+Before using, Codex MUST read `zworker-auto`.
+
 ## General plugin skill priority
 
 This OpenCode routing skill has priority for route selection and execution
