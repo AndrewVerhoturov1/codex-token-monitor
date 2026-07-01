@@ -270,12 +270,17 @@ Examples:
 
 - repo exploration -> Route A;
 - file reading / context_pack -> Route A;
-- medium code implementation -> Route C / DeepSeek 4 Pro via OpenCode Jobs;
+- GitHub/context sync for Web -> GitHub skill through OpenCode;
+- medium/complex thinking or code package with sufficient published GitHub context -> Route W / Web Zworker Auto;
+- hard local verification or repair after Web/OpenCode work -> Route C / minimax-m2.5 via ollama_5_round_robin through OpenCode Jobs;
 - diff / changed-file verification -> Route A;
 - GitHub work -> GitHub skill through OpenCode;
 - cleanup -> cleanup skill;
 - long report -> report handoff skill;
 - direct-route failure recovery -> Route B.
+
+Do not choose one route for the whole task when different phases need different
+tools.
 
 ### Route A: standard OpenCode MCP / DeepSeek
 
@@ -291,14 +296,20 @@ small low-risk edits.
 Route A is also the required route for repository reconnaissance needed to
 choose later routes.
 
+Model order for Route A:
+
+1. Primary: `deepseek/deepseek-v4-flash`
+2. Fallback 1: `opencode/deepseek-v4-flash-free`
+3. Fallback 2: `opencode/mimo-v2.5-free`
+
 Confirmed terminal failure, quota exhaustion, explicit model error, or
-confirmed empty/no-content result on Route A allows exactly one model fallback:
+confirmed empty/no-content result on Route A triggers fallback chain:
 
 ```text
-Codex -> mcp__opencode.* -> OpenCode -> opencode/deepseek-v4-flash-free
+Fallback 1: opencode/deepseek-v4-flash-free -> Fallback 2: opencode/mimo-v2.5-free
 ```
 
-If the fallback model also fails, returns no usable content, or is unavailable,
+If the entire fallback chain also fails, returns no usable content, or is unavailable,
 Codex MUST stop and explain the blocker to the user.
 
 Route A SHOULD be used for:
@@ -306,12 +317,16 @@ Route A SHOULD be used for:
 - repo search;
 - multi-file reading;
 - `context_pack`;
+- prompt shaping for later routes;
+- request/context packaging;
 - project mapping;
 - config/log/error analysis;
 - safe command discovery;
 - diff summary;
 - changed-file verification;
 - `verify_pack`;
+- ZIP unpack review and safe local handoff verification;
+- selected local checks and tests after Codex decision;
 - tiny obvious edits with no new logic;
 - where a feature should live;
 - which files are relevant;
@@ -340,32 +355,79 @@ Fallback bell route MUST NOT become the new default route.
 After a fallback attempt, the next new OpenCode task MUST start again with the standard `mcp__opencode.*` route.
 Codex MUST NOT begin future tasks with the fallback route merely because it was used before.
 
-### Route C: DeepSeek 4 Pro via OpenCode Jobs
+### Route W: Web Zworker Auto / ChatGPT Web strongest model
 
-Use DeepSeek 4 Pro through `mcp__opencode_jobs.opencode_job_run_and_wait`
-when Route C is selected by per-phase route planning for a bounded code
-implementation phase.
+Use Route W when the main route planner deliberately selects the strongest
+reasoning/code-generation phase and the needed repository context is already
+published through externally-readable GitHub/raw URLs.
 
-Route C is the preferred implementation route for medium bounded code work.
+Route W is:
+
+```text
+Codex -> ChatGPT Web via Playwright/browser automation -> ZIP with answer.md/files -> Route A or Route C for local follow-up
+```
+
+Route W is the preferred strongest-model route for:
+
+- architecture;
+- project/design thinking;
+- complex code packages;
+- medium or larger feature generation;
+- new helper files;
+- HTML/JS/CSS prototypes;
+- applications and demos;
+- documentation;
+- research;
+- code review;
+- solution analysis;
+- prompt generation;
+- skill design;
+- tasks where the natural result is a ZIP with `answer.md` and files.
+
+Route W SHOULD be used when all are true:
+
+- the task benefits from high reasoning quality;
+- GitHub context is current and sufficient for the Web model;
+- the result can come back as a zworker ZIP.
+
+Route W MUST NOT be used for:
+
+- local-only files or facts that are not safely publishable;
+- secrets;
+- `.env`;
+- quick `git status` / repo inspection;
+- simple file reading or search;
+- test execution;
+- dependency installation;
+- server/watch commands;
+- tiny 1-3 line edits;
+- cases where Web latency is not justified.
+
+Before using Route W, Codex MUST read `zworker-auto`.
+
+### Route C: minimax-m2.5 via ollama_5_round_robin through OpenCode Jobs
+
+Use minimax-m2.5 through the `ollama_5_round_robin` profile via
+`mcp__opencode_jobs.opencode_job_run_and_wait` when Route C is selected by
+per-phase route planning for a bounded hard local implementation or repair
+phase.
+
+Route C is for hard local jobs, not the default strongest thinking route.
 
 Before using Route C, Codex MUST read `opencode-deepseek-pro-jobs-control`.
 
-Codex SHOULD select Route C for the implementation phase when the phase
-requires creating or changing non-trivial code logic.
+Codex SHOULD select Route C when the phase needs local hands that Route A
+cannot handle reliably and Route W cannot see or should not see the needed
+context.
 
 Codex MUST prefer Route C when the implementation phase has two or more of
 these signals:
 
-- new standalone app/game/tool;
-- multiple new files;
-- multiple interacting code subsystems;
-- UI plus state plus behavior;
-- game loop or realtime behavior;
-- parser/export/import logic;
-- non-trivial state management;
-- medium feature slice;
-- bug fix requiring logic changes across several files;
-- tests plus implementation for one defined behavior.
+- complex local verification;
+- hard failing tests;
+- post-Web local repair;
+- local context newer than GitHub and not publishable;
+- a long bounded local job where Route A is too weak.
 
 Using Route A for exploration does not authorize using Route A for the later
 implementation phase.
@@ -378,17 +440,18 @@ context to the Route C jobs run.
 
 Route C is for:
 
-- medium `patch_pack` tasks;
-- one approved feature slice;
-- one understood bug;
-- tests for one defined behavior;
-- bounded medium/complex code changes where ordinary Route A is too weak but
-  Codex should not work locally.
+- hard local `patch_pack` tasks;
+- complex local verification and repair;
+- one approved difficult bug or bounded fix;
+- post-Web cleanup/repair when accepted output still needs local changes;
+- medium local fixes when Web cannot see the required local context;
+- long bounded local jobs where ordinary Route A is too weak but Codex should
+  not work locally.
 
 Route C MUST use only this transport and model:
 
 ```text
-Codex -> mcp__opencode_jobs.opencode_job_run_and_wait -> job-wrapper -> OpenCode -> deepseek/deepseek-v4-pro
+Codex -> mcp__opencode_jobs.opencode_job_run_and_wait -> job-wrapper -> OpenCode -> ollama_5_round_robin/minimax-m2.5
 ```
 
 Route C MUST NOT silently fall back to:
@@ -413,10 +476,10 @@ Route C MUST NOT be used for:
 
 If the task is too large, Codex MUST split it before using Route C.
 
-If DeepSeek 4 Pro, the jobs wrapper, or the Route C result is unavailable,
-empty, off-scope, or otherwise unusable, Codex MUST stop and explain the
-blocker to the user. Codex MUST NOT silently switch to Kimi, Flash, or local
-Codex work.
+If minimax-m2.5 via ollama_5_round_robin, the jobs wrapper, or the Route C
+result is unavailable, empty, off-scope, or otherwise unusable, Codex MUST stop
+and explain the blocker to the user. Codex MUST NOT silently switch to Kimi,
+Flash, or local Codex work.
 
 Route A may still be used for tiny code edits when all are true:
 
@@ -506,16 +569,16 @@ Conditional skills:
   Load only for `/zworker` or an explicit external worker route request. Do not load it by default.
 
 - `zworker-auto`
-  Load only for `/zworker-auto` or an explicit request to run the fully automated ChatGPT Web zworker route. Do not load it by default.
+  Load for `/zworker-auto` or when the main route planner deliberately selects Route W / Web Zworker Auto for a meaningful phase. Do not load it for ordinary local-only work, simple OpenCode work, manual `/zworker`, or tasks where GitHub context is not publishable.
 
 - `opencode-deepseek-pro-jobs-control`
-  Load only when Route C / DeepSeek 4 Pro via OpenCode Jobs is deliberately selected.
+  Load only when Route C (minimax-m2.5 via ollama_5_round_robin through OpenCode Jobs) is deliberately selected.
 
 - `opencode-kimi-runtime-launch`
   Load only for `/kimifree` or an explicit Kimi request.
 
 - `opencode-github-mcp-control`
-  Load only for explicit GitHub tasks.
+  Load only for explicit GitHub tasks or for the narrow Route W GitHub context-sync exception.
 
 - `opencode-report-handoff`
   Load only for long workspace report workflows.
@@ -721,19 +784,19 @@ was used, or a required blocker prevented completion.
 
 ## Default DeepSeek model
 
-Default model:
+Default model order for Route A:
 
-- providerID: `deepseek`
-- modelID: `deepseek-v4-flash`
-- reasoning effort: `max`
+1. Primary: `deepseek/deepseek-v4-flash`
+2. Fallback 1: `opencode/deepseek-v4-flash-free`
+3. Fallback 2: `opencode/mimo-v2.5-free`
 
 ## Model discovery rule
 
-For Route A / standard OpenCode MCP, Codex MUST use the skill-default model:
+For Route A / standard OpenCode MCP, Codex MUST use the skill-default model order:
 
-- providerID: `deepseek`
-- modelID: `deepseek-v4-flash`
-- reasoning effort: `max`
+1. Primary: `deepseek/deepseek-v4-flash`
+2. Fallback 1: `opencode/deepseek-v4-flash-free`
+3. Fallback 2: `opencode/mimo-v2.5-free`
 
 Codex MUST NOT call `opencode_provider_models` merely to confirm or rediscover
 this default model.
@@ -750,14 +813,13 @@ this default model.
 General MCP tool recommendations to discover providers/models do not override
 this skill-default model rule.
 
-Fallback model for Route A after confirmed terminal failure, quota exhaustion, explicit
+Fallback model chain for Route A after confirmed terminal failure, quota exhaustion, explicit
 model error, or confirmed empty/no-content result:
 
-- providerID: `opencode`
-- modelID: `deepseek-v4-flash-free`
-- reasoning effort: `max`
+1. Fallback 1: `opencode/deepseek-v4-flash-free`
+2. Fallback 2: `opencode/mimo-v2.5-free`
 
-If this Route A fallback model also fails or returns no usable content, Codex
+If the entire fallback chain also fails or returns no usable content, Codex
 MUST stop and explain the blocker to the user.
 
 OpenCode must not ask the human user for permission:
@@ -783,7 +845,8 @@ Do not use `external_directory` or Codex attachment paths by default.
 
 ## GitHub trigger only
 
-GitHub is explicit-only.
+GitHub is explicit-only except for the narrow Route W context-sync exception
+defined below.
 
 Before any GitHub task, Codex MUST read `opencode-github-mcp-control`.
 
@@ -818,6 +881,33 @@ Exception: the skill-edit commit/push obligation (see Git write restrictions
 section) creates a narrow exception for skill-file edits within the completion
 phase of a task that modified skills.
 
+## Published GitHub Context Rule
+
+Before Route W / Web Zworker Auto, Codex MUST ensure that all required repo
+context is available through externally-readable GitHub/raw URLs.
+
+If required files or changes exist only locally, or local state is newer than
+GitHub, Codex MUST use OpenCode to prepare and publish the minimum required
+context before invoking Route W.
+
+Preferred method:
+
+- create or update a temporary context branch: `zworker-context/<request-id>`;
+- push only the files or context required by the Web phase;
+- put raw GitHub URLs from that branch into the zworker prompt.
+
+Safety rules:
+
+- do not push secrets;
+- do not push `.env`;
+- do not push unrelated files or broad repo writes;
+- do not write to `main` unless explicitly approved;
+- use temporary branches when they are sufficient.
+
+If the context cannot be safely published, Route W is blocked for that part
+and Codex MUST continue with Route A / Route C locally or stop with a clear
+blocker.
+
 ## Cleanup trigger only
 
 Cleanup requires a decision loop.
@@ -848,7 +938,6 @@ Without a separate Codex decision, do not run:
 - network commands;
 - server or watch commands;
 - commands requiring secrets;
-- commands that write external directories;
 - Git write commands.
 
 ## Git write restrictions
@@ -897,56 +986,18 @@ OpenCode output should also stay compact:
 - no long logs;
 - no huge report restatements in chat when a file artifact exists.
 
-## Quiet commentary mode
-
-By default, Codex MUST NOT print intermediate commentary, progress messages,
-thinking updates, or verbose play-by-play explanations.
-
-Codex MAY show short working updates only when the current user message contains
-at least one show-mode control trigger.
-
-Show-mode triggers:
-- `+мысли`
-- `+комментарии`
-- `+прогресс`
-- `+объясняй`
-- `+подробно`
-
-Quiet-mode triggers (return to silent):
-- `-мысли`
-- `+молча`
-- `+тихо`
-- `+без_комментариев`
-
-Control trigger rules:
-- The last control trigger in the user message wins.
-- Control triggers are case-sensitive and must appear as whole tokens.
-- Control triggers MUST NOT be repeated to the user.
-- Control triggers MUST NOT be forwarded to external prompts unless they are
-  part of the useful payload.
-
-This is NOT a chain-of-thought request. When show-mode is active, only short
-working updates are permitted. Internal hidden reasoning chains are never
-allowed as visible output.
-
-The following are ALWAYS shown, regardless of quiet mode:
-- final answer;
-- blockers and task status;
-- errors and error explanations;
-- safety warnings;
-- direct questions to the user.
-
-## Route reminder
+Route reminder:
 
 ```text
 Small work -> standard OpenCode MCP / DeepSeek.
-Route A default model -> deepseek/deepseek-v4-flash.
-Route A model fallback after confirmed failure -> opencode/deepseek-v4-flash-free once.
-Route A fallback failed -> stop and explain the blocker.
+Route A model order: deepseek/deepseek-v4-flash -> opencode/deepseek-v4-flash-free -> opencode/mimo-v2.5-free.
+Route A fallback chain failed -> stop and explain the blocker.
 Direct MCP failed in current task -> one job-wrapper fallback attempt.
 Next new task -> standard OpenCode MCP again.
-Medium bounded code implementation -> Route C / DeepSeek 4 Pro via OpenCode Jobs by default.
-Route C DeepSeek Pro failed -> stop and explain the blocker.
+Medium/complex thinking or code package with sufficient published GitHub context -> Route W / Web Zworker Auto.
+Local reconnaissance, prompt shaping, ZIP verification, and selected checks -> Route A.
+Hard local verification/repair -> Route C / minimax-m2.5 via ollama_5_round_robin through OpenCode Jobs.
+Route C minimax-m2.5 / ollama_5_round_robin failed -> stop and explain the blocker.
 Kimi -> manual-only via /kimifree or explicit user request.
 Codex local repo work -> only with explicit workflow change.
 
@@ -954,7 +1005,10 @@ Route chain reminder:
 
 - investigation -> Route A;
 - reading/context -> Route A;
-- medium code implementation -> Route C;
+- GitHub/context sync for Web when needed -> GitHub skill through OpenCode;
+- strongest thinking/code package -> Route W;
+- unzip/review/verification -> Route A;
+- hard local repair -> Route C;
 - verification/diff -> Route A;
 - GitHub -> GitHub skill through OpenCode;
 - cleanup -> cleanup skill;
@@ -985,12 +1039,24 @@ After editing this skill, run a minimal smoke:
 - Codex chooses routes per phase, not one route for the whole task;
 - Route A exploration does not force Route A implementation;
 - Route A primary model is `deepseek/deepseek-v4-flash`;
-- Route A fallback model is `opencode/deepseek-v4-flash-free`;
-- Route A stops and reports if the fallback model also fails;
-- medium code implementation selects Route C by default;
-- standalone app/game/tool implementation selects Route C when bounded;
-- Route C uses DeepSeek 4 Pro via `mcp__opencode_jobs.opencode_job_run_and_wait`;
-- Route C does not silently fall back to Kimi, Flash, local Codex work, or the old bridge;
+- Route A fallback models are `opencode/deepseek-v4-flash-free` then `opencode/mimo-v2.5-free`;
+- Route A stops and reports if the entire fallback chain also fails;
+- Route W exists in the main dispatcher;
+- Route W can be selected without explicit `/zworker-auto` when strongest reasoning is needed and published GitHub context is sufficient;
+- one user task may use a route chain rather than one route for the whole task;
+- a typical route chain may be Route A -> GitHub/context sync -> Route W -> Route A -> Route C -> Codex decision;
+- `zworker-auto` loads when Route W is deliberately selected;
+- manual `/zworker` remains manual and user-triggered;
+- GitHub context must be current before Route W;
+- if needed context is local-only, Codex creates/pushes a temporary context branch or blocks Route W;
+- OpenCode-mediated GitHub context sync remains required for Route W;
+- direct Codex-side GitHub tools remain forbidden;
+- OpenCode Route A remains the default for local reconnaissance and verification;
+- Route W is preferred over Route C for initial design, architecture, review, documentation, research, and medium/complex code packages when GitHub context is sufficient;
+- Route C is not the default strongest-thinking route;
+- Route C is for hard local jobs, post-Web repair, and complex local verification;
+- Route C uses minimax-m2.5 via ollama_5_round_robin through `mcp__opencode_jobs.opencode_job_run_and_wait`;
+- Route C does not silently fall back to Kimi, Flash, deepseek-v4-pro, local Codex work, or the old bridge;
 - Kimi is manual-only through `/kimifree` or explicit Kimi request;
 - verification after Route C may return to Route A;
 - general brainstorming/TDD plugin skills do not add approval gates unless user

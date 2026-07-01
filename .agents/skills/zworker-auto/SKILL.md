@@ -1,17 +1,20 @@
 ---
 name: zworker-auto
-description: Use when the user explicitly invokes `/zworker-auto` or asks Codex to run the fully automated zworker ChatGPT Web route with browser reuse, ZIP download, and automatic handoff into the local repository.
+description: Use when the user explicitly invokes `/zworker-auto` or when the main routing skill deliberately selects Route W / Web Zworker Auto for a high-reasoning phase with sufficient published GitHub context.
 ---
 
 # Zworker Auto
 
 ## Purpose
 
-Load this skill only for the explicit `zworker-auto` route.
+Load this skill only for the explicit `zworker-auto` route or when the main
+route planner deliberately selects Route W / Web Zworker Auto for a meaningful
+phase.
 
 Do not load it for ordinary local repo work.
 Do not load it merely for ordinary OpenCode delegation.
 Do not load it for manual `/zworker`.
+Do not load it when GitHub context is not publishable for the needed Web phase.
 
 `/zworker-auto` means Codex should execute the external ChatGPT Web route
 itself:
@@ -33,6 +36,40 @@ Keep the current zworker stages as the source of truth:
 
 Do not reimplement their logic inside the skill.
 
+## Route W preference
+
+Route W is the preferred strongest-model phase when all are true:
+
+- the task benefits from high reasoning quality;
+- GitHub context is current and sufficient;
+- the output can be returned as a zworker ZIP.
+
+Before sending a prompt to ChatGPT Web:
+
+- run Route A reconnaissance if repo facts are needed;
+- ensure GitHub/raw URLs are current;
+- use a temporary context branch when needed;
+- do not send local-only assumptions.
+
+## Published GitHub Context Rule
+
+Before the ChatGPT Web phase, Codex MUST ensure that all required repository
+context is available through externally-readable GitHub/raw URLs.
+
+If required files or changes exist only locally, or local state is newer than
+GitHub, Codex MUST use OpenCode to publish the minimum required context before
+running `zworker-auto`.
+
+Preferred method:
+
+- create or update `zworker-context/<request-id>`;
+- push only the files required by the Web phase;
+- place raw GitHub URLs from that branch into the prompt.
+
+If the needed context cannot be safely published, Route W is blocked for that
+phase and Codex should use Route A / Route C locally or stop with a clear
+blocker.
+
 ## Phase Composition Rule
 
 `/zworker-auto` does not replace the main route planner.
@@ -51,8 +88,9 @@ verification, and follow-up fixes must still use per-phase routing from
 Within one user request, Codex MAY combine:
 
 - Route A for reconnaissance, reading, and verification
+- GitHub/context sync through OpenCode when Web needs fresher published context
 - `zworker-auto` for the external ChatGPT Web run
-- Route C for medium post-handoff implementation or fixes
+- Route C for hard local post-handoff implementation or fixes
 - Route A again for final verification
 
 Do not treat `/zworker-auto` as an exclusive whole-task route.
@@ -84,9 +122,11 @@ flow unless the user explicitly asks for that fallback.
 Example route chain for one request:
 
 1. Route A -> inspect current repo state and gather bounded context
-2. `zworker-auto` -> run the external ChatGPT Web flow and download the ZIP
-3. Route C -> refine the accepted result if medium code changes are needed
-4. Route A -> verify changed files and checks
+2. GitHub/context sync -> publish the minimum required context when GitHub is stale
+3. `zworker-auto` -> run the external ChatGPT Web flow and download the ZIP
+4. Route A -> review the ZIP, apply safe changes, and verify
+5. Route C -> repair hard local issues if needed
+6. Codex -> issue the final decision
 
 ## Browser Policy
 
@@ -172,16 +212,10 @@ Invoke-WebRequest -UseBasicParsing 'http://127.0.0.1:9222/json/version'
 
 Before the real run, verify the browser state:
 
-- The homepage composer (textarea, contenteditable div, or chat input box) is
-  visible — this confirms the page is ready for input without any extra
-  navigation step
+- ChatGPT composer is visible
 - the page is not on a login screen
 - the page shows a Plus session signal such as `ChatGPT Plus`, `Plus`, or the
   generic model picker state like `High`
-
-A visible composer on the homepage is a valid ready state. Do **not** force a
-sidebar "New chat" click when the composer is already visible — the sidebar
-"New chat" button is a fallback only when the composer is absent.
 
 If the page is logged out, stop and ask the user to log in manually in that
 browser window.
@@ -210,9 +244,6 @@ Important:
 - prefer the direct web-runner attach path for the real browser flow
 - do not start with `zworker-auto` launch-mode that opens a fresh browser
 - keep the 12-minute answer timeout for ChatGPT Web work
-- The web-runner already implements composer-first chat creation: it checks for
-  a visible composer before falling back to a sidebar "New chat" click. Trust
-  this behavior and do not add extra sidebar clicks before calling the runner.
 
 ### 5. Read result artifacts
 
@@ -223,77 +254,6 @@ Check the runtime outputs:
 - `.ai/zworker/runtime/inbox/<request-id>/process_report.md`
 
 Treat `HANDOFF_DONE` plus process decision `accepted` as success.
-
-## Web-Runner State Progression (Critical Diagnostic Context)
-
-The web-runner follows a strict sequential state machine. Understanding this
-progression is essential to avoid false "chat creation failed" diagnosis on
-sequential Route W runs.
-
-### State Machine (creation → prompt → answer → download → handoff)
-
-```
-CREATED → CHAT_OPENING → CHAT_CREATED
-  → MODEL_CHECKING → MODEL_SELECTED
-  → PROMPT_SENDING → PROMPT_SENT (/c/... URL appears here)
-  → ANSWER_STREAMING → ANSWER_READY
-  → ZIP_LINK_WAITING → ZIP_LINK_FOUND
-  → ZIP_DOWNLOAD_STARTING → ZIP_DOWNLOAD_STARTED → ZIP_DOWNLOADED
-  → ZIP_VALIDATING → ZIP_VALID
-  → HANDOFF_UNPACKING → HANDOFF_UNPACKED → HANDOFF_PROCESSING → HANDOFF_DONE
-```
-
-### Key Diagnostic Rules (prevents false "chat creation failed" on re-runs)
-
-1. **`CHAT_CREATED` + homepage composer = success**, not failure.
-   `open_new_chat` treats a visible homepage composer (textarea/contenteditable)
-   as a ready chat input. It sets `CHAT_CREATED` immediately, even when the URL
-   is still `https://chatgpt.com/` without a `/c/...` path.
-
-2. **`/c/...` URL appears only after prompt send**, never during `open_new_chat`.
-   The first time a `/c/...` conversation URL is written to state is inside
-   `send_prompt` → `PROMPT_SENT`. Do not wait for a `/c/...` URL before
-   considering chat creation complete.
-
-3. **On sequential Route W runs**, the browser reuses the same ChatGPT session.
-   After a prior run, the browser may already be at a `/c/...` URL from the
-   previous chat. `open_new_chat` navigates to the homepage — the composer
-   appears, `CHAT_CREATED` is set (homepage URL, no new `/c/...` yet). This is
-   **normal** and not a failure.
-
-4. **`MODEL_CHECK_DONE` or `MODEL_SELECTED` before prompt send is also normal**
-   on a reused session. Do not treat reaching these states as "stuck" or
-   "creation failed."
-
-### Distinguish Creation Phase vs Later Phases
-
-| Phase | States | `/c/...` URL? | Meaning |
-|---|---|---|---|
-| **Creation** | `CHAT_OPENING` → `CHAT_CREATED` | No (homepage) | Chat input ready; model check follows |
-| **Model check** | `MODEL_CHECKING` → `MODEL_SELECTED` | No | Model verified on current session |
-| **Prompt send** | `PROMPT_SENDING` → `PROMPT_SENT` | Yes (appears here) | Prompt submitted; conversation exists |
-| **Answer** | `ANSWER_STREAMING` → `ANSWER_READY` | Yes | ChatGPT producing/generated reply |
-| **Download** | `ZIP_LINK_WAITING` → `ZIP_DOWNLOADED` | Yes | ZIP link tracked and ZIP downloaded |
-| **Handoff** | `ZIP_VALIDATING` → `HANDOFF_DONE` | Yes | ZIP validated and processed locally |
-
-### Troubleshooting / Diagnostic Checklist
-
-When a run appears stuck or failed, use this checklist to determine whether it
-is a real chat-creation failure vs a later-phase wait:
-
-| Observation | Most Likely Cause | Action |
-|---|---|---|
-| State ≤ `CHAT_CREATED`, homepage visible, composer absent | Real creation failure — sidebar "New chat" also failed | Check browser for login/anti-bot; restart Chrome if needed |
-| State = `CHAT_CREATED` or `MODEL_CHECK_DONE`, homepage+composer visible, no `/c/...` | **Not a failure** — creation phase complete, awaiting prompt send | Runner will proceed to prompt send; do not abort |
-| State = `PROMPT_SENT`, no `/c/...` URL in state | Prompt sent but /c/ URL not yet captured; may be transient | Check `wait_for_valid_chat_url` in logs; wait for answer phase |
-| State = `ANSWER_STREAMING` or `ANSWER_READY`, no ZIP yet | Normal — ChatGPT still generating or ZIP not yet posted | Wait for download phase; check answer timeout |
-| State = `ZIP_LINK_WAITING`, no ZIP file on disk | Normal — ZIP link not yet detected in page | Wait for download timeout; check ChatGPT output for ZWORKER_ZIP_READY |
-| State = `FAILED` with `FAILED_LOGIN_REQUIRED` | Real login failure | Ask user to log in manually in Chrome |
-| State = `FAILED` with `FAILED_MODEL_NOT_VERIFIED` | Model not found | May need `--allow-unverified-model` or different preferred model |
-
-**Golden rule**: If the state log shows `CHAT_CREATED` followed by
-`MODEL_CHECKING`/`MODEL_SELECTED`, the creation phase succeeded. The run is
-proceeding normally into the prompt phase. Do not restart or re-create the chat.
 
 ## Recovery Rules
 
